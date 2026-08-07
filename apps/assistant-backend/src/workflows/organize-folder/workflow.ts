@@ -1,19 +1,19 @@
 import { randomUUID } from "node:crypto";
 
 import type { OAuthGrantStore } from "@synvo/lark-auth";
-import { hasExactScopes, PHASE_2_USER_SCOPES } from "@synvo/lark-auth";
+import { hasExactScopes, DRIVE_INVENTORY_USER_SCOPES } from "@synvo/lark-auth";
 import {
   digestFolderToken,
   DriveToolError,
   parseLarkDriveFolderLink,
   requireAllowlistedRoot,
-} from "@synvo/synvo-lark-mcp/drive";
+} from "@synvo/lark-mcp/drive";
 
 import type { AppConfig } from "../../config.js";
 import type { DriveInventoryClient } from "../../mcp/client.js";
 import type { LarkOAuthService } from "../../oauth/service.js";
-import type { Phase2Repository } from "../../repositories/phase2.js";
-import { formatDriveScanResult } from "./format-inventory.js";
+import type { OrganizeFolderRepository } from "../../repositories/organize-folder.js";
+import { formatDriveFolderInventoryResult } from "./inventory-message.js";
 
 export type OrganizeFolderRequest = {
   messageId: string;
@@ -25,7 +25,7 @@ export type OrganizeFolderRequest = {
 
 export type OrganizeFolderStartResult =
   | { kind: "authorization_required"; runId: string; replyText: string }
-  | { kind: "scan_ready"; runId: string; replyText: string }
+  | { kind: "inventory_ready"; runId: string; replyText: string }
   | { kind: "duplicate"; replyText: string }
   | { kind: "rejected"; replyText: string };
 
@@ -37,22 +37,29 @@ type OAuthAuthorizationStarter = Pick<
 export class OrganizeFolderWorkflow {
   readonly #config: AppConfig;
   readonly #grantStore: OAuthGrantStore;
-  readonly #repository: Phase2Repository;
+  readonly #repository: OrganizeFolderRepository;
   readonly #oauthService: OAuthAuthorizationStarter;
   readonly #mcpClient: DriveInventoryClient;
+  readonly #requiredScopes: readonly string[];
+  readonly #authorizationPurpose: "read-only inventory" | "one-file move spike";
 
   constructor(options: {
     config: AppConfig;
     grantStore: OAuthGrantStore;
-    repository: Phase2Repository;
+    repository: OrganizeFolderRepository;
     oauthService: OAuthAuthorizationStarter;
     mcpClient: DriveInventoryClient;
+    requiredScopes?: readonly string[];
+    authorizationPurpose?: "read-only inventory" | "one-file move spike";
   }) {
     this.#config = options.config;
     this.#grantStore = options.grantStore;
     this.#repository = options.repository;
     this.#oauthService = options.oauthService;
     this.#mcpClient = options.mcpClient;
+    this.#requiredScopes = options.requiredScopes ?? DRIVE_INVENTORY_USER_SCOPES;
+    this.#authorizationPurpose =
+      options.authorizationPurpose ?? "read-only inventory";
   }
 
   async start(
@@ -100,7 +107,7 @@ export class OrganizeFolderWorkflow {
       grant !== null &&
       grant.revokedAt === null &&
       grant.refreshExpiresAt > new Date() &&
-      hasExactScopes(grant.grantedScopes, PHASE_2_USER_SCOPES);
+      hasExactScopes(grant.grantedScopes, this.#requiredScopes);
     const rootTokenDigest = digestFolderToken(
       this.#config.organizeFolderRootToken,
     );
@@ -123,12 +130,18 @@ export class OrganizeFolderWorkflow {
         kind: "authorization_required",
         runId: pending.runId,
         replyText: [
-          "Read-only Lark Drive authorization is required.",
+          this.#authorizationPurpose === "one-file move spike"
+            ? "Lark Drive move pilot authorization is required."
+            : "Read-only Lark Drive authorization is required.",
           "",
           `Authorize this request: ${pending.startUrl.toString()}`,
           "",
-          "The link expires in 10 minutes. The assistant requests folder-list access, read-only file and folder metadata, and offline refresh access.",
-          "No files will be opened, downloaded, or changed.",
+          this.#authorizationPurpose === "one-file move spike"
+            ? "The link expires in 10 minutes. This requests exactly metadata, folder-list, offline refresh, and one-file move access."
+            : "The link expires in 10 minutes. The assistant requests folder-list access, read-only file and folder metadata, and offline refresh access.",
+          this.#authorizationPurpose === "one-file move spike"
+            ? "No mutation occurs during authorization or inventory. A separate operator confirmation is required for the move spike."
+            : "No files will be opened, downloaded, or changed.",
         ].join("\n"),
       };
     }
@@ -151,23 +164,23 @@ export class OrganizeFolderWorkflow {
       };
     }
     return {
-      kind: "scan_ready",
+      kind: "inventory_ready",
       runId,
       replyText:
-        "Authorization found. Scanning only the approved pilot folder in read-only mode...",
+        "Authorization found. Building a read-only inventory of the approved pilot folder...",
     };
   }
 
-  async scan(runId: string): Promise<string> {
-    const result = await this.#mcpClient.scanFolder(runId).catch(() => {
+  async buildInventoryMessage(runId: string): Promise<string> {
+    const result = await this.#mcpClient.getFolderInventory(runId).catch(() => {
       throw new Error(
-        "The read-only inventory scan failed before a safe result was available.",
+        "The read-only folder inventory failed before a safe result was available.",
       );
     });
 
     if (!result.ok && result.error?.retryable) {
-      throw new Error("The read-only inventory scan should be retried.");
+      throw new Error("The read-only folder inventory should be retried.");
     }
-    return formatDriveScanResult(result);
+    return formatDriveFolderInventoryResult(result);
   }
 }

@@ -7,16 +7,16 @@ import type {
   SaveOAuthGrantInput,
   StoredOAuthGrant,
 } from "@synvo/lark-auth";
-import { PHASE_2_USER_SCOPES } from "@synvo/lark-auth";
+import { DRIVE_INVENTORY_USER_SCOPES, DRIVE_MOVE_SPIKE_USER_SCOPES } from "@synvo/lark-auth";
 
 import type { AppConfig } from "../../config.js";
 import type { DriveInventoryClient } from "../../mcp/client.js";
 import type {
   OAuthSession,
   OrganizeFolderRun,
-  Phase2Repository,
-} from "../../repositories/phase2.js";
-import { OrganizeFolderWorkflow } from "./service.js";
+  OrganizeFolderRepository,
+} from "../../repositories/organize-folder.js";
+import { OrganizeFolderWorkflow } from "./workflow.js";
 
 const config: AppConfig = {
   appId: "cli_0123456789abcdef",
@@ -56,7 +56,7 @@ class StubGrantStore implements OAuthGrantStore {
   }
 }
 
-class StubRepository implements Phase2Repository {
+class StubRepository implements OrganizeFolderRepository {
   readyRunId: string | null = null;
   findCalls = 0;
 
@@ -82,7 +82,7 @@ class StubRepository implements Phase2Repository {
 }
 
 const mcpClient: DriveInventoryClient = {
-  async scanFolder(runId) {
+  async getFolderInventory(runId) {
     return {
       ok: false,
       error: {
@@ -109,6 +109,8 @@ function createWorkflow(options: {
   grant?: StoredOAuthGrant | null;
   configOverride?: Partial<AppConfig>;
   mcpClient?: DriveInventoryClient;
+  requiredScopes?: readonly string[];
+  authorizationPurpose?: "read-only inventory" | "one-file move spike";
 } = {}) {
   const grantStore = new StubGrantStore();
   grantStore.grant = options.grant ?? null;
@@ -128,6 +130,8 @@ function createWorkflow(options: {
       },
     },
     mcpClient: options.mcpClient ?? mcpClient,
+    requiredScopes: options.requiredScopes,
+    authorizationPurpose: options.authorizationPurpose,
   });
   return { workflow, repository };
 }
@@ -186,14 +190,14 @@ test("rejects users outside the configured pilot identity before Drive lookup", 
   }
 });
 
-test("creates a read-only scan run for a refreshable minimum-scope grant", async () => {
+test("creates a read-only inventory run for a refreshable minimum-scope grant", async () => {
   const grant: StoredOAuthGrant = {
     id: "4e41b888-b1b9-46cf-aac8-3e0f35e0d266",
     openId: "ou_victor",
     tenantKey: "tenant_synvo",
     accessTokenCiphertext: "ciphertext",
     refreshTokenCiphertext: "ciphertext",
-    grantedScopes: [...PHASE_2_USER_SCOPES],
+    grantedScopes: [...DRIVE_INVENTORY_USER_SCOPES],
     accessExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
     refreshExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
     refreshVersion: 1,
@@ -204,11 +208,49 @@ test("creates a read-only scan run for a refreshable minimum-scope grant", async
     request("https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123"),
   );
 
-  assert.equal(result.kind, "scan_ready");
-  assert.equal(repository.readyRunId, result.kind === "scan_ready" ? result.runId : null);
+  assert.equal(result.kind, "inventory_ready");
+  assert.equal(repository.readyRunId, result.kind === "inventory_ready" ? result.runId : null);
 });
 
-test("requires authorization when a stored grant has any scope outside Phase 2", async (t) => {
+test("accepts only the exact Drive move spike grant and explains separate confirmation", async () => {
+  const grant: StoredOAuthGrant = {
+    id: "4e41b888-b1b9-46cf-aac8-3e0f35e0d266",
+    openId: "ou_victor",
+    tenantKey: "tenant_synvo",
+    accessTokenCiphertext: "ciphertext",
+    refreshTokenCiphertext: "ciphertext",
+    grantedScopes: [...DRIVE_MOVE_SPIKE_USER_SCOPES],
+    accessExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
+    refreshExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
+    refreshVersion: 1,
+    revokedAt: null,
+  };
+  const accepted = createWorkflow({
+    grant,
+    requiredScopes: DRIVE_MOVE_SPIKE_USER_SCOPES,
+    authorizationPurpose: "one-file move spike",
+  });
+  assert.equal(
+    (await accepted.workflow.start(
+      request("https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123"),
+    )).kind,
+    "inventory_ready",
+  );
+
+  const missing = createWorkflow({
+    requiredScopes: DRIVE_MOVE_SPIKE_USER_SCOPES,
+    authorizationPurpose: "one-file move spike",
+  });
+  const result = await missing.workflow.start(
+    request("https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123"),
+  );
+  assert.equal(result.kind, "authorization_required");
+  if (result.kind === "authorization_required") {
+    assert.match(result.replyText, /separate operator confirmation/i);
+  }
+});
+
+test("requires authorization when a stored grant has any scope outside the read-only inventory policy", async (t) => {
   for (const extraScope of [
     "drive:drive",
     "space:document:move",
@@ -221,7 +263,7 @@ test("requires authorization when a stored grant has any scope outside Phase 2",
         tenantKey: "tenant_synvo",
         accessTokenCiphertext: "ciphertext",
         refreshTokenCiphertext: "ciphertext",
-        grantedScopes: [...PHASE_2_USER_SCOPES, extraScope],
+        grantedScopes: [...DRIVE_INVENTORY_USER_SCOPES, extraScope],
         accessExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
         refreshExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
         refreshVersion: 1,
@@ -243,7 +285,7 @@ test("propagates a retryable structured MCP failure to the delivery worker", asy
   const providerDetail = "private provider response must not escape";
   const { workflow } = createWorkflow({
     mcpClient: {
-      async scanFolder() {
+      async getFolderInventory() {
         return {
           ok: false,
           error: {
@@ -258,7 +300,7 @@ test("propagates a retryable structured MCP failure to the delivery worker", asy
   });
 
   await assert.rejects(
-    workflow.scan("4d872758-1f71-4ed8-b141-a2d193ceea91"),
+    workflow.buildInventoryMessage("4d872758-1f71-4ed8-b141-a2d193ceea91"),
     (error: unknown) =>
       error instanceof Error &&
       /should be retried/.test(error.message) &&
@@ -270,7 +312,7 @@ test("propagates a sanitized MCP transport failure to the delivery worker", asyn
   const providerDetail = "private transport response must not escape";
   const { workflow } = createWorkflow({
     mcpClient: {
-      async scanFolder() {
+      async getFolderInventory() {
         throw new Error(providerDetail);
       },
       async close() {},
@@ -278,7 +320,7 @@ test("propagates a sanitized MCP transport failure to the delivery worker", asyn
   });
 
   await assert.rejects(
-    workflow.scan("4d872758-1f71-4ed8-b141-a2d193ceea91"),
+    workflow.buildInventoryMessage("4d872758-1f71-4ed8-b141-a2d193ceea91"),
     (error: unknown) =>
       error instanceof Error &&
       /safe result/.test(error.message) &&
@@ -289,7 +331,7 @@ test("propagates a sanitized MCP transport failure to the delivery worker", asyn
 test("formats a nonretryable safe MCP failure for Lark delivery", async () => {
   const { workflow } = createWorkflow({
     mcpClient: {
-      async scanFolder() {
+      async getFolderInventory() {
         return {
           ok: false,
           error: {
@@ -304,7 +346,7 @@ test("formats a nonretryable safe MCP failure for Lark delivery", async () => {
   });
 
   assert.equal(
-    await workflow.scan("4d872758-1f71-4ed8-b141-a2d193ceea91"),
+    await workflow.buildInventoryMessage("4d872758-1f71-4ed8-b141-a2d193ceea91"),
     "The Lark authorization is no longer usable.\n\nNo files were changed.",
   );
 });

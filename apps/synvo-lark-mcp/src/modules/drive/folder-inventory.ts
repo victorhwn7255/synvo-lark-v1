@@ -10,11 +10,11 @@ import type {
   DriveReader,
   NativeDriveItem,
   NativeDriveMetadata,
-} from "./client.js";
+} from "./read-client.js";
 import {
   larkBatchMetadataDocumentLimit,
   listFolderCompletely,
-} from "./client.js";
+} from "./read-client.js";
 import { driveToolError, normalizeDriveError } from "./errors.js";
 
 const expectedRootName = "Test_Synvo_AI_Assistant";
@@ -36,7 +36,7 @@ const metadataTypes = new Set([
   "slides",
 ]);
 
-export type DriveScanContext = {
+export type DriveInventoryContext = {
   runId: string;
   requesterOpenId: string;
   rootToken: string;
@@ -47,7 +47,7 @@ export type DriveScanContext = {
 
 function withAccessTokenRecovery(
   reader: DriveReader,
-  context: DriveScanContext,
+  context: DriveInventoryContext,
 ): DriveReader {
   let accessToken = context.accessToken;
 
@@ -165,9 +165,9 @@ function sameDirectChildSnapshot(
   });
 }
 
-export async function scanAllowlistedFolder(
+export async function buildAllowlistedFolderInventory(
   reader: DriveReader,
-  context: DriveScanContext,
+  context: DriveInventoryContext,
 ): Promise<DriveInventory> {
   const authenticatedReader = withAccessTokenRecovery(reader, context);
   const rootItems = await listFolderCompletely(authenticatedReader, {

@@ -1,9 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import {
-  driveScanFolderInputSchema,
-  driveScanFolderResultSchema,
-  type DriveScanFolderResult,
+  driveFolderInventoryInputSchema,
+  driveFolderInventoryResultSchema,
+  type DriveFolderInventoryResult,
 } from "@synvo/contracts";
 import { LarkAuthError } from "@synvo/lark-auth";
 
@@ -12,12 +12,12 @@ import {
   driveToolError,
   normalizeDriveError,
 } from "./modules/drive/errors.js";
-import type { DriveReader } from "./modules/drive/client.js";
-import { scanAllowlistedFolder } from "./modules/drive/scan-folder.js";
+import type { DriveReader } from "./modules/drive/read-client.js";
+import { buildAllowlistedFolderInventory } from "./modules/drive/folder-inventory.js";
 import type {
-  DriveRunResolution,
-  PostgresDriveRunRepository,
-} from "./repositories/run-context.js";
+  DriveInventoryRunResolution,
+  PostgresDriveInventoryRunRepository,
+} from "./repositories/inventory-run.js";
 
 function normalizeAuthError(error: LarkAuthError): DriveToolError {
   switch (error.code) {
@@ -62,27 +62,27 @@ function normalizeAuthError(error: LarkAuthError): DriveToolError {
 }
 
 export function createSynvoLarkMcpServer(options: {
-  runRepository: PostgresDriveRunRepository;
+  runRepository: PostgresDriveInventoryRunRepository;
   driveReader: DriveReader;
 }): McpServer {
   const server = new McpServer(
     { name: "synvo-lark-mcp", version: "0.1.0" },
     {
       instructions:
-        "This private Phase 2 server exposes one bounded read-only Lark Drive inventory tool. It has no mutation or content-download tool.",
+        "This private server exposes one bounded read-only Lark Drive inventory tool. It has no mutation or content-download tool.",
     },
   );
 
   server.registerTool(
-    "drive_scan_folder",
+    "drive_get_folder_inventory",
     {
       description:
         "List the server-owned, allowlisted Drive pilot root and its two approved destination folders using a server-owned run ID.",
-      inputSchema: driveScanFolderInputSchema,
-      outputSchema: driveScanFolderResultSchema,
+      inputSchema: driveFolderInventoryInputSchema,
+      outputSchema: driveFolderInventoryResultSchema,
     },
     async ({ run_id }) => {
-      let resolution: DriveRunResolution;
+      let resolution: DriveInventoryRunResolution;
       try {
         resolution = await options.runRepository.resolve(run_id);
       } catch (error) {
@@ -90,7 +90,7 @@ export function createSynvoLarkMcpServer(options: {
           error instanceof LarkAuthError
             ? normalizeAuthError(error)
             : normalizeDriveError(error);
-        const result: DriveScanFolderResult = {
+        const result: DriveFolderInventoryResult = {
           ok: false,
           error: normalized.safeError,
         };
@@ -111,10 +111,10 @@ export function createSynvoLarkMcpServer(options: {
         };
       }
 
-      let result: DriveScanFolderResult;
+      let result: DriveFolderInventoryResult;
       try {
         const context = await resolution.loadContext();
-        const inventory = await scanAllowlistedFolder(
+        const inventory = await buildAllowlistedFolderInventory(
           options.driveReader,
           context,
         );

@@ -1,6 +1,35 @@
+# Dependencies
 node_modules/
+
+# Build and test output
 dist/
+build/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# Runtime output and caches
+*.log
+*.pid
+.cache/
+tmp/
+temp/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.p12
+*.pfx
 
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/

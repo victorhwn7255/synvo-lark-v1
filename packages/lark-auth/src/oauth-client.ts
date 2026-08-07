@@ -7,11 +7,25 @@ export const LARK_OAUTH_TOKEN_URL =
 export const LARK_USER_INFO_URL =
   "https://open.larksuite.com/open-apis/authen/v1/user_info";
 
-export const PHASE_2_USER_SCOPES = [
+export const DRIVE_INVENTORY_USER_SCOPES = [
   "drive:drive.metadata:readonly",
   "offline_access",
   "space:document:retrieve",
 ] as const;
+
+export const DRIVE_MOVE_SPIKE_USER_SCOPES = [
+  "drive:drive.metadata:readonly",
+  "offline_access",
+  "space:document:move",
+  "space:document:retrieve",
+] as const;
+
+export const DRIVE_INVENTORY_SCOPE_PROFILE = "phase2_readonly";
+export const DRIVE_MOVE_SPIKE_SCOPE_PROFILE = "phase3_move_spike";
+
+export type OAuthScopeProfile =
+  | typeof DRIVE_INVENTORY_SCOPE_PROFILE
+  | typeof DRIVE_MOVE_SPIKE_SCOPE_PROFILE;
 
 export type LarkTokenResponse = {
   accessToken: string;
@@ -287,7 +301,7 @@ export class LarkOAuthHttpClient implements LarkOAuthClient {
 
 export function hasExactScopes(
   grantedScopes: readonly string[],
-  expectedScopes: readonly string[] = PHASE_2_USER_SCOPES,
+  expectedScopes: readonly string[] = DRIVE_INVENTORY_USER_SCOPES,
 ): boolean {
   const granted = new Set(grantedScopes);
   const expected = new Set(expectedScopes);

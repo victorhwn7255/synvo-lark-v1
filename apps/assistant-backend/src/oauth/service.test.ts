@@ -16,15 +16,16 @@ import type {
 import {
   LarkAuthError,
   LarkOAuthHttpClient,
-  PHASE_2_USER_SCOPES,
+  DRIVE_INVENTORY_USER_SCOPES,
+  DRIVE_MOVE_SPIKE_USER_SCOPES,
   TokenCipher,
 } from "@synvo/lark-auth";
 
 import type {
   OAuthSession,
   OrganizeFolderRun,
-  Phase2Repository,
-} from "../repositories/phase2.js";
+  OrganizeFolderRepository,
+} from "../repositories/organize-folder.js";
 import { LarkOAuthService } from "./service.js";
 
 class MemoryGrantStore implements OAuthGrantStore {
@@ -51,7 +52,7 @@ class MemoryGrantStore implements OAuthGrantStore {
   }
 }
 
-class MemoryPhase2Repository implements Phase2Repository {
+class MemoryOrganizeFolderRepository implements OrganizeFolderRepository {
   session: (OAuthSession & {
     requestTokenDigest: string;
     stateDigest?: string;
@@ -149,7 +150,7 @@ class FakeOAuthClient implements LarkOAuthClient {
     expiresIn: 7_200,
     refreshTokenExpiresIn: 86_400,
     tokenType: "Bearer",
-    scopes: [...PHASE_2_USER_SCOPES],
+    scopes: [...DRIVE_INVENTORY_USER_SCOPES],
   };
   exchangedVerifier = "";
   readonly #urlBuilder = new LarkOAuthHttpClient();
@@ -175,10 +176,17 @@ class FakeOAuthClient implements LarkOAuthClient {
 function createFixture(options: {
   authorizedOpenId?: string;
   authorizedTenantKey?: string;
+  requiredScopes?: readonly string[];
 } = {}) {
-  const repository = new MemoryPhase2Repository();
+  const repository = new MemoryOrganizeFolderRepository();
   const grantStore = new MemoryGrantStore();
   const oauthClient = new FakeOAuthClient();
+  if (options.requiredScopes) {
+    oauthClient.token = {
+      ...oauthClient.token,
+      scopes: [...options.requiredScopes],
+    };
+  }
   const service = new LarkOAuthService({
     appId: "cli_0123456789abcdef",
     appSecret: "app-secret",
@@ -189,6 +197,10 @@ function createFixture(options: {
     repository,
     authorizedOpenId: options.authorizedOpenId ?? "ou_victor",
     authorizedTenantKey: options.authorizedTenantKey ?? "tenant_synvo",
+    requiredScopes: options.requiredScopes,
+    authorizationPurpose: options.requiredScopes
+      ? "one-file move spike"
+      : "read-only inventory",
     now: () => new Date("2026-08-07T00:00:00.000Z"),
   });
   return { repository, grantStore, oauthClient, service };
@@ -422,7 +434,7 @@ test("rejects a grant missing offline access", async () => {
   );
 });
 
-test("rejects callback tokens with any scope outside Phase 2", async (t) => {
+test("rejects callback tokens with any scope outside the read-only inventory policy", async (t) => {
   for (const extraScope of [
     "drive:drive",
     "space:document:move",
@@ -433,7 +445,7 @@ test("rejects callback tokens with any scope outside Phase 2", async (t) => {
       const { state } = await startAuthorization(fixture);
       fixture.oauthClient.token = {
         ...fixture.oauthClient.token,
-        scopes: [...PHASE_2_USER_SCOPES, extraScope],
+        scopes: [...DRIVE_INVENTORY_USER_SCOPES, extraScope],
       };
 
       await assert.rejects(
@@ -445,4 +457,17 @@ test("rejects callback tokens with any scope outside Phase 2", async (t) => {
       assert.equal(fixture.repository.failedCode, "WRONG_SCOPE");
     });
   }
+});
+
+test("requests and stores exactly the four-scope Drive move spike grant", async () => {
+  const fixture = createFixture({ requiredScopes: DRIVE_MOVE_SPIKE_USER_SCOPES });
+  const { state, authorizationUrl } = await startAuthorization(fixture);
+  assert.deepEqual(
+    authorizationUrl.searchParams.get("scope")?.split(" "),
+    [...DRIVE_MOVE_SPIKE_USER_SCOPES].sort(),
+  );
+  await fixture.service.completeAuthorization({ state, code: "code" });
+  assert.deepEqual(fixture.grantStore.grant?.grantedScopes, [
+    ...DRIVE_MOVE_SPIKE_USER_SCOPES,
+  ].sort());
 });

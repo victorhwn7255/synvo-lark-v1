@@ -19,7 +19,8 @@ import {
   LarkAuthError,
   LarkOAuthHttpClient,
   LarkTokenBroker,
-  PHASE_2_USER_SCOPES,
+  DRIVE_INVENTORY_USER_SCOPES,
+  DRIVE_MOVE_SPIKE_USER_SCOPES,
   TokenCipher,
 } from "./index.js";
 
@@ -99,7 +100,7 @@ class FakeOAuthClient implements LarkOAuthClient {
 }
 
 const cipher = new TokenCipher(Buffer.alloc(32, 3));
-const scopes = [...PHASE_2_USER_SCOPES];
+const scopes = [...DRIVE_INVENTORY_USER_SCOPES];
 const originalToken: LarkTokenResponse = {
   accessToken: "access-original",
   refreshToken: "refresh-original",
@@ -151,6 +152,47 @@ test("returns a still-valid encrypted access token without refreshing", async ()
     "access-original",
   );
   assert.equal(client.refreshCalls, 0);
+});
+
+test("supports an exact isolated Drive move spike scope policy", async () => {
+  const now = new Date("2026-08-07T00:00:00.000Z");
+  const driveMoveSpikeToken = {
+    ...originalToken,
+    scopes: [...DRIVE_MOVE_SPIKE_USER_SCOPES],
+    expiresIn: 7_200,
+  };
+  const store = new MemoryGrantStore(
+    createEncryptedOAuthGrant(cipher, {
+      openId: "open-victor",
+      tenantKey: "tenant-synvo",
+      token: driveMoveSpikeToken,
+      now,
+    }),
+  );
+  const broker = new LarkTokenBroker({
+    clientId: "cli_0123456789abcdef",
+    clientSecret: "app-secret",
+    cipher,
+    grantStore: store,
+    oauthClient: new FakeOAuthClient(driveMoveSpikeToken),
+    requiredScopes: DRIVE_MOVE_SPIKE_USER_SCOPES,
+    now: () => now,
+  });
+  assert.equal(
+    await broker.getAccessToken("open-victor", "tenant-synvo"),
+    "access-original",
+  );
+
+  store.grant = createEncryptedOAuthGrant(cipher, {
+    openId: "open-victor",
+    tenantKey: "tenant-synvo",
+    token: { ...originalToken, expiresIn: 7_200 },
+    now,
+  });
+  await assert.rejects(
+    broker.getAccessToken("open-victor", "tenant-synvo"),
+    (error: unknown) => error instanceof LarkAuthError && error.code === "WRONG_SCOPE",
+  );
 });
 
 test("serializes concurrent refresh and atomically stores rotating tokens", async () => {
@@ -370,7 +412,7 @@ test("rejects a grant that is missing offline access", async () => {
   );
 });
 
-test("rejects stored grants with any scope outside Phase 2", async (t) => {
+test("rejects stored grants with any scope outside the read-only inventory policy", async (t) => {
   const now = new Date("2026-08-07T00:00:00.000Z");
   for (const extraScope of [
     "drive:drive",
@@ -401,7 +443,7 @@ test("rejects stored grants with any scope outside Phase 2", async (t) => {
   }
 });
 
-test("rejects a refresh response with any scope outside Phase 2", async (t) => {
+test("rejects a refresh response with any scope outside the read-only inventory policy", async (t) => {
   const issuedAt = new Date("2026-08-07T00:00:00.000Z");
   const now = new Date("2026-08-07T00:10:00.000Z");
   for (const extraScope of [
@@ -419,7 +461,7 @@ test("rejects a refresh response with any scope outside Phase 2", async (t) => {
       const store = new MemoryGrantStore(grant);
       const client = new FakeOAuthClient({
         ...rotatedToken,
-        scopes: [...PHASE_2_USER_SCOPES, extraScope],
+        scopes: [...DRIVE_INVENTORY_USER_SCOPES, extraScope],
       });
 
       await assert.rejects(

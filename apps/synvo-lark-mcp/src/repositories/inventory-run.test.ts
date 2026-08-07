@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  driveScanResultAssociatedData,
-  type DriveScanFolderResult,
+  driveFolderInventoryResultAssociatedData,
+  type DriveFolderInventoryResult,
 } from "@synvo/contracts";
 import {
   TokenCipher,
@@ -13,7 +13,7 @@ import type { Pool } from "pg";
 
 import { DriveToolError } from "../modules/drive/errors.js";
 import { digestFolderToken } from "../modules/drive/folder-link.js";
-import { PostgresDriveRunRepository } from "./run-context.js";
+import { PostgresDriveInventoryRunRepository } from "./inventory-run.js";
 
 type QueryCall = {
   text: string;
@@ -94,7 +94,7 @@ const scanId = "b77e7818-3f09-45da-9860-7bf873ab6d8e";
 const rootToken = "allowlisted-root-token";
 const cipher = new TokenCipher(Buffer.alloc(32, 17));
 
-const successfulResult: DriveScanFolderResult = {
+const successfulResult: DriveFolderInventoryResult = {
   ok: true,
   inventory: {
     run_id: runId,
@@ -121,7 +121,7 @@ const successfulResult: DriveScanFolderResult = {
   },
 };
 
-const failedResult: DriveScanFolderResult = {
+const failedResult: DriveFolderInventoryResult = {
   ok: false,
   error: {
     code: "LARK_RETRYABLE",
@@ -130,7 +130,7 @@ const failedResult: DriveScanFolderResult = {
   },
 };
 
-const terminalFailedResult: DriveScanFolderResult = {
+const terminalFailedResult: DriveFolderInventoryResult = {
   ok: false,
   error: {
     code: "LARK_PERMANENT",
@@ -165,7 +165,7 @@ function diagnosticRow(input: {
 }
 
 function repository(pool: FakePool, broker = new FakeTokenBroker()) {
-  return new PostgresDriveRunRepository({
+  return new PostgresDriveInventoryRunRepository({
     pool: pool as unknown as Pool,
     tokenBroker: broker as unknown as LarkTokenBroker,
     cipher,
@@ -268,7 +268,7 @@ test("persists and returns an encrypted cached success result", async () => {
   assert.equal(ciphertext.includes("Sensitive Pilot Root"), false);
   assert.deepEqual(
     JSON.parse(
-      cipher.decrypt(ciphertext, driveScanResultAssociatedData(runId)),
+      cipher.decrypt(ciphertext, driveFolderInventoryResultAssociatedData(runId)),
     ),
     successfulResult,
   );
@@ -325,7 +325,7 @@ test("persists and returns an encrypted cached nonretryable safe error", async (
   assert.equal(ciphertext.includes("rejected"), false);
   assert.deepEqual(
     JSON.parse(
-      cipher.decrypt(ciphertext, driveScanResultAssociatedData(runId)),
+      cipher.decrypt(ciphertext, driveFolderInventoryResultAssociatedData(runId)),
     ),
     terminalFailedResult,
   );

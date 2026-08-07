@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseCommand } from "./commands.js";
+import { parseCommand } from "./command-parser.js";
 
 test("recognizes /ping with harmless whitespace and casing", () => {
   assert.deepEqual(parseCommand("  /PING\n"), { type: "ping" });

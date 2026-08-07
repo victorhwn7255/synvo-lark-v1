@@ -57,10 +57,10 @@ test("discards a failed MCP connection and reconnects on the next job attempt", 
   });
 
   await assert.rejects(
-    client.scanFolder("9d8b0137-ab5d-4b88-bbc3-fef37e1849a2"),
+    client.getFolderInventory("9d8b0137-ab5d-4b88-bbc3-fef37e1849a2"),
     /stdio disconnected/,
   );
-  const result = await client.scanFolder(
+  const result = await client.getFolderInventory(
     "9d8b0137-ab5d-4b88-bbc3-fef37e1849a2",
   );
 

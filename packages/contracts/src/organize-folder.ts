@@ -1,10 +1,10 @@
 import { z } from "zod";
 
-export function driveScanResultAssociatedData(runId: string): string {
+export function driveFolderInventoryResultAssociatedData(runId: string): string {
   return `organize-folder-run:${runId}:scan-result:v1`;
 }
 
-export const driveScanFolderInputSchema = z.object({
+export const driveFolderInventoryInputSchema = z.object({
   run_id: z.uuid(),
 }).strict();
 
@@ -49,7 +49,7 @@ export const driveInventorySchema = z.object({
   }).strict(),
 }).strict();
 
-export const phase2ErrorCodeSchema = z.enum([
+export const driveInventoryErrorCodeSchema = z.enum([
   "UNAUTHORIZED",
   "WRONG_TENANT",
   "INVALID_FOLDER_LINK",
@@ -67,16 +67,16 @@ export const phase2ErrorCodeSchema = z.enum([
   "INTERNAL",
 ]);
 
-export const phase2SafeErrorSchema = z.object({
-  code: phase2ErrorCodeSchema,
+export const driveInventorySafeErrorSchema = z.object({
+  code: driveInventoryErrorCodeSchema,
   message: z.string(),
   retryable: z.boolean(),
 }).strict();
 
-export const driveScanFolderResultSchema = z.object({
+export const driveFolderInventoryResultSchema = z.object({
   ok: z.boolean(),
   inventory: driveInventorySchema.optional(),
-  error: phase2SafeErrorSchema.optional(),
+  error: driveInventorySafeErrorSchema.optional(),
 }).strict().superRefine((value, context) => {
   if (value.ok) {
     if (!value.inventory || value.error) {
@@ -96,9 +96,9 @@ export const driveScanFolderResultSchema = z.object({
   }
 });
 
-export type DriveScanFolderInput = z.infer<typeof driveScanFolderInputSchema>;
+export type DriveFolderInventoryInput = z.infer<typeof driveFolderInventoryInputSchema>;
 export type DriveInventory = z.infer<typeof driveInventorySchema>;
 export type DriveInventoryItem = z.infer<typeof driveInventoryItemSchema>;
 export type DriveInventoryFolder = z.infer<typeof driveInventoryFolderSchema>;
-export type Phase2SafeError = z.infer<typeof phase2SafeErrorSchema>;
-export type DriveScanFolderResult = z.infer<typeof driveScanFolderResultSchema>;
+export type DriveInventorySafeError = z.infer<typeof driveInventorySafeErrorSchema>;
+export type DriveFolderInventoryResult = z.infer<typeof driveFolderInventoryResultSchema>;

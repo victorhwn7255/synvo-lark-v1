@@ -12,7 +12,7 @@ const validEnvironment = {
   ORGANIZE_FOLDER_ROOT_TOKEN: "fldcnRoot123",
 };
 
-test("loads production-aligned Phase 2 configuration", () => {
+test("loads production-aligned assistant configuration", () => {
   assert.deepEqual(loadConfig(validEnvironment), {
     appId: "cli_0123456789abcdef",
     appSecret: "local-secret",

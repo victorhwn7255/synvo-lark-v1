@@ -1,6 +1,6 @@
 # `/organize-folder` Implementation Plan
 
-Status: Active, with Phase 2 code implemented and live verification pending  
+Status: Active, with Phase 3 complete and Phase 4 next
 Last updated: 2026-08-07  
 Pilot user: Victor  
 Workflow owner: TBD  
@@ -62,7 +62,7 @@ The archived Wiki plan remains a future reference.
 
 ## 3. Current verified baseline
 
-The repository contains the Phase 1 messaging spike and the local Phase 2 OAuth and read-only Drive inventory implementation.
+The repository contains the Phase 1 messaging spike, the completed Phase 2 OAuth and read-only Drive inventory, and the completed Phase 3 one-file move-and-restore capability spike.
 
 Verified live on 2026-08-06:
 
@@ -86,33 +86,33 @@ Implemented and verified locally on 2026-08-07:
 - [x] Leased scan execution with encrypted cached success or terminal safe-error results and stale-attempt guards.
 - [x] Retryable scan release and bounded retry exhaustion with an encrypted generic no-change result.
 - [x] A Docker Compose PostgreSQL development service bound to `127.0.0.1`.
-- [x] A private stdio `synvo-lark-mcp` server with one bounded read-only `drive_scan_folder` tool.
+- [x] A private stdio `synvo-lark-mcp` server with one bounded read-only `drive_get_folder_inventory` tool.
 - [x] Full folder-list pagination, root and child metadata lookup, owner-signal checks, normalized safe errors, and a compact Lark inventory formatter.
 - [x] The Phase 2 OAuth scope contract contains `space:document:retrieve`, `drive:drive.metadata:readonly`, and `offline_access`.
 - [x] `ORGANIZE_FOLDER_WRITE_ENABLED` defaults to and is required to remain `false` in Phase 2.
 - [x] Type checking passes.
 - [x] Docker Compose configuration renders successfully.
 
-The following live checks remain incomplete:
+The Phase 2 live checks are complete:
 
-- [ ] Add the three Phase 2 user scopes in the Lark Developer Console.
-- [ ] Register the exact OAuth redirect URI.
-- [ ] Publish a Victor-only version and obtain any required tenant-admin approval.
-- [ ] Complete Victor's initial OAuth bootstrap from Lark.
-- [ ] Pin the matching verified Victor and Synvo tenant identity pair in private configuration without printing either value.
-- [ ] Restart the backend and complete a second inventory run with the static identity allowlist active.
-- [ ] Return and visibly verify the exact two-folder and four-file inventory from the pinned rerun in Lark.
-- [ ] Require the redacted live verifier to pass the grant, run, delivery, identity, and inventory gates.
+- [x] Add the three Phase 2 user scopes in the Lark Developer Console.
+- [x] Register the exact OAuth redirect URI.
+- [x] Publish a Victor-only version and obtain the required tenant-admin approval.
+- [x] Complete Victor's initial OAuth bootstrap from Lark.
+- [x] Pin the matching verified Victor and Synvo tenant identity pair in private configuration without printing either value.
+- [x] Restart the backend and complete a second inventory run with the static identity allowlist active.
+- [x] Return and visibly verify the exact two-folder and four-file inventory from the pinned rerun in Lark.
+- [x] Require the redacted live verifier to pass the grant, run, delivery, identity, and inventory gates.
 
 The following later capabilities remain unimplemented:
 
 - [ ] GPT integration.
 - [ ] Interactive-card callbacks.
-- [ ] Drive move tools or any other Drive mutation path.
-- [ ] Approval, mutation, verification, and undo records.
-- [ ] Phase 3 mutation, verification, and undo workers.
+- [x] An operator-only, one-file Drive move-and-restore harness with durable mutation and verification records.
+- [ ] User-facing approval, multi-file mutation, verification, and undo records.
+- [ ] Production mutation, verification, and undo workers.
 
-Do not report Phase 2 as complete until its live exit gate passes.
+Do not report the full `/organize-folder` loop as complete based on the Phase 3 capability spike; Phase 4 and the later user-facing proposal, approval, execution, and undo phases remain open.
 
 ## 4. Exact pilot sandbox
 
@@ -347,13 +347,13 @@ Shared packages own:
 The GPT model must never invoke `synvo-lark-mcp` directly.
 The assistant backend is the deterministic orchestrator between model output and tools.
 
-### 7.3 Implemented Phase 2 code locations
+### 7.3 Current code locations
 
 ```text
 apps/
 ├── assistant-backend/
 │   └── src/
-│       ├── commands.ts
+│       ├── command-parser.ts
 │       ├── config.ts
 │       ├── db/
 │       │   ├── migrate.ts
@@ -369,22 +369,32 @@ apps/
 │       │   └── service.ts
 │       ├── repositories/
 │       │   ├── inbox.ts
-│       │   └── phase2.ts
+│       │   └── organize-folder.ts
+│       ├── verification/
+│       │   ├── pin-pilot-identity.ts
+│       │   └── verify-readonly-inventory.ts
 │       └── workflows/
 │           └── organize-folder/
-│               ├── format-inventory.ts
-│               └── service.ts
+│               ├── inventory-message.ts
+│               └── workflow.ts
 └── synvo-lark-mcp/
-    └── src/
+    ├── src/
         ├── config.ts
         ├── server.ts
-        ├── repositories/run-context.ts
+        ├── repositories/inventory-run.ts
         └── modules/
             └── drive/
-                ├── client.ts
+                ├── read-client.ts
                 ├── errors.ts
                 ├── folder-link.ts
-                └── scan-folder.ts
+                ├── move-client.ts
+                └── folder-inventory.ts
+    └── tools/
+        └── drive-move-spike/
+            ├── cli.ts
+            ├── live-verifier.ts
+            ├── mutation-repository.ts
+            └── round-trip.ts
 
 packages/
 ├── contracts/
@@ -393,10 +403,12 @@ packages/
 database/
 └── migrations/
     ├── 0001_phase2_oauth_and_scan.sql
-    └── 0002_phase2_delivery_recovery.sql
+    ├── 0002_phase2_delivery_recovery.sql
+    └── 0003_phase3_move_spike.sql
 ```
 
-Phase 3 and later files for mutation manifests, approval, verification, undo, policy, audit, and GPT integration are intentionally absent.
+The Phase 3 operator-only mutation manifest, verification, recovery, and audit records are present.
+Phase 4 and later files for immutable proposals, user-facing approval, multi-file execution, undo, and GPT integration remain intentionally absent.
 Add those files only when the corresponding active phase requires them.
 The resource-specific Drive adapter and workflow must remain explicit.
 Do not build a generic provider registry.
@@ -428,7 +440,9 @@ Forbidden during Phase 2:
 - `drive:drive`.
 - Any PDF or native Lark Docs content-read scope.
 
-Add `space:document:move` only for the separately reviewed Phase 3 capability spike.
+The completed Phase 3 capability spike used a separate exact four-scope profile containing the three Phase 2 scopes plus `space:document:move`.
+The move scope remains isolated from the Phase 2 grant and from the normal MCP tool surface.
+Phase 4 remains read-only and must keep the persistent write switch disabled.
 Add a content scope only when a later content-aware phase has an approved data-handling and retention policy.
 
 ### 8.3 OAuth flow
@@ -478,7 +492,7 @@ Do not expose a generic `call_lark_api` or arbitrary `move_file` tool.
 ### 9.1 Read-only scan
 
 ```typescript
-drive_scan_folder({
+drive_get_folder_inventory({
   run_id
 }) => {
   scan_id,
@@ -667,8 +681,8 @@ Illegal transitions must fail closed.
 |---|---|---|
 | 0 | Pilot contract, sandbox, and data policy are locked | Safeguards confirmed; policy records in progress |
 | 1 | Lark direct-message connection spike works | Complete |
-| 2 | Victor OAuth and read-only Drive inventory work | Code implemented; live verification pending |
-| 3 | One PDF completes a verified move-and-restore round trip | Not started |
+| 2 | Victor OAuth and read-only Drive inventory work | Complete |
+| 3 | One PDF completes a verified move-and-restore round trip | Complete |
 | 4 | Read-only MCP snapshot and deterministic proposal work in Lark | Not started |
 | 5 | GPT title-only proposals are structured and policy-valid | Not started |
 | 6 | Exact card selection and approval are replay-safe | Not started |
@@ -759,10 +773,10 @@ Bind Victor's Lark bot identity to a user OAuth grant and list the exact sandbox
 ### Work items
 
 - [x] Define the minimum user scope contract as `space:document:retrieve`, `drive:drive.metadata:readonly`, and `offline_access`.
-- [ ] Add the three minimum user scopes in the Lark Developer Console.
-- [ ] Register `http://localhost:3000/oauth/lark/callback` for the single-machine local pilot.
+- [x] Add the three minimum user scopes in the Lark Developer Console.
+- [x] Register `http://localhost:3000/oauth/lark/callback` for the single-machine local pilot.
 - [ ] Register `https://lark-assistant-staging.synvo.ai/oauth/lark/callback` when the staging host is available.
-- [ ] Release the scope change to Victor and obtain any required tenant-admin approval.
+- [x] Release app version `0.1.1` to Victor and obtain tenant-admin approval.
 - [x] Add a loopback-only PostgreSQL development service and two versioned Phase 2 migrations.
 - [x] Add a migration runner that needs only `DATABASE_URL`.
 - [x] Add schema-aware startup and health readiness checks.
@@ -780,14 +794,14 @@ Bind Victor's Lark bot identity to a user OAuth grant and list the exact sandbox
 - [x] Scaffold `apps/synvo-lark-mcp`.
 - [x] Implement the explicit read-only Drive module.
 - [x] Route all Drive API access through that module.
-- [x] Implement the read-only `drive_scan_folder` tool.
+- [x] Implement the read-only `drive_get_folder_inventory` tool.
 - [x] Parse a Lark Drive folder link without accepting arbitrary external URLs.
 - [x] Resolve and require the exact allowlisted root token.
 - [x] List the root with full pagination.
 - [x] List both approved destinations for baseline verification.
 - [x] Implement root, destination, and source-file owner-signal checks.
 - [x] Re-list the root and both destinations after their initial scans and reject concurrent identity or content changes.
-- [ ] Confirm the owner signals against live Lark responses for Victor's sandbox.
+- [x] Confirm the owner signals against live Lark responses for Victor's sandbox.
 - [x] Normalize authorization, not-found, rate-limit, server, timeout, pagination, and malformed-response failures into safe errors.
 - [x] Treat nested Node fetch DNS, connection-reset, socket, and timeout failures as retryable without exposing provider detail.
 - [x] Refresh once under a lock after a Drive 401 or invalid-token response, retry only that read once, and never refresh after a Drive 403.
@@ -798,7 +812,7 @@ Bind Victor's Lark bot identity to a user OAuth grant and list the exact sandbox
 - [x] Keep MCP input limited to a server-owned `run_id` and validate strict token-free result envelopes.
 - [x] Implement the Lark text response for a bounded read-only inventory.
 - [x] Sanitize control, bidi, mention-markup, URL, and overlong display values before Lark rendering.
-- [ ] Return and verify the bounded inventory in live Lark.
+- [x] Return and verify the bounded inventory in live Lark.
 - [x] Keep `ORGANIZE_FOLDER_WRITE_ENABLED=false` and expose no write tool.
 
 ### Expected inventory
@@ -839,23 +853,29 @@ The destination scans must both be empty.
 ### Local verification status
 
 - `npm run typecheck` passes.
-- The default unit and contract suite discovers 237 tests, and all 237 pass.
-- The separate Docker-backed PostgreSQL integration suite discovers five tests, and all five pass against the migrated local database.
+- All default unit and contract suites pass.
+- Five Phase 2 and one Phase 3 Docker-backed PostgreSQL integration tests pass against the migrated local database.
 - `docker compose config` succeeds.
-- The Docker PostgreSQL container is healthy, both migrations are applied, and the backend health endpoint reports Phase 2 read-only mode.
+- The Docker PostgreSQL container is healthy, both Phase 2 migrations and the Phase 3 migration are applied, and the backend health endpoint reports Phase 3 read-only-preflight mode.
 - `npm audit --omit=dev --offline` reports no vulnerability from the locally cached advisory data.
 - A fresh online advisory query remains a production-release check because it requires explicit approval to send dependency metadata to the npm registry.
-- A live Lark OAuth grant and Drive inventory remain unverified.
+- App version `0.1.1` is approved and restricted to Victor.
+- The localhost OAuth redirect is registered and completed successfully from Victor's development machine.
+- The bootstrap OAuth grant contained exactly `space:document:retrieve`, `drive:drive.metadata:readonly`, and `offline_access`.
+- The bootstrap inventory reported exactly two empty approved folders, four PDF files, no unsupported root item, and matching owner signals without opening, downloading, or changing a file.
+- `npm run pin:pilot-identity` returned `pass` and pinned the verified Victor and Synvo tenant identity pair without printing either value.
+- The post-pin rerun reused the stored grant without reauthorization and returned the same unchanged inventory.
+- `npm run verify:readonly-inventory` returned `pass` with exit code `0` for the pinned rerun.
 
 ### Exit gate
 
-- [ ] The live grant has the exact scopes, a future refresh expiry, no revocation timestamp, and a valid refresh version.
-- [ ] The latest live inventory run has terminal state `COMPLETED` with no terminal error.
-- [ ] A request lists exactly two folders and four PDFs.
-- [ ] The bot reports a bounded read-only inventory in Lark.
-- [ ] The live root, destinations, and files satisfy the owner-signal policy.
-- [ ] No write scope or write path is active in the released Phase 2 app and running services.
-- [ ] `npm run verify:phase2-live` returns `pass` with exit code `0` after the visible Lark result is confirmed.
+- [x] The live grant has the exact scopes, a future refresh expiry, no revocation timestamp, and a valid refresh version.
+- [x] The latest live inventory run has terminal state `COMPLETED` with no terminal error.
+- [x] A request lists exactly two folders and four PDFs.
+- [x] The bot reports a bounded read-only inventory in Lark.
+- [x] The live root, destinations, and files satisfy the owner-signal policy.
+- [x] No write scope is active in the Phase 2 OAuth grant, no write tool is exposed, and the master write switch is disabled.
+- [x] `npm run verify:readonly-inventory` returns `pass` with exit code `0` after the visible Lark result is confirmed.
 
 ## 16. Phase 3: one-file Drive capability spike
 
@@ -865,29 +885,31 @@ Prove one externally verified move and restoration before GPT, cards, or multi-f
 
 ### Work items
 
-- [ ] Add `space:document:move` to the user scopes.
-- [ ] Publish the scope change and obtain admin approval.
-- [ ] Reauthorize Victor with the new grant.
-- [ ] Implement a test-only round-trip harness inside the Drive module.
-- [ ] Keep the harness unavailable as a production MCP tool.
-- [ ] Add minimal durable mutation-batch and move-attempt records before the first write.
-- [ ] Make the per-direction attempt key unique in the database.
-- [ ] Show Victor the exact source, destination, and reverse operation before enabling the harness.
-- [ ] Require Victor's explicit operator confirmation for the round trip.
-- [ ] Select `[research] - Agentic Context Engineering Research.pdf` by its recorded file token.
-- [ ] Confirm it is type `file` and a direct root child.
-- [ ] Confirm the Research token is the exact approved destination.
-- [ ] Reconfirm that the root, source, and Research destination satisfy the Victor-ownership invariant.
-- [ ] Enable the write flag for the single test operation.
-- [ ] Move the PDF to Research.
-- [ ] Re-list the root and Research.
-- [ ] Verify the exact file token has Research as its observed parent.
-- [ ] Move the same token back to the root.
-- [ ] Re-list the root and Research again.
-- [ ] Verify exact baseline restoration.
-- [ ] Disable the write flag.
-- [ ] Record request IDs, pre-state, responses, post-state, and outcome.
-- [ ] Resume an interrupted harness by loading its durable attempt and reconciling observed Drive state.
+- [x] Confirm `space:document:move` is approved at the app level in released version `0.1.1`.
+- [x] Complete tenant-admin approval for the released app version that contains the move scope.
+- [x] Expand the exact Phase 3 OAuth request and stored-grant contract from the three Phase 2 scopes to those three scopes plus `space:document:move`.
+- [x] Keep every other broad app-approved scope out of the Phase 3 OAuth request and runtime tool surface.
+- [x] Require Victor to reauthorize with the exact four-scope Phase 3 grant before enabling the harness.
+- [x] Implement a test-only round-trip harness inside the Drive module.
+- [x] Keep the harness unavailable as a production MCP tool.
+- [x] Add minimal durable mutation-batch and move-attempt records before the first write.
+- [x] Make the per-direction attempt key unique in the database.
+- [x] Show Victor the exact source, destination, and reverse operation before enabling the harness.
+- [x] Require Victor's explicit operator confirmation for the round trip.
+- [x] Select `[research] - Agentic Context Engineering Research.pdf` by its recorded file token.
+- [x] Confirm it is type `file` and a direct root child.
+- [x] Confirm the Research token is the exact approved destination.
+- [x] Reconfirm that the root, source, and Research destination satisfy the Victor-ownership invariant.
+- [x] Enable the write flag only in the explicitly confirmed operator process.
+- [x] Move the PDF to Research.
+- [x] Re-list the root and Research.
+- [x] Verify the exact file token has Research as its observed parent.
+- [x] Move the same token back to the root.
+- [x] Re-list the root and Research again.
+- [x] Verify exact baseline restoration.
+- [x] Disable the write flag by process exit while persistent configuration remains false.
+- [x] Record request IDs, pre-state, responses, post-state, and outcome in encrypted durable records.
+- [x] Resume an interrupted harness by loading its durable attempt and reconciling observed Drive state.
 
 ### Retry and idempotency requirements
 
@@ -900,22 +922,34 @@ Prove one externally verified move and restoration before GPT, cards, or multi-f
 
 ### Required fault tests
 
-- [ ] Duplicate capability invocation.
-- [ ] Source manually moved before preflight.
-- [ ] Destination missing.
-- [ ] Permission revoked.
-- [ ] Timeout before Lark receives the move.
-- [ ] Lost response after Lark applies the move.
-- [ ] Lark 429 and 5xx.
-- [ ] Verification disagrees with the response.
+- [x] Duplicate capability invocation.
+- [x] Source manually moved before preflight.
+- [x] Destination missing.
+- [x] Permission revoked.
+- [x] Timeout before Lark receives the move.
+- [x] Lost response after Lark applies the move.
+- [x] Lark 429 and 5xx.
+- [x] Verification disagrees with the response.
+- [x] Unexpected or ambiguous observed parent.
+- [x] Crash after durable request intent.
 
 ### Exit gate
 
-- One known PDF completes a verified root-to-Research-to-root round trip.
-- Duplicate invocation does not duplicate the move.
-- Ambiguous outcomes are reconciled.
-- The sandbox returns to the exact baseline.
-- No result is reported as successful while external state is unknown.
+- [x] One known PDF completes a verified root-to-Research-to-root round trip.
+- [x] Duplicate invocation does not duplicate the move.
+- [x] Ambiguous outcomes are reconciled.
+- [x] The sandbox returns to the exact baseline.
+- [x] No result is reported as successful while external state is unknown.
+
+### Verified live evidence — 2026-08-07
+
+- Victor completed a fresh exact four-scope Phase 3 OAuth grant.
+- The read-only preflight found two approved folders, four root PDFs, empty destinations, no unsupported items, and matching owner signals.
+- Victor explicitly confirmed the prepared one-file `root -> Research -> root` operation.
+- The operator harness returned `RESTORED`, with the forward move verified, the restoration verified, and the baseline restored.
+- `npm run verify:drive-spike` passed every scope, durable-intent, confirmation, two-direction, write-switch, ownership, and exact-baseline gate.
+- `npm run verify:readonly-inventory` remained passing after restoration.
+- `npm run typecheck`, the complete unit and contract suite, five Phase 2 PostgreSQL integration tests, one Phase 3 PostgreSQL integration test, and the idempotent migration check passed.
 
 ## 17. Phase 4: read-only MCP snapshot and deterministic proposal
 
@@ -925,7 +959,7 @@ Invoke `/organize-folder` from Lark and receive a complete, immutable, no-write 
 
 ### Work items
 
-- [ ] Extend `drive_scan_folder` from raw listing to a canonical immutable snapshot.
+- [ ] Extend `drive_get_folder_inventory` from raw listing to a canonical immutable snapshot.
 - [ ] Use the authenticated user grant without exposing tokens to the caller.
 - [ ] Enforce the exact root and approved destinations.
 - [ ] Assign run-scoped opaque references such as `f001` and `d001`.
@@ -1522,15 +1556,16 @@ UNDO_CONFLICT
 | Live pilot user | Victor | Victor | Known |
 | App availability | Victor only | Victor | Verified for the current pilot release |
 | Sandbox root | `Test_Synvo_AI_Assistant` | Victor | Exact token configured in ignored local secret configuration |
-| Approved destinations | `Product` and `Research` | Victor | Names and empty baseline confirmed; live tokens still need recording |
+| Approved destinations | `Product` and `Research` | Victor | Live names, empty baseline, hierarchy, and owner signals verified; native tokens remain private |
 | Initial source type | PDF `file` | Victor | Known |
 | Initial analysis modes | Fixture label, then GPT title-only | TBD | Proposed |
 | Bot event transport | Persistent connection | Engineering | Verified |
 | Card callback transport | Persistent connection using `card.action.trigger` | Engineering | Decided; implementation pending |
-| Local OAuth redirect | `http://localhost:3000/oauth/lark/callback` | Engineering | Decided; console registration pending |
+| Local OAuth redirect | `http://localhost:3000/oauth/lark/callback` | Engineering | Registered and verified live |
+| App permission model | Version `0.1.1` has broad future-facing scopes approved; Phase 2 uses an exact three-scope grant and Phase 3 uses an isolated exact four-scope grant | Engineering | Verified; every other approved scope remains outside the workflow runtime surface |
 | Staging OAuth redirect | `https://lark-assistant-staging.synvo.ai/oauth/lark/callback` | Synvo manager or domain administrator | Exact value decided; DNS, managed HTTPS, console registration, and restricted release approval pending |
 | Token encryption | AES-256-GCM with an environment-provided 32-byte key | Engineering | Implemented locally; production secret store pending |
-| Local database | Loopback-only Docker PostgreSQL with two versioned Phase 2 migrations | Engineering | Implemented and verified locally |
+| Local database | Loopback-only Docker PostgreSQL with two Phase 2 migrations and one Phase 3 migration | Engineering | Implemented, migrated idempotently, and verified locally |
 | Production deployment environment | TBD | Engineering | Open |
 | PDF model data-handling policy | Metadata only, with no PDF body read or model transfer | Workflow owner | Confirmed for plumbing phases |
 | Second permission-test user | TBD | Workflow owner | Open |
@@ -1540,22 +1575,17 @@ UNDO_CONFLICT
 
 ## 28. Immediate next milestone
 
-The next milestone is deliberately read-only:
+Phase 3 is complete. The next milestone is a read-only, deterministic Phase 4 proposal:
 
-> Victor invokes `/organize-folder <folder-link>` in Lark, completes user OAuth if required, and receives an exact inventory of the two approved destination folders and four PDF files without any Drive mutation.
+> `/organize-folder` captures one immutable snapshot of the allowlisted sandbox, classifies the four known fixture labels into `Product` or `Research`, persists a policy-valid proposal, and renders the exact no-write plan in Lark.
 
-All independent local implementation and verification work is complete.
-The remaining manual and live verification order is:
+The Phase 4 implementation and verification order is:
 
-1. Add `space:document:retrieve`, `drive:drive.metadata:readonly`, and `offline_access` as user scopes in the Lark Developer Console.
-2. Register the exact local callback `http://localhost:3000/oauth/lark/callback` under Security Settings.
-3. Create a new version, keep its availability restricted to Victor, publish it, and obtain any required Synvo tenant-admin approval.
-4. Send `/ping`, then `/organize-folder <folder-link>` in a direct Lark chat while the verified local backend is running.
-5. Complete the bootstrap OAuth flow from Lark Desktop or a browser on the same computer within ten minutes.
-6. Stop the backend, run `npm run pin:phase2-identity`, require a `pass` result, restart, and verify `/ping` again.
-7. Send `/organize-folder <folder-link>` again and use only this latest allowlist-pinned rerun as final Phase 2 evidence.
-8. Verify the bot reports exactly two empty approved folders and four PDF files from the pinned rerun.
-9. Confirm the Drive hierarchy and file contents are unchanged, the released app has no move or content scope, and the MCP surface has no write tool.
-10. Run `npm run verify:phase2-live` and require `pass` with exit code `0`.
-
-After this exit gate passes, implement the one-file verified move-and-restore capability spike.
+1. Preserve the passing Phase 2 and Phase 3 verifiers and the unchanged two-folder, four-file baseline.
+2. Keep `ORGANIZE_FOLDER_WRITE_ENABLED=false` and keep the operator-only Phase 3 harness outside the normal MCP tool surface.
+3. Extend the bounded scan into a canonical immutable snapshot with opaque run-scoped references and a stable snapshot hash.
+4. Persist the snapshot and deterministic proposal before rendering it.
+5. Classify only the known `[product]` and `[research]` fixture labels; abstain from unknown or ambiguous labels.
+6. Validate every source, expected parent, and approved destination through deterministic policy code.
+7. Return the complete inventory and proposed `current parent -> proposed parent` relationships in Lark without exposing native Drive tokens.
+8. Prove reruns, stale metadata, unsupported items, and proposal-policy failures remain no-write and fail closed.

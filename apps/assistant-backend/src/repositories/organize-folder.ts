@@ -25,7 +25,7 @@ export type OAuthSession = {
   expiresAt: Date;
 };
 
-export interface Phase2Repository {
+export interface OrganizeFolderRepository {
   findRunByMessageId(messageId: string): Promise<OrganizeFolderRun | null>;
   createReadyRun(input: {
     id: string;
@@ -128,6 +128,7 @@ async function insertRun(
     rootTokenDigest: string;
     oauthGrantId: string | null;
     state: "AWAITING_OAUTH" | "READY_TO_SCAN";
+    workflowPhase: 2 | 3;
   },
 ): Promise<boolean> {
   const result = await client.query(
@@ -139,8 +140,9 @@ async function insertRun(
         tenant_key,
         root_token_digest,
         oauth_grant_id,
-        state
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        state,
+        workflow_phase
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT (message_id) DO NOTHING`,
     [
       input.id,
@@ -151,16 +153,25 @@ async function insertRun(
       input.rootTokenDigest,
       input.oauthGrantId,
       input.state,
+      input.workflowPhase,
     ],
   );
   return (result.rowCount ?? 0) === 1;
 }
 
-export class PostgresPhase2Repository implements Phase2Repository {
+export class PostgresOrganizeFolderRepository implements OrganizeFolderRepository {
   readonly #pool: Pool;
+  readonly #workflowRevision: 2 | 3;
 
-  constructor(pool: Pool) {
+  constructor(
+    pool: Pool,
+    options: {
+      workflowVariant?: "read_only_inventory" | "drive_move_spike";
+    } = {},
+  ) {
     this.#pool = pool;
+    this.#workflowRevision =
+      options.workflowVariant === "drive_move_spike" ? 3 : 2;
   }
 
   async findRunByMessageId(messageId: string): Promise<OrganizeFolderRun | null> {
@@ -195,6 +206,7 @@ export class PostgresPhase2Repository implements Phase2Repository {
       const inserted = await insertRun(client, {
         ...input,
         state: "READY_TO_SCAN",
+        workflowPhase: this.#workflowRevision,
       });
       if (!inserted) {
         await client.query("ROLLBACK");
@@ -247,6 +259,7 @@ export class PostgresPhase2Repository implements Phase2Repository {
         rootTokenDigest: input.rootTokenDigest,
         oauthGrantId: null,
         state: "AWAITING_OAUTH",
+        workflowPhase: this.#workflowRevision,
       });
       if (!inserted) {
         await client.query("ROLLBACK");

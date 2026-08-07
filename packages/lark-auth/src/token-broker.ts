@@ -10,7 +10,7 @@ import {
   hasExactScopes,
   type LarkOAuthClient,
   type LarkTokenResponse,
-  PHASE_2_USER_SCOPES,
+  DRIVE_INVENTORY_USER_SCOPES,
 } from "./oauth-client.js";
 import {
   grantTokenAssociatedData,
@@ -31,6 +31,7 @@ export type TokenBrokerOptions = {
   grantStore: OAuthGrantStore;
   oauthClient: LarkOAuthClient;
   refreshSkewMs?: number;
+  requiredScopes?: readonly string[];
   now?: () => Date;
 };
 
@@ -121,6 +122,7 @@ export class LarkTokenBroker {
   readonly #grantStore: OAuthGrantStore;
   readonly #oauthClient: LarkOAuthClient;
   readonly #refreshSkewMs: number;
+  readonly #requiredScopes: readonly string[];
   readonly #now: () => Date;
 
   constructor(options: TokenBrokerOptions) {
@@ -130,6 +132,9 @@ export class LarkTokenBroker {
     this.#grantStore = options.grantStore;
     this.#oauthClient = options.oauthClient;
     this.#refreshSkewMs = options.refreshSkewMs ?? 120_000;
+    this.#requiredScopes = [
+      ...(options.requiredScopes ?? DRIVE_INVENTORY_USER_SCOPES),
+    ].sort();
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -212,7 +217,7 @@ export class LarkTokenBroker {
         "The Lark authorization is no longer usable.",
       );
     }
-    assertExactScopes(grant.grantedScopes, PHASE_2_USER_SCOPES);
+    assertExactScopes(grant.grantedScopes, this.#requiredScopes);
   }
 
   async #refreshLockedGrant(
@@ -261,10 +266,10 @@ export class LarkTokenBroker {
       refreshed = await this.#oauthClient.refresh({
         clientId: this.#clientId,
         clientSecret: this.#clientSecret,
-        scopes: PHASE_2_USER_SCOPES,
+        scopes: this.#requiredScopes,
         refreshToken: decryptRefreshToken(this.#cipher, grant),
       });
-      assertExactScopes(refreshed.scopes, PHASE_2_USER_SCOPES);
+      assertExactScopes(refreshed.scopes, this.#requiredScopes);
     } catch (error) {
       if (error instanceof LarkAuthError && error.code === "OAUTH_REVOKED") {
         return {

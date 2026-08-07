@@ -7,7 +7,8 @@ import {
   LarkOAuthHttpClient,
   LARK_OAUTH_TOKEN_URL,
   LARK_USER_INFO_URL,
-  PHASE_2_USER_SCOPES,
+  DRIVE_INVENTORY_USER_SCOPES,
+  DRIVE_MOVE_SPIKE_USER_SCOPES,
 } from "./index.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -17,12 +18,12 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-test("builds a PKCE S256 authorization URL with the Phase 2 scopes", () => {
+test("builds a PKCE S256 authorization URL with the read-only inventory scopes", () => {
   const client = new LarkOAuthHttpClient();
   const url = client.buildAuthorizationUrl({
     clientId: "cli_0123456789abcdef",
     redirectUri: "http://localhost:3000/oauth/lark/callback",
-    scopes: PHASE_2_USER_SCOPES,
+    scopes: DRIVE_INVENTORY_USER_SCOPES,
     state: "state-value",
     codeChallenge: "challenge-value",
   });
@@ -62,7 +63,7 @@ test("exchanges a code through Lark's documented browser OAuth endpoint", async 
     clientId: "cli_0123456789abcdef",
     clientSecret: "app-secret",
     redirectUri: "http://localhost:3000/oauth/lark/callback",
-    scopes: PHASE_2_USER_SCOPES,
+    scopes: DRIVE_INVENTORY_USER_SCOPES,
     code: "one-time-code",
     codeVerifier: "v".repeat(43),
   });
@@ -171,7 +172,7 @@ test("normalizes a revoked refresh token without exposing provider text", async 
     client.refresh({
       clientId: "cli_0123456789abcdef",
       clientSecret: "app-secret",
-      scopes: PHASE_2_USER_SCOPES,
+      scopes: DRIVE_INVENTORY_USER_SCOPES,
       refreshToken: "refresh-value",
     }),
     (error: unknown) => {
@@ -199,7 +200,7 @@ test("treats the standard OAuth invalid_grant HTTP response as revoked", async (
     client.refresh({
       clientId: "cli_0123456789abcdef",
       clientSecret: "app-secret",
-      scopes: PHASE_2_USER_SCOPES,
+      scopes: DRIVE_INVENTORY_USER_SCOPES,
       refreshToken: "refresh-value",
     }),
     (error: unknown) =>
@@ -210,9 +211,9 @@ test("treats the standard OAuth invalid_grant HTTP response as revoked", async (
   );
 });
 
-test("accepts only the exact Phase 2 read-only inventory scope set", () => {
+test("accepts only the exact read-only inventory scope set", () => {
   assert.equal(
-    hasExactScopes(PHASE_2_USER_SCOPES),
+    hasExactScopes(DRIVE_INVENTORY_USER_SCOPES),
     true,
   );
   assert.equal(
@@ -225,10 +226,25 @@ test("accepts only the exact Phase 2 read-only inventory scope set", () => {
     "drive:file:download",
   ]) {
     assert.equal(
-      hasExactScopes([...PHASE_2_USER_SCOPES, extraScope]),
+      hasExactScopes([...DRIVE_INVENTORY_USER_SCOPES, extraScope]),
       false,
     );
   }
+});
+
+test("defines and accepts only the exact four-scope Drive move spike set", () => {
+  assert.deepEqual([...DRIVE_MOVE_SPIKE_USER_SCOPES], [
+    "drive:drive.metadata:readonly",
+    "offline_access",
+    "space:document:move",
+    "space:document:retrieve",
+  ]);
+  assert.equal(hasExactScopes(DRIVE_MOVE_SPIKE_USER_SCOPES, DRIVE_MOVE_SPIKE_USER_SCOPES), true);
+  assert.equal(hasExactScopes(DRIVE_INVENTORY_USER_SCOPES, DRIVE_MOVE_SPIKE_USER_SCOPES), false);
+  assert.equal(
+    hasExactScopes([...DRIVE_MOVE_SPIKE_USER_SCOPES, "drive:file:download"], DRIVE_MOVE_SPIKE_USER_SCOPES),
+    false,
+  );
 });
 
 test("rejects non-Bearer token responses for exchange and refresh", async () => {
@@ -241,7 +257,7 @@ test("rejects non-Bearer token responses for exchange and refresh", async () => 
         expires_in: 7_200,
         refresh_token_expires_in: 2_592_000,
         token_type: "MAC",
-        scope: PHASE_2_USER_SCOPES.join(" "),
+        scope: DRIVE_INVENTORY_USER_SCOPES.join(" "),
       }),
   });
   const isMalformedTokenType = (error: unknown) =>
@@ -252,7 +268,7 @@ test("rejects non-Bearer token responses for exchange and refresh", async () => 
       clientId: "cli_0123456789abcdef",
       clientSecret: "app-secret",
       redirectUri: "http://localhost:3000/oauth/lark/callback",
-      scopes: PHASE_2_USER_SCOPES,
+      scopes: DRIVE_INVENTORY_USER_SCOPES,
       code: "one-time-code",
       codeVerifier: "v".repeat(64),
     }),
@@ -262,7 +278,7 @@ test("rejects non-Bearer token responses for exchange and refresh", async () => 
     client.refresh({
       clientId: "cli_0123456789abcdef",
       clientSecret: "app-secret",
-      scopes: PHASE_2_USER_SCOPES,
+      scopes: DRIVE_INVENTORY_USER_SCOPES,
       refreshToken: "refresh-value",
     }),
     isMalformedTokenType,
@@ -284,7 +300,7 @@ test("keeps non-JSON rate limits and server failures retryable", async (t) => {
         client.refresh({
           clientId: "cli_0123456789abcdef",
           clientSecret: "app-secret",
-          scopes: PHASE_2_USER_SCOPES,
+          scopes: DRIVE_INVENTORY_USER_SCOPES,
           refreshToken: "refresh-value",
         }),
         (error: unknown) => {

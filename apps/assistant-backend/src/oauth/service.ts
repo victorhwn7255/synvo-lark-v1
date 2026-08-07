@@ -7,11 +7,11 @@ import {
   LarkAuthError,
   type LarkOAuthClient,
   oauthSessionAssociatedData,
-  PHASE_2_USER_SCOPES,
+  DRIVE_INVENTORY_USER_SCOPES,
   type TokenCipher,
 } from "@synvo/lark-auth";
 
-import type { Phase2Repository } from "../repositories/phase2.js";
+import type { OrganizeFolderRepository } from "../repositories/organize-folder.js";
 import { encryptDeliveryMessage } from "../delivery/crypto.js";
 import { createPkce, digestOpaqueValue, randomOpaqueValue } from "./pkce.js";
 
@@ -24,8 +24,9 @@ function canonicalScopes(scopes: readonly string[]): string[] {
 function assertExpectedSessionPolicy(
   session: { redirectUri: string; requestedScopes: readonly string[] },
   redirectUri: string,
+  requiredScopes: readonly string[],
 ): void {
-  const expectedScopes = canonicalScopes(PHASE_2_USER_SCOPES);
+  const expectedScopes = canonicalScopes(requiredScopes);
   const actualScopes = canonicalScopes(session.requestedScopes);
   const hasExpectedScopes =
     session.requestedScopes.length === actualScopes.length &&
@@ -47,9 +48,11 @@ export type OAuthServiceOptions = {
   cipher: TokenCipher;
   oauthClient: LarkOAuthClient;
   grantStore: OAuthGrantStore;
-  repository: Phase2Repository;
+  repository: OrganizeFolderRepository;
   authorizedOpenId?: string;
   authorizedTenantKey?: string;
+  requiredScopes?: readonly string[];
+  authorizationPurpose?: "read-only inventory" | "one-file move spike";
   now?: () => Date;
 };
 
@@ -73,14 +76,24 @@ export type CompletedAuthorization = {
   tenantKey: string;
 };
 
-function authorizationRequiredMessage(startUrl: URL): string {
+function authorizationRequiredMessage(
+  startUrl: URL,
+  purpose: "read-only inventory" | "one-file move spike",
+): string {
+  const moveSpike = purpose === "one-file move spike";
   return [
-    "Read-only Lark Drive authorization is required.",
+    moveSpike
+      ? "Lark Drive move pilot authorization is required."
+      : "Read-only Lark Drive authorization is required.",
     "",
     `Authorize this request: ${startUrl.toString()}`,
     "",
-    "The link expires in 10 minutes. The assistant requests folder-list access, read-only file and folder metadata, and offline refresh access.",
-    "No files will be opened, downloaded, or changed.",
+    moveSpike
+      ? "The link expires in 10 minutes. The assistant requests exactly folder-list access, metadata access, offline refresh access, and the one-file move capability."
+      : "The link expires in 10 minutes. The assistant requests folder-list access, read-only file and folder metadata, and offline refresh access.",
+    moveSpike
+      ? "This authorization does not itself move anything. The operator-only harness remains disabled until a separate explicit confirmation."
+      : "No files will be opened, downloaded, or changed.",
   ].join("\n");
 }
 
@@ -91,9 +104,11 @@ export class LarkOAuthService {
   readonly #cipher: TokenCipher;
   readonly #oauthClient: LarkOAuthClient;
   readonly #grantStore: OAuthGrantStore;
-  readonly #repository: Phase2Repository;
+  readonly #repository: OrganizeFolderRepository;
   readonly #authorizedOpenId?: string;
   readonly #authorizedTenantKey?: string;
+  readonly #requiredScopes: readonly string[];
+  readonly #authorizationPurpose: "read-only inventory" | "one-file move spike";
   readonly #now: () => Date;
 
   constructor(options: OAuthServiceOptions) {
@@ -106,6 +121,11 @@ export class LarkOAuthService {
     this.#repository = options.repository;
     this.#authorizedOpenId = options.authorizedOpenId;
     this.#authorizedTenantKey = options.authorizedTenantKey;
+    this.#requiredScopes = canonicalScopes(
+      options.requiredScopes ?? DRIVE_INVENTORY_USER_SCOPES,
+    );
+    this.#authorizationPurpose =
+      options.authorizationPurpose ?? "read-only inventory";
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -130,13 +150,13 @@ export class LarkOAuthService {
       rootTokenDigest: input.rootTokenDigest,
       requestTokenDigest,
       redirectUri: this.#redirectUri,
-      requestedScopes: [...PHASE_2_USER_SCOPES],
+      requestedScopes: [...this.#requiredScopes],
       expiresAt: new Date(now.getTime() + sessionLifetimeMs),
       deliveryJobId,
       authorizationMessageCiphertext: encryptDeliveryMessage(
         this.#cipher,
         deliveryJobId,
-        authorizationRequiredMessage(startUrl),
+        authorizationRequiredMessage(startUrl, this.#authorizationPurpose),
       ),
     });
     if (!created) {
@@ -162,7 +182,7 @@ export class LarkOAuthService {
         appId: this.#appId,
         requestTokenDigest,
         redirectUri: this.#redirectUri,
-        scopes: PHASE_2_USER_SCOPES,
+        scopes: this.#requiredScopes,
       }),
     );
     const session = await this.#repository.startOAuthSession({
@@ -177,12 +197,16 @@ export class LarkOAuthService {
         "The authorization request is invalid or expired.",
       );
     }
-    assertExpectedSessionPolicy(session, this.#redirectUri);
+    assertExpectedSessionPolicy(
+      session,
+      this.#redirectUri,
+      this.#requiredScopes,
+    );
 
     return this.#oauthClient.buildAuthorizationUrl({
       clientId: this.#appId,
       redirectUri: this.#redirectUri,
-      scopes: PHASE_2_USER_SCOPES,
+      scopes: this.#requiredScopes,
       state,
       codeChallenge: challenge,
     });
@@ -211,7 +235,11 @@ export class LarkOAuthService {
     }
 
     try {
-      assertExpectedSessionPolicy(session, this.#redirectUri);
+      assertExpectedSessionPolicy(
+        session,
+        this.#redirectUri,
+        this.#requiredScopes,
+      );
       if (input.providerError || !input.code) {
         throw new LarkAuthError(
           "OAUTH_REJECTED",
@@ -224,21 +252,21 @@ export class LarkOAuthService {
           appId: this.#appId,
           requestTokenDigest: session.requestTokenDigest,
           redirectUri: this.#redirectUri,
-          scopes: PHASE_2_USER_SCOPES,
+          scopes: this.#requiredScopes,
         }),
       );
       const token = await this.#oauthClient.exchangeCode({
         clientId: this.#appId,
         clientSecret: this.#appSecret,
         redirectUri: this.#redirectUri,
-        scopes: PHASE_2_USER_SCOPES,
+        scopes: this.#requiredScopes,
         code: input.code,
         codeVerifier: verifier,
       });
-      if (!hasExactScopes(token.scopes, PHASE_2_USER_SCOPES)) {
+      if (!hasExactScopes(token.scopes, this.#requiredScopes)) {
         throw new LarkAuthError(
           "WRONG_SCOPE",
-          "The Lark authorization scope set does not match the Phase 2 read-only policy.",
+          `The Lark authorization scope set does not match the ${this.#authorizationPurpose} policy.`,
         );
       }
 

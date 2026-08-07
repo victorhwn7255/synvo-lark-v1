@@ -44,7 +44,7 @@ export function loadMcpConfig(
   }
   if (writesEnabled && writesEnabled !== "false") {
     throw new Error(
-      "ORGANIZE_FOLDER_WRITE_ENABLED must remain false in the Phase 2 MCP server",
+      "ORGANIZE_FOLDER_WRITE_ENABLED must remain false in the normal MCP server",
     );
   }
 

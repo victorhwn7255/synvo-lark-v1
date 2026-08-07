@@ -1,15 +1,15 @@
 import type { Pool } from "pg";
 
 import {
-  driveScanResultAssociatedData,
-  driveScanFolderResultSchema,
-  type DriveScanFolderResult,
+  driveFolderInventoryResultAssociatedData,
+  driveFolderInventoryResultSchema,
+  type DriveFolderInventoryResult,
 } from "@synvo/contracts";
 import type { LarkTokenBroker, TokenCipher } from "@synvo/lark-auth";
 
 import { driveToolError } from "../modules/drive/errors.js";
 import { digestFolderToken } from "../modules/drive/folder-link.js";
-import type { DriveScanContext } from "../modules/drive/scan-folder.js";
+import type { DriveInventoryContext } from "../modules/drive/folder-inventory.js";
 
 const scanLeaseDuration = "2 minutes";
 
@@ -29,18 +29,18 @@ type RunDiagnosticRow = {
   scan_result_ciphertext: string | null;
 };
 
-export type DriveRunResolution =
+export type DriveInventoryRunResolution =
   | {
       kind: "claimed";
       scanAttempt: number;
-      loadContext(): Promise<DriveScanContext>;
+      loadContext(): Promise<DriveInventoryContext>;
     }
   | {
       kind: "cached";
-      result: DriveScanFolderResult;
+      result: DriveFolderInventoryResult;
     };
 
-export class PostgresDriveRunRepository {
+export class PostgresDriveInventoryRunRepository {
   readonly #pool: Pool;
   readonly #tokenBroker: LarkTokenBroker;
   readonly #cipher: TokenCipher;
@@ -60,7 +60,7 @@ export class PostgresDriveRunRepository {
     this.#rootTokenDigest = digestFolderToken(options.rootToken);
   }
 
-  async resolve(runId: string): Promise<DriveRunResolution> {
+  async resolve(runId: string): Promise<DriveInventoryRunResolution> {
     const result = await this.#pool.query<ClaimedRunRow>(
       `UPDATE organize_folder_runs AS run
           SET state = 'SCANNING',
@@ -128,9 +128,9 @@ export class PostgresDriveRunRepository {
   async complete(
     runId: string,
     scanAttempt: number,
-    result: DriveScanFolderResult,
+    result: DriveFolderInventoryResult,
   ): Promise<void> {
-    const validated = driveScanFolderResultSchema.parse(result);
+    const validated = driveFolderInventoryResultSchema.parse(result);
     if (!validated.ok || !validated.inventory) {
       throw driveToolError(
         "INTERNAL",
@@ -154,9 +154,9 @@ export class PostgresDriveRunRepository {
   async fail(
     runId: string,
     scanAttempt: number,
-    result: DriveScanFolderResult,
+    result: DriveFolderInventoryResult,
   ): Promise<void> {
-    const validated = driveScanFolderResultSchema.parse(result);
+    const validated = driveFolderInventoryResultSchema.parse(result);
     if (validated.ok || !validated.error) {
       throw driveToolError(
         "INTERNAL",
@@ -178,7 +178,7 @@ export class PostgresDriveRunRepository {
     });
   }
 
-  async #resolveUnclaimedRun(runId: string): Promise<DriveRunResolution> {
+  async #resolveUnclaimedRun(runId: string): Promise<DriveInventoryRunResolution> {
     const diagnostic = await this.#pool.query<RunDiagnosticRow>(
       `SELECT run.state,
               run.root_token_digest,
@@ -239,7 +239,7 @@ export class PostgresDriveRunRepository {
   #decryptCachedResult(
     runId: string,
     ciphertext: string | null,
-  ): DriveScanFolderResult {
+  ): DriveFolderInventoryResult {
     if (!ciphertext) {
       throw driveToolError(
         "INTERNAL",
@@ -248,11 +248,11 @@ export class PostgresDriveRunRepository {
     }
 
     try {
-      return driveScanFolderResultSchema.parse(
+      return driveFolderInventoryResultSchema.parse(
         JSON.parse(
           this.#cipher.decrypt(
             ciphertext,
-            driveScanResultAssociatedData(runId),
+            driveFolderInventoryResultAssociatedData(runId),
           ),
         ),
       );
@@ -293,13 +293,13 @@ export class PostgresDriveRunRepository {
   async #persistTerminalResult(input: {
     runId: string;
     scanAttempt: number;
-    result: DriveScanFolderResult;
+    result: DriveFolderInventoryResult;
     state: "COMPLETED" | "FAILED_NO_CHANGE";
     errorCode: string | null;
   }): Promise<void> {
     const ciphertext = this.#cipher.encrypt(
       JSON.stringify(input.result),
-      driveScanResultAssociatedData(input.runId),
+      driveFolderInventoryResultAssociatedData(input.runId),
     );
     const update = await this.#pool.query(
       `UPDATE organize_folder_runs

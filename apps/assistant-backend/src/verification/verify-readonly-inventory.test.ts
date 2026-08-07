@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { driveScanResultAssociatedData } from "@synvo/contracts";
-import { PHASE_2_USER_SCOPES, TokenCipher } from "@synvo/lark-auth";
-import { digestFolderToken } from "@synvo/synvo-lark-mcp/drive";
+import { driveFolderInventoryResultAssociatedData } from "@synvo/contracts";
+import { DRIVE_INVENTORY_USER_SCOPES, TokenCipher } from "@synvo/lark-auth";
+import { digestFolderToken } from "@synvo/lark-mcp/drive";
 
 import type { AppConfig } from "../config.js";
 import {
-  phase2LiveExitCode,
-  PostgresPhase2LiveReader,
-  serializePhase2LiveReport,
-  verifyPhase2Live,
-} from "./phase2-live.js";
+  readonlyInventoryExitCode,
+  PostgresReadonlyInventoryReader,
+  serializeReadonlyInventoryReport,
+  verifyReadonlyInventory,
+} from "./verify-readonly-inventory.js";
 
 const runId = "cb501391-e7bb-44c7-a341-e555ad43018c";
 const grantId = "86f732d0-9c00-4513-b460-9995175e47c7";
@@ -90,7 +90,7 @@ function inventory(overrides: Record<string, unknown> = {}) {
 function encryptedResult(value: unknown, associatedRunId = runId): string {
   return TokenCipher.fromEncodedKey(encryptionKey).encrypt(
     JSON.stringify(value),
-    driveScanResultAssociatedData(associatedRunId),
+    driveFolderInventoryResultAssociatedData(associatedRunId),
   );
 }
 
@@ -110,7 +110,7 @@ function completedRow(overrides: Record<string, unknown> = {}) {
     grant_id: grantId,
     grant_open_id: authorizedOpenId,
     grant_tenant_key: authorizedTenantKey,
-    granted_scopes: [...PHASE_2_USER_SCOPES],
+    granted_scopes: [...DRIVE_INVENTORY_USER_SCOPES],
     refresh_expires_at: new Date("2026-09-07T01:00:00.000Z"),
     refresh_version: 1,
     revoked_at: null,
@@ -127,9 +127,9 @@ function reader(candidate: unknown | null) {
   };
 }
 
-test("passes only the exact live Phase 2 gate and emits no sensitive values", async () => {
+test("passes only the exact live read-only inventory gate and emits no sensitive values", async () => {
   const row = completedRow();
-  const report = await verifyPhase2Live({
+  const report = await verifyReadonlyInventory({
     config: config(),
     reader: reader(row),
     now,
@@ -153,9 +153,9 @@ test("passes only the exact live Phase 2 gate and emits no sensitive values", as
     empty_destination_count: 2,
     issue_count: 0,
   });
-  assert.equal(phase2LiveExitCode(report), 0);
+  assert.equal(readonlyInventoryExitCode(report), 0);
 
-  const output = serializePhase2LiveReport(report);
+  const output = serializeReadonlyInventoryReport(report);
   for (const forbidden of [
     runId,
     grantId,
@@ -177,7 +177,7 @@ test("passes only the exact live Phase 2 gate and emits no sensitive values", as
 });
 
 test("returns a safe pending report and nonzero exit when no live run exists", async () => {
-  const report = await verifyPhase2Live({
+  const report = await verifyReadonlyInventory({
     config: config(),
     reader: reader(null),
     now,
@@ -190,11 +190,11 @@ test("returns a safe pending report and nonzero exit when no live run exists", a
   assert.equal(report.checks.write_disabled, true);
   assert.equal(report.checks.static_identity_configured, true);
   assert.equal("counts" in report, false);
-  assert.equal(phase2LiveExitCode(report), 2);
+  assert.equal(readonlyInventoryExitCode(report), 2);
 });
 
 test("reports nonterminal live runs as pending without inventing inventory counts", async () => {
-  const report = await verifyPhase2Live({
+  const report = await verifyReadonlyInventory({
     config: config(),
     reader: reader(
       completedRow({
@@ -212,7 +212,7 @@ test("reports nonterminal live runs as pending without inventing inventory count
   assert.equal(report.run_state, "READY_TO_SCAN");
   assert.equal(report.checks.cached_result_valid, false);
   assert.equal("counts" in report, false);
-  assert.equal(phase2LiveExitCode(report), 2);
+  assert.equal(readonlyInventoryExitCode(report), 2);
 });
 
 test("fails closed for every OAuth, identity, root, and run-state mismatch", async (t) => {
@@ -220,7 +220,7 @@ test("fails closed for every OAuth, identity, root, and run-state mismatch", asy
     name: string;
     config?: AppConfig;
     row: ReturnType<typeof completedRow>;
-    failedCheck: keyof Awaited<ReturnType<typeof verifyPhase2Live>>["checks"];
+    failedCheck: keyof Awaited<ReturnType<typeof verifyReadonlyInventory>>["checks"];
   }> = [
     {
       name: "configured root digest",
@@ -254,7 +254,7 @@ test("fails closed for every OAuth, identity, root, and run-state mismatch", asy
     {
       name: "exact scopes",
       row: completedRow({
-        granted_scopes: [...PHASE_2_USER_SCOPES, "drive:drive"],
+        granted_scopes: [...DRIVE_INVENTORY_USER_SCOPES, "drive:drive"],
       }),
       failedCheck: "exact_scopes",
     },
@@ -302,7 +302,7 @@ test("fails closed for every OAuth, identity, root, and run-state mismatch", asy
 
   for (const entry of cases) {
     await t.test(entry.name, async () => {
-      const report = await verifyPhase2Live({
+      const report = await verifyReadonlyInventory({
         config: entry.config ?? config(),
         reader: reader(entry.row),
         now,
@@ -310,7 +310,7 @@ test("fails closed for every OAuth, identity, root, and run-state mismatch", asy
       assert.equal(report.status, "fail");
       assert.equal(report.verification_code, "GATE_MISMATCH");
       assert.equal(report.checks[entry.failedCheck], false);
-      assert.equal(phase2LiveExitCode(report), 1);
+      assert.equal(readonlyInventoryExitCode(report), 1);
     });
   }
 });
@@ -375,7 +375,7 @@ test("fails every exact inventory invariant independently of the baseline flag",
       destination_child_count: 1,
     },
   });
-  const report = await verifyPhase2Live({
+  const report = await verifyReadonlyInventory({
     config: config(),
     reader: reader(
       completedRow({
@@ -406,13 +406,13 @@ test("fails every exact inventory invariant independently of the baseline flag",
   ] as const) {
     assert.equal(report.checks[check], false);
   }
-  const output = serializePhase2LiveReport(report);
+  const output = serializeReadonlyInventoryReport(report);
   assert.equal(output.includes("SENSITIVE_"), false);
 });
 
 test("fails safely when the cached result cannot be authenticated or parsed", async (t) => {
   await t.test("wrong associated run", async () => {
-    const report = await verifyPhase2Live({
+    const report = await verifyReadonlyInventory({
       config: config(),
       reader: reader(
         completedRow({
@@ -430,7 +430,7 @@ test("fails safely when the cached result cannot be authenticated or parsed", as
   });
 
   await t.test("strict schema violation", async () => {
-    const report = await verifyPhase2Live({
+    const report = await verifyReadonlyInventory({
       config: config(),
       reader: reader(
         completedRow({
@@ -446,7 +446,7 @@ test("fails safely when the cached result cannot be authenticated or parsed", as
     assert.equal(report.status, "fail");
     assert.equal(report.verification_code, "CACHED_RESULT_INVALID");
     assert.equal(
-      serializePhase2LiveReport(report).includes("SENSITIVE_ACCESS_TOKEN"),
+      serializeReadonlyInventoryReport(report).includes("SENSITIVE_ACCESS_TOKEN"),
       false,
     );
   });
@@ -454,7 +454,7 @@ test("fails safely when the cached result cannot be authenticated or parsed", as
 
 test("sanitizes unknown terminal errors and invalid database rows", async () => {
   const providerDetail = "SENSITIVE_PROVIDER_ERROR_DETAIL";
-  const failed = await verifyPhase2Live({
+  const failed = await verifyReadonlyInventory({
     config: config(),
     reader: reader(
       completedRow({
@@ -470,9 +470,9 @@ test("sanitizes unknown terminal errors and invalid database rows", async () => 
   assert.equal(failed.verification_code, "RUN_FAILED");
   assert.equal(failed.run_error_code, "INVALID");
   assert.equal(failed.delivery_error_code, "INVALID");
-  assert.equal(serializePhase2LiveReport(failed).includes(providerDetail), false);
+  assert.equal(serializeReadonlyInventoryReport(failed).includes(providerDetail), false);
 
-  const invalid = await verifyPhase2Live({
+  const invalid = await verifyReadonlyInventory({
     config: config(),
     reader: reader({ provider_detail: providerDetail }),
     now,
@@ -480,7 +480,7 @@ test("sanitizes unknown terminal errors and invalid database rows", async () => 
   assert.equal(invalid.status, "fail");
   assert.equal(invalid.verification_code, "DATABASE_ROW_INVALID");
   assert.equal(invalid.latest_run_found, true);
-  assert.equal(serializePhase2LiveReport(invalid).includes(providerDetail), false);
+  assert.equal(serializeReadonlyInventoryReport(invalid).includes(providerDetail), false);
 });
 
 test("the PostgreSQL reader never selects OAuth token ciphertext", async () => {
@@ -491,7 +491,7 @@ test("the PostgreSQL reader never selects OAuth token ciphertext", async () => {
       return { rows: [] };
     },
   };
-  const reader = new PostgresPhase2LiveReader(database);
+  const reader = new PostgresReadonlyInventoryReader(database);
 
   assert.equal(await reader.loadLatestRun(), null);
   assert.match(sql, /scan_result_ciphertext/);

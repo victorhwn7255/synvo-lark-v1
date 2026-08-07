@@ -9,7 +9,7 @@ import type { DeliveryJob, DeliveryQueue } from "./repository.js";
 export type DeliveryWorkerOptions = {
   queue: DeliveryQueue;
   cipher: TokenCipher;
-  scanFolder: (runId: string) => Promise<string>;
+  prepareMessage: (runId: string) => Promise<string>;
   finalizeExhaustedScan: (
     job: DeliveryJob,
     payloadCiphertext: string,
@@ -34,7 +34,7 @@ const exhaustedScanMessage =
 export class DeliveryWorker {
   readonly #queue: DeliveryQueue;
   readonly #cipher: TokenCipher;
-  readonly #scanFolder: (runId: string) => Promise<string>;
+  readonly #prepareMessage: (runId: string) => Promise<string>;
   readonly #finalizeExhaustedScan: (
     job: DeliveryJob,
     payloadCiphertext: string,
@@ -55,7 +55,7 @@ export class DeliveryWorker {
   constructor(options: DeliveryWorkerOptions) {
     this.#queue = options.queue;
     this.#cipher = options.cipher;
-    this.#scanFolder = options.scanFolder;
+    this.#prepareMessage = options.prepareMessage;
     this.#finalizeExhaustedScan = options.finalizeExhaustedScan;
     this.#sendText = options.sendText;
     this.#now = options.now ?? (() => new Date());
@@ -152,7 +152,7 @@ export class DeliveryWorker {
 
     let message: string;
     try {
-      message = await this.#scanFolder(job.runId);
+      message = await this.#prepareMessage(job.runId);
     } catch {
       throw new RetryableScanPreparationError(
         "The read-only inventory scan could not be prepared",

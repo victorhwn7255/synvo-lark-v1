@@ -1,4 +1,4 @@
-import type { DriveInventory, DriveScanFolderResult } from "@synvo/contracts";
+import type { DriveInventory, DriveFolderInventoryResult } from "@synvo/contracts";
 
 const MAX_DISPLAY_VALUE_LENGTH = 160;
 const COMMON_FILE_EXTENSIONS = new Set([
@@ -125,7 +125,7 @@ export function formatDriveInventory(inventory: DriveInventory): string {
   return lines.join("\n");
 }
 
-export function formatDriveScanResult(result: DriveScanFolderResult): string {
+export function formatDriveFolderInventoryResult(result: DriveFolderInventoryResult): string {
   if (result.ok && result.inventory) {
     return formatDriveInventory(result.inventory);
   }

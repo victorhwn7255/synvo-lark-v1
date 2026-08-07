@@ -14,6 +14,7 @@ export type HttpServerOptions = {
   port: number;
   oauthService: OAuthFlow;
   healthCheck: () => Promise<boolean>;
+  authorizationMode?: "read_only_inventory" | "drive_move_spike";
 };
 
 const LARK_AUTHORIZATION_ORIGIN = "https://accounts.larksuite.com";
@@ -67,7 +68,9 @@ function sendHtml(
 function sendAuthorizationConfirmation(
   response: ServerResponse,
   requestToken: string,
+  authorizationMode: "read_only_inventory" | "drive_move_spike",
 ): void {
+  const moveSpike = authorizationMode === "drive_move_spike";
   const action = `/oauth/lark/start?request=${encodeURIComponent(requestToken)}`;
   response.writeHead(
     200,
@@ -80,10 +83,10 @@ function sendAuthorizationConfirmation(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Authorize read-only Lark Drive access</title>
+  <title>${moveSpike ? "Authorize the Lark Drive move pilot" : "Authorize read-only Lark Drive access"}</title>
   <style>body{font:16px system-ui,sans-serif;max-width:42rem;margin:4rem auto;padding:0 1.5rem;color:#17202a}main{border:1px solid #dfe6e9;border-radius:12px;padding:2rem}h1{font-size:1.5rem}button{font:inherit;padding:.7rem 1rem;border:0;border-radius:8px;background:#1456f0;color:white;cursor:pointer}</style>
 </head>
-<body><main><h1>Authorize read-only Lark Drive access</h1><p>Continue only if you started this request in the Synvo AI Assistant conversation.</p><form method="post" action="${action}"><button type="submit">Continue with Lark</button></form></main></body>
+<body><main><h1>${moveSpike ? "Authorize the Lark Drive move pilot" : "Authorize read-only Lark Drive access"}</h1><p>Continue only if you started this request in the Synvo AI Assistant conversation.</p>${moveSpike ? "<p>This requests the exact four-scope capability grant. Authorization runs a read-only inventory first; a separate explicit operator confirmation is still required before any move.</p>" : ""}<form method="post" action="${action}"><button type="submit">Continue with Lark</button></form></main></body>
 </html>`);
 }
 
@@ -100,9 +103,10 @@ function logOAuthCallbackFailure(error: unknown): void {
   console.warn(`[oauth] callback failed category=${error.code}${providerCode}`);
 }
 
-export function createPhase2HttpHandler(
+export function createAssistantHttpHandler(
   options: Omit<HttpServerOptions, "host" | "port">,
 ) {
+  const authorizationMode = options.authorizationMode ?? "read_only_inventory";
   return async (request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? "/", "http://localhost");
 
@@ -110,8 +114,11 @@ export function createPhase2HttpHandler(
       const healthy = await options.healthCheck().catch(() => false);
       sendJson(response, healthy ? 200 : 503, {
         status: healthy ? "ok" : "unavailable",
-        phase: 2,
-        drive_mode: "read_only",
+        authorization_mode: authorizationMode,
+        drive_mode:
+          authorizationMode === "drive_move_spike"
+            ? "read_only_preflight"
+            : "read_only",
       });
       return;
     }
@@ -127,7 +134,7 @@ export function createPhase2HttpHandler(
         );
         return;
       }
-      sendAuthorizationConfirmation(response, requestToken);
+      sendAuthorizationConfirmation(response, requestToken, authorizationMode);
       return;
     }
 
@@ -166,7 +173,9 @@ export function createPhase2HttpHandler(
           response,
           200,
           "Authorization complete",
-          "Return to Lark. The assistant is preparing the read-only folder inventory.",
+          authorizationMode === "drive_move_spike"
+            ? "Return to Lark. The assistant is preparing the Drive move pilot's read-only preflight inventory. No file is moved without separate operator confirmation."
+            : "Return to Lark. The assistant is preparing the read-only folder inventory.",
         );
       } catch (error) {
         logOAuthCallbackFailure(error);
@@ -187,11 +196,12 @@ export function createPhase2HttpHandler(
   };
 }
 
-export async function startPhase2HttpServer(options: HttpServerOptions) {
+export async function startAssistantHttpServer(options: HttpServerOptions) {
   const server = createServer(
-    createPhase2HttpHandler({
+    createAssistantHttpHandler({
       oauthService: options.oauthService,
       healthCheck: options.healthCheck,
+      authorizationMode: options.authorizationMode,
     }),
   );
 

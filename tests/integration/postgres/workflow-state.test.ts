@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import {
-  type DriveScanFolderResult,
+  type DriveFolderInventoryResult,
 } from "@synvo/contracts";
 import {
   createEncryptedOAuthGrant,
@@ -11,23 +11,23 @@ import {
   type LarkOAuthClient,
   type LarkTokenResponse,
   LarkTokenBroker,
-  PHASE_2_USER_SCOPES,
+  DRIVE_INVENTORY_USER_SCOPES,
   PostgresOAuthGrantStore,
   TokenCipher,
 } from "@synvo/lark-auth";
 import { Pool } from "pg";
 
 import {
-  isPhase2SchemaReady,
+  isDatabaseSchemaReady,
   runMigrations,
 } from "../../../apps/assistant-backend/src/db/migrate.js";
 import { encryptDeliveryMessage } from "../../../apps/assistant-backend/src/delivery/crypto.js";
 import { PostgresDeliveryQueue } from "../../../apps/assistant-backend/src/delivery/repository.js";
 import { PostgresInbox } from "../../../apps/assistant-backend/src/repositories/inbox.js";
-import { PostgresPhase2Repository } from "../../../apps/assistant-backend/src/repositories/phase2.js";
+import { PostgresOrganizeFolderRepository } from "../../../apps/assistant-backend/src/repositories/organize-folder.js";
 import { DriveToolError } from "../../../apps/synvo-lark-mcp/src/modules/drive/errors.js";
 import { digestFolderToken } from "../../../apps/synvo-lark-mcp/src/modules/drive/folder-link.js";
-import { PostgresDriveRunRepository } from "../../../apps/synvo-lark-mcp/src/repositories/run-context.js";
+import { PostgresDriveInventoryRunRepository } from "../../../apps/synvo-lark-mcp/src/repositories/inventory-run.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 
@@ -46,7 +46,7 @@ test(
     const authorizationDeliveryJobId = randomUUID();
     const scanDeliveryJobId = randomUUID();
     const grantStore = new PostgresOAuthGrantStore(pool);
-    const repository = new PostgresPhase2Repository(pool);
+    const repository = new PostgresOrganizeFolderRepository(pool);
     const cipher = new TokenCipher(Buffer.alloc(32, 11));
     const issuedAt = new Date("2026-08-07T00:00:00.000Z");
     const now = new Date("2026-08-07T00:10:00.000Z");
@@ -56,7 +56,7 @@ test(
       expiresIn: 60,
       refreshTokenExpiresIn: 86_400,
       tokenType: "Bearer",
-      scopes: [...PHASE_2_USER_SCOPES],
+      scopes: [...DRIVE_INVENTORY_USER_SCOPES],
     };
     const rotatedToken: LarkTokenResponse = {
       accessToken: "integration-access-rotated",
@@ -64,7 +64,7 @@ test(
       expiresIn: 7_200,
       refreshTokenExpiresIn: 86_400,
       tokenType: "Bearer",
-      scopes: [...PHASE_2_USER_SCOPES],
+      scopes: [...DRIVE_INVENTORY_USER_SCOPES],
     };
     let refreshCalls = 0;
     const oauthClient: LarkOAuthClient = {
@@ -86,7 +86,7 @@ test(
 
     try {
       await runMigrations(pool);
-      assert.equal(await isPhase2SchemaReady(pool), true);
+      assert.equal(await isDatabaseSchemaReady(pool), true);
 
       const grant = await grantStore.save(
         createEncryptedOAuthGrant(cipher, {
@@ -112,7 +112,7 @@ test(
           rootTokenDigest: "a".repeat(64),
           requestTokenDigest: "b".repeat(64),
           redirectUri: "http://localhost:3000/oauth/lark/callback",
-          requestedScopes: [...PHASE_2_USER_SCOPES],
+          requestedScopes: [...DRIVE_INVENTORY_USER_SCOPES],
           expiresAt: new Date("2099-01-01T00:00:00.000Z"),
           deliveryJobId: authorizationDeliveryJobId,
           authorizationMessageCiphertext: "encrypted-authorization-message",
@@ -527,7 +527,7 @@ test(
     const runId = randomUUID();
     const rootToken = `integration-root-${suffix}`;
     const grantStore = new PostgresOAuthGrantStore(pool);
-    const phase2Repository = new PostgresPhase2Repository(pool);
+    const organizeFolderRepository = new PostgresOrganizeFolderRepository(pool);
     const cipher = new TokenCipher(Buffer.alloc(32, 19));
     const grant = createEncryptedOAuthGrant(cipher, {
       openId,
@@ -538,18 +538,18 @@ test(
         expiresIn: 7_200,
         refreshTokenExpiresIn: 86_400,
         tokenType: "Bearer",
-        scopes: [...PHASE_2_USER_SCOPES],
+        scopes: [...DRIVE_INVENTORY_USER_SCOPES],
       },
       now: new Date(),
     });
     const tokenBroker = {} as LarkTokenBroker;
-    const runRepository = new PostgresDriveRunRepository({
+    const runRepository = new PostgresDriveInventoryRunRepository({
       pool,
       tokenBroker,
       cipher,
       rootToken,
     });
-    const newerResult: DriveScanFolderResult = {
+    const newerResult: DriveFolderInventoryResult = {
       ok: true,
       inventory: {
         run_id: runId,
@@ -575,7 +575,7 @@ test(
         },
       },
     };
-    const staleResult: DriveScanFolderResult = {
+    const staleResult: DriveFolderInventoryResult = {
       ...newerResult,
       inventory: {
         ...newerResult.inventory!,
@@ -591,7 +591,7 @@ test(
       await runMigrations(pool);
       const savedGrant = await grantStore.save(grant);
       assert.equal(
-        await phase2Repository.createReadyRun({
+        await organizeFolderRepository.createReadyRun({
           id: runId,
           messageId,
           chatId: `oc_scan_lease_${suffix}`,
@@ -705,7 +705,7 @@ test(
     const firstDeliveryJobId = randomUUID();
     const duplicateDeliveryJobId = randomUUID();
     const grantStore = new PostgresOAuthGrantStore(pool);
-    const repository = new PostgresPhase2Repository(pool);
+    const repository = new PostgresOrganizeFolderRepository(pool);
     const cipher = new TokenCipher(Buffer.alloc(32, 23));
 
     try {
@@ -720,7 +720,7 @@ test(
             expiresIn: 7_200,
             refreshTokenExpiresIn: 86_400,
             tokenType: "Bearer",
-            scopes: [...PHASE_2_USER_SCOPES],
+            scopes: [...DRIVE_INVENTORY_USER_SCOPES],
           },
           now: new Date(),
         }),

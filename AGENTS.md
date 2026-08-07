@@ -52,11 +52,11 @@ Do not build speculative orchestration, plugin, memory, or agent infrastructure 
 ## Current implementation status
 
 The first messaging micro-loop is complete.
-The Phase 2 OAuth and read-only Drive inventory code is implemented locally, but Phase 2 has not passed its live Lark exit gate.
+Phase 2 OAuth and read-only Drive inventory passed its live Lark exit gate on 2026-08-07.
 
 - A custom Lark App Bot named `Synvo AI Assistant` exists in the Synvo tenant.
-- The released pilot version is available only to Victor.
-- Direct-message receive and bot-send scopes are enabled.
+- Released app version `0.1.1` is approved and available only to Victor.
+- Direct-message receive, group-message receive, mention receive, bot-send, message-update, and message-resource tenant scopes are approved.
 - The `im.message.receive_v1` event is delivered through a persistent connection.
 - The TypeScript backend receives `/ping` and replies `pong` inside Lark.
 - `/organize-folder <drive-folder-link>` parsing, exact root allowlisting, OAuth state and PKCE handling, encrypted token persistence and refresh, PostgreSQL workflow state, and a bounded read-only Drive MCP tool are implemented.
@@ -66,17 +66,30 @@ The Phase 2 OAuth and read-only Drive inventory code is implemented locally, but
 - Retryable scan failures release the run for a fresh claim, while retry exhaustion produces a generic encrypted no-change message and terminal run state.
 - Root and destination contents are reconciled before success, and untrusted Lark display values are sanitized before Lark rendering.
 - `npm run typecheck` passes.
-- The default unit and contract suite discovers 237 tests, and all 237 pass.
-- The separate Docker-backed PostgreSQL integration suite discovers five tests, and all five pass against the migrated local database.
+- All default unit and contract suites pass.
+- Five Phase 2 and one Phase 3 Docker-backed PostgreSQL integration tests pass against the migrated local database.
 - A verified local backend run reported `status: ok`, Phase 2, and read-only Drive mode while its persistent Lark connection was ready.
-- The redacted `npm run verify:phase2-live` exit verifier is implemented and currently reports `pending` with `NO_LIVE_RUN`, which is the expected pre-OAuth state.
-- The safe `npm run pin:phase2-identity` bootstrap helper is implemented and currently reports `pending` with `NO_VERIFIED_RUN`; after a verified bootstrap delivery, it will atomically pin the matching identity pair without printing it.
+- Victor completed the browser OAuth flow with exactly the three Phase 2 read-only user scopes.
+- The bootstrap inventory returned exactly two empty approved folders, four PDF files, no unsupported root item, and matching owner signals without opening, downloading, or changing a file.
+- `npm run pin:pilot-identity` pinned the verified Victor and Synvo tenant identity pair in ignored private configuration without printing either value.
+- The post-pin rerun reused the stored OAuth grant, returned the same inventory without reauthorization, and kept the Drive hierarchy unchanged.
+- The redacted `npm run verify:readonly-inventory` exit verifier returned `pass` with exit code `0` for the pinned rerun.
 
-The live Phase 2 gate still requires the three read-only user scopes, the exact OAuth redirect, a restricted app release and any required tenant-admin approval, and Victor's initial OAuth consent.
-After that bootstrap run, pin the verified Victor and Synvo tenant identity pair in private configuration without printing it, restart the backend, and run the inventory again with the static allowlist active.
-Phase 2 closes only after the pinned rerun visibly returns the exact two-folder and four-file inventory in Lark and `npm run verify:phase2-live` returns `pass` with exit code `0`.
-Do not claim live OAuth, live Drive access, or Phase 2 completion until that gate passes.
-GPT analysis, approval cards, file moves, write verification, and undo remain unimplemented future phases.
+Phase 2 is complete.
+Phase 3 passed its live one-file capability-spike exit gate on 2026-08-07.
+
+- Victor reauthorized with an isolated Phase 3 grant containing exactly the three Phase 2 scopes plus `space:document:move`.
+- The normal MCP server still exposes only the bounded read-only inventory tool; the move harness is operator-only.
+- Versioned migration `0003_phase3_move_spike.sql` adds isolated scope profiles, durable mutation batches, and unique per-direction move attempts.
+- The prepared operation named one disposable PDF and the exact `root -> Research -> root` path before Victor explicitly confirmed it.
+- The forward move and restoration were each verified from observed Lark Drive state.
+- The live Phase 3 verifier confirmed two verified directions, exact baseline restoration, a disabled write switch, two approved folders, four root PDFs, empty destinations, no unsupported items, and matching owner signals.
+- The Phase 2 live verifier remained passing after the mutation spike.
+- Type checking, all unit and contract suites, five Phase 2 PostgreSQL integration tests, one Phase 3 PostgreSQL integration test, and the idempotent migration check pass.
+
+Phase 3 is complete.
+The next milestone is Phase 4: a read-only immutable snapshot and deterministic fixture-label proposal returned in Lark.
+GPT analysis, approval cards, multi-file execution, and user-facing undo remain unimplemented future phases.
 
 ## Active implementation pilot: `/organize-folder`
 
@@ -179,18 +192,19 @@ This stage is complete for the local connection spike.
 - Return a bounded metadata-only inventory inside Lark.
 - Make no Drive changes.
 
-The Stage 1 code is implemented locally.
-The stage remains incomplete until the console, admin, OAuth, database, and live inventory checks pass.
+Stage 1 is implemented and verified live.
+It is complete after the pinned rerun and passing redacted exit verifier.
 
 #### Stage 2: one-file Drive capability spike
 
-- Add the narrow move scope only after the read-only Stage 1 gate passes.
+- Request the already app-approved narrow move scope in a new exact Phase 3 OAuth grant only after the read-only Stage 1 gate passes.
 - Move one known PDF to one approved destination under a narrowly enabled write flag.
 - Verify the observed destination.
 - Move the same PDF back to the root.
 - Verify the restored parent.
 
-This future stage uses deterministic code and no GPT.
+This stage is complete and used deterministic code with no GPT.
+The exact baseline was restored, the write window closed on process exit, and both Phase 2 and Phase 3 live verifiers passed.
 
 #### Stage 3: read-only folder map and proposal
 
@@ -297,13 +311,20 @@ Deterministic application code must:
 Use least-privilege Lark scopes.
 Bot messaging and My Space access are separate authorization concerns.
 
-The current bot tenant scopes are:
+Released app version `0.1.1` has these approved bot tenant scopes:
 
 - `im:message.p2p_msg:readonly`
 - `im:message:send_as_bot`
+- `im:message:update`
+- `im:resource`
+- `im:message.group_at_msg:readonly`
+- `im:message.group_msg:readonly`
 
 The Drive pilot uses user OAuth so access follows Victor's My Space permissions.
-The minimum Phase 2 user scopes are:
+Lark app approval, a user's OAuth grant, the runtime tool surface, and the master write switch are separate authorization gates.
+Version `0.1.1` has a broad set of future-facing user scopes approved at the app level, but app approval alone does not grant a workflow access or expose a tool.
+
+The verified Phase 2 OAuth grant contains exactly:
 
 - `space:document:retrieve`
 - `drive:drive.metadata:readonly`
@@ -312,8 +333,17 @@ The minimum Phase 2 user scopes are:
 The narrow metadata scope is required because the current read-only scan verifies the selected root folder's title and owner through the batch metadata API.
 The folder-list scope alone returns child metadata but does not return the selected root as its own child.
 
-Do not add `space:document:move` until the separately approved Phase 3 capability spike.
-Do not add `drive:file:download`, `drive:file:readonly`, `drive:drive:readonly`, or the broad `drive:drive` scope during Phase 2.
+The isolated verified Phase 3 OAuth grant contains exactly:
+
+- `space:document:retrieve`
+- `drive:drive.metadata:readonly`
+- `offline_access`
+- `space:document:move`
+
+The Phase 3 move harness is operator-only and is not exposed by the normal MCP server.
+Its write flag is false in persistent configuration and may be enabled only in the explicitly confirmed operator process.
+Do not request or use `drive:file:download`, `drive:file:readonly`, `drive:drive:readonly`, the broad `drive:drive` scope, or any other approved future scope in this workflow without a later phase explicitly requiring and reviewing it.
+Phase 4 must remain read-only and must not expose the operator harness as a production MCP tool.
 
 The app's released availability must remain restricted to the pilot user while this is a personal My Space test.
 The isolated `Test Companies & Users` tenant must not be used for this sandbox because it cannot access Victor's Synvo-tenant My Space.

@@ -16,19 +16,19 @@ import {
   writeFile,
 } from "node:fs/promises";
 
-import { driveScanResultAssociatedData } from "@synvo/contracts";
-import { PHASE_2_USER_SCOPES, TokenCipher } from "@synvo/lark-auth";
-import { digestFolderToken } from "@synvo/synvo-lark-mcp/drive";
+import { driveFolderInventoryResultAssociatedData } from "@synvo/contracts";
+import { DRIVE_INVENTORY_USER_SCOPES, TokenCipher } from "@synvo/lark-auth";
+import { digestFolderToken } from "@synvo/lark-mcp/drive";
 
 import type { AppConfig } from "../config.js";
 import {
-  phase2IdentityPinExitCode,
-  pinPhase2IdentityEnvFile,
-  planPhase2IdentityEnvUpdate,
-  runPhase2IdentityPin,
-  serializePhase2IdentityPinReport,
-} from "./phase2-identity-pin.js";
-import { verifyPhase2LiveForIdentityPin } from "./phase2-live.js";
+  pilotIdentityPinExitCode,
+  pinPilotIdentityEnvFile,
+  planPilotIdentityEnvUpdate,
+  runPilotIdentityPin,
+  serializePilotIdentityPinReport,
+} from "./pin-pilot-identity.js";
+import { verifyReadonlyInventoryForIdentityPin } from "./verify-readonly-inventory.js";
 
 const runId = "cb501391-e7bb-44c7-a341-e555ad43018c";
 const grantId = "86f732d0-9c00-4513-b460-9995175e47c7";
@@ -106,7 +106,7 @@ function inventory() {
 function encryptedResult(): string {
   return TokenCipher.fromEncodedKey(encryptionKey).encrypt(
     JSON.stringify({ ok: true, inventory: inventory() }),
-    driveScanResultAssociatedData(runId),
+    driveFolderInventoryResultAssociatedData(runId),
   );
 }
 
@@ -123,7 +123,7 @@ function completedRow(overrides: Record<string, unknown> = {}) {
     grant_id: grantId,
     grant_open_id: openId,
     grant_tenant_key: tenantKey,
-    granted_scopes: [...PHASE_2_USER_SCOPES],
+    granted_scopes: [...DRIVE_INVENTORY_USER_SCOPES],
     refresh_expires_at: new Date("2026-09-07T01:00:00.000Z"),
     refresh_version: 1,
     revoked_at: null,
@@ -151,7 +151,7 @@ async function withTemporaryDirectory(
 
 test("plans a canonical append while preserving all unrelated environment text", () => {
   const original = "FIRST=value\n# retained comment\nLAST=value";
-  const plan = planPhase2IdentityEnvUpdate(original, { openId, tenantKey });
+  const plan = planPilotIdentityEnvUpdate(original, { openId, tenantKey });
 
   assert.equal(plan.action, "update");
   if (plan.action === "update") {
@@ -164,7 +164,7 @@ test("plans a canonical append while preserving all unrelated environment text",
 });
 
 test("accepts a matching canonical pair as a no-op", () => {
-  const plan = planPhase2IdentityEnvUpdate(
+  const plan = planPilotIdentityEnvUpdate(
     `A=1\nLARK_AUTHORIZED_OPEN_ID=${openId}\n` +
       `LARK_AUTHORIZED_TENANT_KEY=${tenantKey}\nB=2\n`,
     { openId, tenantKey },
@@ -217,7 +217,7 @@ test("rejects duplicate, partial, malformed, mismatched, and unsafe identity val
   for (const entry of cases) {
     await t.test(entry.name, () => {
       assert.throws(
-        () => planPhase2IdentityEnvUpdate(entry.contents, entry.identity),
+        () => planPilotIdentityEnvUpdate(entry.contents, entry.identity),
         { message: entry.code },
       );
     });
@@ -230,7 +230,7 @@ test("atomically pins the pair, preserves unrelated lines, and forces mode 0600"
     const original = "APP_SECRET=sensitive-existing-secret\nFLAG=false\n";
     await writeFile(envFile, original, { mode: 0o644 });
 
-    const result = await pinPhase2IdentityEnvFile(envFile, {
+    const result = await pinPilotIdentityEnvFile(envFile, {
       openId,
       tenantKey,
     });
@@ -254,7 +254,7 @@ test("matching preexisting values are a no-op apart from enforcing mode 0600", a
       `LARK_AUTHORIZED_TENANT_KEY=${tenantKey}\n`;
     await writeFile(envFile, original, { mode: 0o644 });
 
-    const result = await pinPhase2IdentityEnvFile(envFile, {
+    const result = await pinPilotIdentityEnvFile(envFile, {
       openId,
       tenantKey,
     });
@@ -274,7 +274,7 @@ test("rejects symlink and nonregular targets without changing them", async (t) =
       await symlink(target, envFile);
 
       await assert.rejects(
-        pinPhase2IdentityEnvFile(envFile, { openId, tenantKey }),
+        pinPilotIdentityEnvFile(envFile, { openId, tenantKey }),
         { message: "ENV_FILE_UNSAFE" },
       );
       assert.equal(await readFile(target, "utf8"), "UNCHANGED=true\n");
@@ -287,7 +287,7 @@ test("rejects symlink and nonregular targets without changing them", async (t) =
       const envFile = join(directory, ".env");
       await mkdir(envFile);
       await assert.rejects(
-        pinPhase2IdentityEnvFile(envFile, { openId, tenantKey }),
+        pinPilotIdentityEnvFile(envFile, { openId, tenantKey }),
         { message: "ENV_FILE_UNSAFE" },
       );
     });
@@ -295,7 +295,7 @@ test("rejects symlink and nonregular targets without changing them", async (t) =
 });
 
 test("bootstrap verifier exposes the identity only after the complete gate passes", async () => {
-  const passing = await verifyPhase2LiveForIdentityPin({
+  const passing = await verifyReadonlyInventoryForIdentityPin({
     config: config(),
     reader: reader(completedRow()),
     now,
@@ -303,7 +303,7 @@ test("bootstrap verifier exposes the identity only after the complete gate passe
   assert.equal(passing.report.status, "pass");
   assert.deepEqual(passing.identity, { openId, tenantKey });
 
-  const failing = await verifyPhase2LiveForIdentityPin({
+  const failing = await verifyReadonlyInventoryForIdentityPin({
     config: config(),
     reader: reader(completedRow({ delivery_state: "PENDING" })),
     now,
@@ -315,7 +315,7 @@ test("bootstrap verifier exposes the identity only after the complete gate passe
 test("service pins only a fully verified matching identity", async () => {
   let receivedPath: string | undefined;
   let receivedIdentity: { openId: string; tenantKey: string } | undefined;
-  const result = await runPhase2IdentityPin({
+  const result = await runPilotIdentityPin({
     config: config(),
     reader: reader(completedRow()),
     envFilePath: "/sensitive/path/.env",
@@ -337,12 +337,12 @@ test("service pins only a fully verified matching identity", async () => {
   });
   assert.equal(receivedPath, "/sensitive/path/.env");
   assert.deepEqual(receivedIdentity, { openId, tenantKey });
-  assert.equal(phase2IdentityPinExitCode(result), 0);
+  assert.equal(pilotIdentityPinExitCode(result), 0);
 });
 
 test("service returns pending without touching the environment when no run exists", async () => {
   let writes = 0;
-  const result = await runPhase2IdentityPin({
+  const result = await runPilotIdentityPin({
     config: config(),
     reader: reader(null),
     envFilePath: "/sensitive/path/.env",
@@ -358,7 +358,7 @@ test("service returns pending without touching the environment when no run exist
   assert.equal(result.live_verification_code, "NO_LIVE_RUN");
   assert.equal(result.identity_pinned, false);
   assert.equal(writes, 0);
-  assert.equal(phase2IdentityPinExitCode(result), 2);
+  assert.equal(pilotIdentityPinExitCode(result), 2);
 });
 
 test("service fails without touching the environment for every gate or identity mismatch", async (t) => {
@@ -389,7 +389,7 @@ test("service fails without touching the environment for every gate or identity 
   for (const entry of cases) {
     await t.test(entry.name, async () => {
       let writes = 0;
-      const result = await runPhase2IdentityPin({
+      const result = await runPilotIdentityPin({
         config: entry.selectedConfig,
         reader: reader(entry.row),
         envFilePath: "/sensitive/path/.env",
@@ -402,13 +402,13 @@ test("service fails without touching the environment for every gate or identity 
       assert.equal(result.status, "fail");
       assert.equal(result.pin_code, entry.pinCode);
       assert.equal(writes, 0);
-      assert.equal(phase2IdentityPinExitCode(result), 1);
+      assert.equal(pilotIdentityPinExitCode(result), 1);
     });
   }
 });
 
 test("service maps environment failures to safe codes", async () => {
-  const result = await runPhase2IdentityPin({
+  const result = await runPilotIdentityPin({
     config: config(),
     reader: reader(completedRow()),
     envFilePath: "/sensitive/path/.env",
@@ -426,14 +426,14 @@ test("service maps environment failures to safe codes", async () => {
 
 test("CLI serializer emits only safe enums and booleans", async () => {
   const ciphertext = completedRow().scan_result_ciphertext as string;
-  const result = await runPhase2IdentityPin({
+  const result = await runPilotIdentityPin({
     config: config(),
     reader: reader(completedRow()),
     envFilePath: "/sensitive/path/.env",
     now,
     writeIdentity: async () => "ALREADY_PINNED",
   });
-  const output = serializePhase2IdentityPinReport(result);
+  const output = serializePilotIdentityPinReport(result);
   const parsed = JSON.parse(output) as Record<string, unknown>;
 
   assert.deepEqual(Object.keys(parsed).sort(), [
@@ -473,7 +473,7 @@ test("CLI serializer emits only safe enums and booleans", async () => {
 
 test("CLI emits a safe config failure without inheriting secret environment values", async () => {
   const scriptPath = fileURLToPath(
-    new URL("./phase2-identity-pin.ts", import.meta.url),
+    new URL("./pin-pilot-identity.ts", import.meta.url),
   );
   const result = await new Promise<{
     exitCode: number | null;

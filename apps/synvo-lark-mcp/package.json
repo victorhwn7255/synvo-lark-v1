@@ -1,5 +1,5 @@
 {
-  "name": "@synvo/synvo-lark-mcp",
+  "name": "@synvo/lark-mcp",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,10 @@
   "scripts": {
     "dev": "node --env-file=../assistant-backend/.env --import tsx src/index.ts",
     "start": "node --import tsx src/index.ts",
-    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "drive-spike:prepare": "node --env-file=../assistant-backend/.env --import tsx tools/drive-move-spike/cli.ts prepare",
+    "drive-spike:execute": "node --env-file=../assistant-backend/.env --import tsx tools/drive-move-spike/cli.ts execute",
+    "verify:drive-spike": "node --env-file=../assistant-backend/.env --import tsx tools/drive-move-spike/live-verifier.ts",
+    "test": "node --import tsx --test \"src/**/*.test.ts\" \"tools/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

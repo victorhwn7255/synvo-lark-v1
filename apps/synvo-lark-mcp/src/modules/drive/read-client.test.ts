@@ -6,12 +6,12 @@ import type {
   DriveListPage,
   DriveReader,
   NativeDriveMetadata,
-} from "./client.js";
+} from "./read-client.js";
 import {
   LarkDriveReader,
   larkBatchMetadataDocumentLimit,
   listFolderCompletely,
-} from "./client.js";
+} from "./read-client.js";
 import { DriveToolError } from "./errors.js";
 
 class PageReader implements DriveReader {

@@ -87,7 +87,7 @@ export async function runMigrations(
   return appliedNames;
 }
 
-const requiredPhase2Tables = [
+const requiredTables = [
   "inbox_events",
   "lark_oauth_grants",
   "lark_oauth_sessions",
@@ -105,7 +105,7 @@ function isUndefinedTableError(error: unknown): boolean {
   );
 }
 
-export async function isPhase2SchemaReady(
+export async function isDatabaseSchemaReady(
   pool: Pick<Pool, "query">,
   directory = migrationsDirectory,
 ): Promise<boolean> {
@@ -124,7 +124,7 @@ export async function isPhase2SchemaReady(
       .map((row) => row.table_name)
       .filter((name): name is string => typeof name === "string"),
   );
-  if (!requiredPhase2Tables.every((name) => observedTables.has(name))) {
+  if (!requiredTables.every((name) => observedTables.has(name))) {
     return false;
   }
 

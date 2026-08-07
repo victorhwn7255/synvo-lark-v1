@@ -1,3 +1,9 @@
+# Claude Code instructions
+
+Read and follow `AGENTS.md` first.
+`AGENTS.md` is the canonical project contract, current implementation status, safety boundary, and engineering guide.
+This file contains only additional Claude Code working preferences and must not override `AGENTS.md`.
+
 # Application vision
 
 Build an AI-powered work assistant inside Lark that lets Synvo AI team members use natural-language conversations to access powerful GPT and Codex capabilities, execute approved tools, and automate repetitive daily workflows—without leaving Lark. Turn Lark from a communication tool into an AI-enabled workspace where team members can ask questions, retrieve company knowledge, analyze repositories, create content, and execute operational or engineering workflows through a trusted internal AI assistant.

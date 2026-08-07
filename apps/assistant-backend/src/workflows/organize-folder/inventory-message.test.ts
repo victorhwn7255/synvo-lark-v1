@@ -3,7 +3,7 @@ import test from "node:test";
 
 import type { DriveInventory } from "@synvo/contracts";
 
-import { formatDriveInventory } from "./format-inventory.js";
+import { formatDriveInventory } from "./inventory-message.js";
 
 function inventory(overrides: {
   rootName?: string;

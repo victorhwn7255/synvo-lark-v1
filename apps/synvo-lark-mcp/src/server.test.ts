@@ -4,19 +4,19 @@ import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import type { DriveScanFolderResult } from "@synvo/contracts";
+import type { DriveFolderInventoryResult } from "@synvo/contracts";
 import { LarkAuthError, type LarkAuthErrorCode } from "@synvo/lark-auth";
 
-import type { DriveReader } from "./modules/drive/client.js";
+import type { DriveReader } from "./modules/drive/read-client.js";
 import { driveToolError } from "./modules/drive/errors.js";
-import type { PostgresDriveRunRepository } from "./repositories/run-context.js";
+import type { PostgresDriveInventoryRunRepository } from "./repositories/inventory-run.js";
 import { createSynvoLarkMcpServer } from "./server.js";
 
 const runId = "4d872758-1f71-4ed8-b141-a2d193ceea91";
 
 async function callToolWithAuthError(error: LarkAuthError): Promise<{
   failedCode: string | null;
-  result: DriveScanFolderResult;
+  result: DriveFolderInventoryResult;
 }> {
   let failedCode: string | null = null;
   const runRepository = {
@@ -33,12 +33,12 @@ async function callToolWithAuthError(error: LarkAuthError): Promise<{
     async fail(
       _runId: string,
       scanAttempt: number,
-      result: DriveScanFolderResult,
+      result: DriveFolderInventoryResult,
     ) {
       assert.equal(scanAttempt, 7);
       failedCode = result.error?.code ?? null;
     },
-  } as unknown as PostgresDriveRunRepository;
+  } as unknown as PostgresDriveInventoryRunRepository;
   const driveReader = {
     async listFolderPage() {
       throw new Error("unused");
@@ -48,7 +48,7 @@ async function callToolWithAuthError(error: LarkAuthError): Promise<{
     },
   } as DriveReader;
   const server = createSynvoLarkMcpServer({ runRepository, driveReader });
-  const client = new Client({ name: "phase2-error-test", version: "0.1.0" });
+  const client = new Client({ name: "inventory-error-test", version: "0.1.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
   try {
@@ -57,12 +57,12 @@ async function callToolWithAuthError(error: LarkAuthError): Promise<{
       client.connect(clientTransport),
     ]);
     const response = await client.callTool({
-      name: "drive_scan_folder",
+      name: "drive_get_folder_inventory",
       arguments: { run_id: runId },
     });
     return {
       failedCode,
-      result: response.structuredContent as DriveScanFolderResult,
+      result: response.structuredContent as DriveFolderInventoryResult,
     };
   } finally {
     await client.close();
@@ -77,7 +77,7 @@ test("exposes only the bounded read-only Drive inventory tool", async () => {
     },
     async complete() {},
     async fail() {},
-  } as unknown as PostgresDriveRunRepository;
+  } as unknown as PostgresDriveInventoryRunRepository;
   const driveReader = {
     async listFolderPage() {
       throw new Error("unused");
@@ -87,7 +87,7 @@ test("exposes only the bounded read-only Drive inventory tool", async () => {
     },
   } as DriveReader;
   const server = createSynvoLarkMcpServer({ runRepository, driveReader });
-  const client = new Client({ name: "phase2-contract-test", version: "0.1.0" });
+  const client = new Client({ name: "inventory-contract-test", version: "0.1.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
   try {
@@ -98,7 +98,7 @@ test("exposes only the bounded read-only Drive inventory tool", async () => {
     const tools = await client.listTools();
     assert.deepEqual(
       tools.tools.map((tool) => tool.name),
-      ["drive_scan_folder"],
+      ["drive_get_folder_inventory"],
     );
     assert.deepEqual(
       Object.keys(tools.tools[0]?.inputSchema.properties ?? {}),
@@ -119,7 +119,7 @@ test("rejects every MCP argument except the server-owned run ID", async () => {
     },
     async complete() {},
     async fail() {},
-  } as unknown as PostgresDriveRunRepository;
+  } as unknown as PostgresDriveInventoryRunRepository;
   const driveReader = {
     async listFolderPage() {
       throw new Error("unused");
@@ -129,7 +129,7 @@ test("rejects every MCP argument except the server-owned run ID", async () => {
     },
   } as DriveReader;
   const server = createSynvoLarkMcpServer({ runRepository, driveReader });
-  const client = new Client({ name: "phase2-strict-input-test", version: "0.1.0" });
+  const client = new Client({ name: "inventory-strict-input-test", version: "0.1.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
   try {
@@ -139,7 +139,7 @@ test("rejects every MCP argument except the server-owned run ID", async () => {
     ]);
     const privateValue = "must-not-cross-the-boundary";
     const response = await client.callTool({
-      name: "drive_scan_folder",
+      name: "drive_get_folder_inventory",
       arguments: { run_id: runId, access_token: privateValue },
     });
     assert.equal(response.isError, true);
@@ -165,7 +165,7 @@ test("does not fail a run that the MCP process did not claim", async () => {
     async fail() {
       failCalls += 1;
     },
-  } as unknown as PostgresDriveRunRepository;
+  } as unknown as PostgresDriveInventoryRunRepository;
   const driveReader = {
     async listFolderPage() {
       throw new Error("unused");
@@ -175,7 +175,7 @@ test("does not fail a run that the MCP process did not claim", async () => {
     },
   } as DriveReader;
   const server = createSynvoLarkMcpServer({ runRepository, driveReader });
-  const client = new Client({ name: "phase2-lease-test", version: "0.1.0" });
+  const client = new Client({ name: "inventory-lease-test", version: "0.1.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
   try {
@@ -184,10 +184,10 @@ test("does not fail a run that the MCP process did not claim", async () => {
       client.connect(clientTransport),
     ]);
     const response = await client.callTool({
-      name: "drive_scan_folder",
+      name: "drive_get_folder_inventory",
       arguments: { run_id: runId },
     });
-    const result = response.structuredContent as DriveScanFolderResult;
+    const result = response.structuredContent as DriveFolderInventoryResult;
     assert.equal(result.ok, false);
     assert.equal(result.error?.code, "RUN_NOT_READY");
     assert.equal(result.error?.retryable, true);

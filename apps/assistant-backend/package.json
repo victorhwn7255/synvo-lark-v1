@@ -10,8 +10,8 @@
     "dev": "node --env-file=.env --import tsx src/index.ts",
     "start": "node --import tsx src/index.ts",
     "migrate": "node --env-file=.env --import tsx src/db/migrate.ts",
-    "pin:phase2-identity": "node --env-file=.env --import tsx src/verification/phase2-identity-pin.ts",
-    "verify:phase2-live": "node --env-file=.env --import tsx src/verification/phase2-live.ts",
+    "pin:pilot-identity": "node --env-file=.env --import tsx src/verification/pin-pilot-identity.ts",
+    "verify:readonly-inventory": "node --env-file=.env --import tsx src/verification/verify-readonly-inventory.ts",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
@@ -20,7 +20,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@synvo/contracts": "0.1.0",
     "@synvo/lark-auth": "0.1.0",
-    "@synvo/synvo-lark-mcp": "0.1.0",
+    "@synvo/lark-mcp": "0.1.0",
     "pg": "^8.22.0",
     "zod": "^4.4.3"
   },

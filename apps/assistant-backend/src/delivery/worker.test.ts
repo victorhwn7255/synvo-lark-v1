@@ -98,7 +98,7 @@ test("persists a scan result before idempotent Lark delivery", async () => {
   const worker = new DeliveryWorker({
     queue,
     cipher: new TokenCipher(Buffer.alloc(32, 3)),
-    scanFolder: async () => "bounded inventory",
+    prepareMessage: async () => "bounded inventory",
     finalizeExhaustedScan: finalizeWithQueue(queue),
     sendText: async (chatId, text, key) => {
       sent.push({ chatId, text, key });
@@ -128,7 +128,7 @@ test("retries delivery with the stored payload and the same message UUID", async
   const worker = new DeliveryWorker({
     queue,
     cipher,
-    scanFolder: async () => {
+    prepareMessage: async () => {
       scanCalls += 1;
       return "recoverable inventory";
     },
@@ -173,7 +173,7 @@ test("delivers a stored text payload without invoking a scan", async () => {
   const worker = new DeliveryWorker({
     queue,
     cipher,
-    scanFolder: async () => {
+    prepareMessage: async () => {
       scanCalls += 1;
       return "unexpected";
     },
@@ -196,7 +196,7 @@ test("uses exponential retry delay for a retryable scan failure", async () => {
   const worker = new DeliveryWorker({
     queue,
     cipher: new TokenCipher(Buffer.alloc(32, 6)),
-    scanFolder: async () => {
+    prepareMessage: async () => {
       throw new Error("temporary scan failure");
     },
     finalizeExhaustedScan: finalizeWithQueue(queue),
@@ -231,7 +231,7 @@ test("fails an expired job instead of retrying it", async () => {
   const worker = new DeliveryWorker({
     queue,
     cipher,
-    scanFolder: async () => "unused",
+    prepareMessage: async () => "unused",
     finalizeExhaustedScan: finalizeWithQueue(queue),
     sendText: async () => {
       throw new Error("temporary send failure");
@@ -253,7 +253,7 @@ test("finalizes and reports an exhausted scan without exposing its error", async
   const worker = new DeliveryWorker({
     queue,
     cipher,
-    scanFolder: async () => {
+    prepareMessage: async () => {
       throw new Error("provider response included a sensitive request ID");
     },
     finalizeExhaustedScan: async (job, payloadCiphertext) => {
@@ -302,7 +302,7 @@ test("preserves expiration instead of finalizing an exhausted scan", async () =>
   const worker = new DeliveryWorker({
     queue,
     cipher: new TokenCipher(Buffer.alloc(32, 15)),
-    scanFolder: async () => {
+    prepareMessage: async () => {
       throw new Error("temporary scan failure");
     },
     finalizeExhaustedScan: async () => {
@@ -339,7 +339,7 @@ test("preserves exhausted Lark send failure behavior after a scan payload exists
   const worker = new DeliveryWorker({
     queue,
     cipher,
-    scanFolder: async () => "unused",
+    prepareMessage: async () => "unused",
     finalizeExhaustedScan: async () => {
       finalizationCalls += 1;
       return true;
@@ -363,7 +363,7 @@ test("does not send an exhausted scan failure after losing its finalization leas
   const worker = new DeliveryWorker({
     queue,
     cipher: new TokenCipher(Buffer.alloc(32, 14)),
-    scanFolder: async () => {
+    prepareMessage: async () => {
       throw new Error("temporary scan failure");
     },
     finalizeExhaustedScan: async () => false,
@@ -387,7 +387,7 @@ test("fails a missing or undecryptable payload without an endless retry", async 
       const worker = new DeliveryWorker({
         queue,
         cipher: new TokenCipher(Buffer.alloc(32, 9)),
-        scanFolder: async () => "unused",
+        prepareMessage: async () => "unused",
         finalizeExhaustedScan: finalizeWithQueue(queue),
         sendText: async () => {
           throw new Error("must not send");
@@ -419,7 +419,7 @@ test("retries safely when the completion lease is lost after send", async () => 
   const worker = new DeliveryWorker({
     queue,
     cipher,
-    scanFolder: async () => "unused",
+    prepareMessage: async () => "unused",
     finalizeExhaustedScan: finalizeWithQueue(queue),
     sendText: async (_chatId, _text, key) => {
       sentKeys.push(key);
@@ -436,7 +436,7 @@ test("rejects unsafe worker timing and retry options", () => {
   const base = {
     queue: new FakeQueue(),
     cipher: new TokenCipher(Buffer.alloc(32, 12)),
-    scanFolder: async () => "unused",
+    prepareMessage: async () => "unused",
     finalizeExhaustedScan: async () => true,
     sendText: async () => {},
   };

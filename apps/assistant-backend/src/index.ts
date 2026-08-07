@@ -3,23 +3,25 @@ import { randomUUID } from "node:crypto";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import {
   LarkOAuthHttpClient,
+  DRIVE_MOVE_SPIKE_SCOPE_PROFILE,
+  DRIVE_MOVE_SPIKE_USER_SCOPES,
   PostgresOAuthGrantStore,
   TokenCipher,
 } from "@synvo/lark-auth";
 
-import { parseCommand } from "./commands.js";
+import { parseCommand } from "./command-parser.js";
 import { loadConfig } from "./config.js";
-import { isPhase2SchemaReady } from "./db/migrate.js";
+import { isDatabaseSchemaReady } from "./db/migrate.js";
 import { createDatabasePool } from "./db/pool.js";
 import { encryptDeliveryMessage } from "./delivery/crypto.js";
 import { PostgresDeliveryQueue } from "./delivery/repository.js";
 import { DeliveryWorker } from "./delivery/worker.js";
-import { startPhase2HttpServer } from "./http/server.js";
+import { startAssistantHttpServer } from "./http/server.js";
 import { SynvoLarkMcpClient } from "./mcp/client.js";
 import { LarkOAuthService } from "./oauth/service.js";
 import { PostgresInbox } from "./repositories/inbox.js";
-import { PostgresPhase2Repository } from "./repositories/phase2.js";
-import { OrganizeFolderWorkflow } from "./workflows/organize-folder/service.js";
+import { PostgresOrganizeFolderRepository } from "./repositories/organize-folder.js";
+import { OrganizeFolderWorkflow } from "./workflows/organize-folder/workflow.js";
 
 function readTextContent(content: string | undefined): string | null {
   if (!content) {
@@ -47,7 +49,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   if (config.organizeFolderWriteEnabled) {
     throw new Error(
-      "ORGANIZE_FOLDER_WRITE_ENABLED must remain false during Phase 2",
+      "ORGANIZE_FOLDER_WRITE_ENABLED must remain false in the assistant backend",
     );
   }
 
@@ -61,12 +63,16 @@ async function main(): Promise<void> {
     appType: Lark.AppType.SelfBuild,
   });
   const pool = createDatabasePool(config.databaseUrl);
-  if (!(await isPhase2SchemaReady(pool))) {
-    throw new Error("Phase 2 database schema is not ready; run migrations");
+  if (!(await isDatabaseSchemaReady(pool))) {
+    throw new Error("The assistant database schema is not ready; run migrations");
   }
   const cipher = TokenCipher.fromEncodedKey(config.oauthTokenEncryptionKey);
-  const grantStore = new PostgresOAuthGrantStore(pool);
-  const repository = new PostgresPhase2Repository(pool);
+  const grantStore = new PostgresOAuthGrantStore(pool, {
+    scopeProfile: DRIVE_MOVE_SPIKE_SCOPE_PROFILE,
+  });
+  const repository = new PostgresOrganizeFolderRepository(pool, {
+    workflowVariant: "drive_move_spike",
+  });
   const inbox = new PostgresInbox(pool);
   const oauthService = new LarkOAuthService({
     appId: config.appId,
@@ -78,6 +84,8 @@ async function main(): Promise<void> {
     repository,
     authorizedOpenId: config.authorizedOpenId,
     authorizedTenantKey: config.authorizedTenantKey,
+    requiredScopes: DRIVE_MOVE_SPIKE_USER_SCOPES,
+    authorizationPurpose: "one-file move spike",
   });
   const mcpClient = new SynvoLarkMcpClient(config);
   const workflow = new OrganizeFolderWorkflow({
@@ -86,6 +94,8 @@ async function main(): Promise<void> {
     repository,
     oauthService,
     mcpClient,
+    requiredScopes: DRIVE_MOVE_SPIKE_USER_SCOPES,
+    authorizationPurpose: "one-file move spike",
   });
 
   const sendText = async (
@@ -124,7 +134,7 @@ async function main(): Promise<void> {
   const deliveryWorker = new DeliveryWorker({
     queue: deliveryQueue,
     cipher,
-    scanFolder: (runId) => workflow.scan(runId),
+    prepareMessage: (runId) => workflow.buildInventoryMessage(runId),
     finalizeExhaustedScan: async (job, payloadCiphertext) => {
       if (!job.runId || job.kind !== "ORGANIZE_FOLDER_SCAN") {
         return false;
@@ -256,11 +266,12 @@ async function main(): Promise<void> {
     },
   });
 
-  const httpServer = await startPhase2HttpServer({
+  const httpServer = await startAssistantHttpServer({
     host: config.httpHost,
     port: config.httpPort,
     oauthService,
-    healthCheck: async () => isPhase2SchemaReady(pool),
+    healthCheck: async () => isDatabaseSchemaReady(pool),
+    authorizationMode: "drive_move_spike",
   });
   deliveryWorker.start();
 

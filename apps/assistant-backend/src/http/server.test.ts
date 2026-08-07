@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 
-import { createPhase2HttpHandler } from "./server.js";
+import { createAssistantHttpHandler } from "./server.js";
 
 async function withServer(
-  handler: ReturnType<typeof createPhase2HttpHandler>,
+  handler: ReturnType<typeof createAssistantHttpHandler>,
   run: (origin: string) => Promise<void>,
 ): Promise<void> {
   const server = createServer(handler);
@@ -21,8 +21,8 @@ async function withServer(
   }
 }
 
-test("reports read-only Phase 2 health", async () => {
-  const handler = createPhase2HttpHandler({
+test("reports read-only inventory health", async () => {
+  const handler = createAssistantHttpHandler({
     oauthService: {
       async beginAuthorization() {
         throw new Error("unused");
@@ -39,7 +39,7 @@ test("reports read-only Phase 2 health", async () => {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
       status: "ok",
-      phase: 2,
+      authorization_mode: "read_only_inventory",
       drive_mode: "read_only",
     });
     const csp = response.headers.get("content-security-policy") ?? "";
@@ -48,9 +48,38 @@ test("reports read-only Phase 2 health", async () => {
   });
 });
 
+test("reports the Drive move spike as read-only preflight and explains separate move confirmation", async () => {
+  const handler = createAssistantHttpHandler({
+    authorizationMode: "drive_move_spike",
+    oauthService: {
+      async beginAuthorization() {
+        throw new Error("unused");
+      },
+      async completeAuthorization() {
+        throw new Error("unused");
+      },
+    },
+    healthCheck: async () => true,
+  });
+  await withServer(handler, async (origin) => {
+    const health = await fetch(`${origin}/health`);
+    assert.deepEqual(await health.json(), {
+      status: "ok",
+      authorization_mode: "drive_move_spike",
+      drive_mode: "read_only_preflight",
+    });
+    const start = await fetch(
+      `${origin}/oauth/lark/start?request=${"x".repeat(43)}`,
+    );
+    const body = await start.text();
+    assert.match(body, /exact four-scope capability grant/i);
+    assert.match(body, /separate explicit operator confirmation/i);
+  });
+});
+
 test("requires an explicit browser confirmation before starting OAuth", async () => {
   let beginCalls = 0;
-  const handler = createPhase2HttpHandler({
+  const handler = createAssistantHttpHandler({
     oauthService: {
       async beginAuthorization(requestToken) {
         beginCalls += 1;
@@ -107,7 +136,7 @@ test("accepts the exact callback after atomically queueing the scan", async () =
     requesterOpenId: "ou_victor",
     tenantKey: "tenant_synvo",
   };
-  const handler = createPhase2HttpHandler({
+  const handler = createAssistantHttpHandler({
     oauthService: {
       async beginAuthorization() {
         throw new Error("unused");
@@ -136,7 +165,7 @@ test("accepts the exact callback after atomically queueing the scan", async () =
 });
 
 test("does not expose callback query values in a failure page", async () => {
-  const handler = createPhase2HttpHandler({
+  const handler = createAssistantHttpHandler({
     oauthService: {
       async beginAuthorization() {
         throw new Error("unused");

@@ -6,13 +6,13 @@ import type {
   DriveReader,
   NativeDriveItem,
   NativeDriveMetadata,
-} from "./client.js";
-import { larkBatchMetadataDocumentLimit } from "./client.js";
+} from "./read-client.js";
+import { larkBatchMetadataDocumentLimit } from "./read-client.js";
 import { DriveToolError, normalizeDriveError } from "./errors.js";
 import {
-  scanAllowlistedFolder,
-  type DriveScanContext,
-} from "./scan-folder.js";
+  buildAllowlistedFolderInventory,
+  type DriveInventoryContext,
+} from "./folder-inventory.js";
 
 const rootToken = "root-token";
 const productToken = "product-token";
@@ -128,8 +128,8 @@ class FixtureReader implements DriveReader {
 }
 
 function scanContext(
-  overrides: Partial<DriveScanContext> = {},
-): DriveScanContext {
+  overrides: Partial<DriveInventoryContext> = {},
+): DriveInventoryContext {
   return {
     runId: "4d872758-1f71-4ed8-b141-a2d193ceea91",
     requesterOpenId,
@@ -146,7 +146,7 @@ function scanContext(
 }
 
 test("returns the exact bounded read-only pilot inventory", async () => {
-  const inventory = await scanAllowlistedFolder(
+  const inventory = await buildAllowlistedFolderInventory(
     new FixtureReader(),
     scanContext(),
   );
@@ -173,7 +173,7 @@ test("returns the exact bounded read-only pilot inventory", async () => {
 });
 
 test("reports an unexpected starting hierarchy without repairing it", async () => {
-  const inventory = await scanAllowlistedFolder(
+  const inventory = await buildAllowlistedFolderInventory(
     new FixtureReader({
       rootItems: [
         ...rootItems,
@@ -253,7 +253,7 @@ test("reports each bounded baseline hierarchy violation", async (t) => {
 
   for (const testCase of cases) {
     await t.test(testCase.name, async () => {
-      const inventory = await scanAllowlistedFolder(
+      const inventory = await buildAllowlistedFolderInventory(
         new FixtureReader({ rootItems: testCase.items }),
         scanContext(),
       );
@@ -279,7 +279,7 @@ test("reports a destination that is already nonempty", async () => {
     },
   ]);
 
-  const inventory = await scanAllowlistedFolder(reader, scanContext());
+  const inventory = await buildAllowlistedFolderInventory(reader, scanContext());
 
   assert.equal(inventory.baseline_matches, false);
   assert.equal(inventory.summary.destination_child_count, 1);
@@ -293,7 +293,7 @@ test("rejects a four-file baseline when any known fixture name differs", async (
   const changedRootItems = rootItems.map((item) =>
     item.token === "file-1" ? { ...item, name: "[research] - Renamed.pdf" } : item,
   );
-  const inventory = await scanAllowlistedFolder(
+  const inventory = await buildAllowlistedFolderInventory(
     new FixtureReader({ rootItems: changedRootItems }),
     scanContext(),
   );
@@ -312,7 +312,7 @@ test("reports missing and mismatched owner signals", async () => {
     ...rootItems.map((item) => metadataFor(item.token, item.type, item.name, "")),
   ];
   const noListOwners = rootItems.map(({ ownerId: _ownerId, ...item }) => item);
-  const inventory = await scanAllowlistedFolder(
+  const inventory = await buildAllowlistedFolderInventory(
     new FixtureReader({ rootItems: noListOwners as typeof rootItems, metadata }),
     scanContext(),
   );
@@ -358,7 +358,7 @@ test("caps root inventory so root metadata and child metadata fit one Lark batch
     },
   };
 
-  const inventory = await scanAllowlistedFolder(reader, scanContext());
+  const inventory = await buildAllowlistedFolderInventory(reader, scanContext());
 
   assert.equal(
     requestedPageSize,
@@ -381,7 +381,7 @@ test("fails the baseline when metadata and folder listing titles race", async ()
     ),
   ];
 
-  const inventory = await scanAllowlistedFolder(
+  const inventory = await buildAllowlistedFolderInventory(
     new FixtureReader({ metadata }),
     scanContext(),
   );
@@ -394,7 +394,7 @@ test("fails the baseline when metadata and folder listing titles race", async ()
 });
 
 test("fails when an approved destination leaves the root during its scan", async () => {
-  const inventory = await scanAllowlistedFolder(
+  const inventory = await buildAllowlistedFolderInventory(
     new FixtureReader({
       finalRootItems: rootItems.filter((item) => item.token !== productToken),
     }),
@@ -438,7 +438,7 @@ test("fails when an approved destination gains a child during its scan", async (
     getMetadata: () => delegate.getMetadata(),
   };
 
-  const inventory = await scanAllowlistedFolder(reader, scanContext());
+  const inventory = await buildAllowlistedFolderInventory(reader, scanContext());
 
   assert.equal(productReads, 2);
   assert.equal(inventory.baseline_matches, false);
@@ -472,7 +472,7 @@ for (const rejection of [
       getMetadata: () => delegate.getMetadata(),
     };
 
-    const inventory = await scanAllowlistedFolder(
+    const inventory = await buildAllowlistedFolderInventory(
       reader,
       scanContext({
         accessToken: "rejected-token",
@@ -513,7 +513,7 @@ test("revokes after the one recovered token retry is also rejected", async () =>
   };
 
   await assert.rejects(
-    scanAllowlistedFolder(
+    buildAllowlistedFolderInventory(
       reader,
       scanContext({
         accessToken: "rejected-token",
@@ -546,7 +546,7 @@ test("never recovers an access token after a Drive 403", async () => {
   };
 
   await assert.rejects(
-    scanAllowlistedFolder(
+    buildAllowlistedFolderInventory(
       reader,
       scanContext({
         async recoverAccessToken() {

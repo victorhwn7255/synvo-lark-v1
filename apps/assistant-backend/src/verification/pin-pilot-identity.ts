@@ -15,11 +15,11 @@ import { loadConfig, type AppConfig } from "../config.js";
 import {
   configInvalidReport,
   databaseUnavailableReport,
-  PostgresPhase2LiveReader,
-  type Phase2LiveVerificationCode,
-  type VerifiedPhase2Identity,
-  verifyPhase2LiveForIdentityPin,
-} from "./phase2-live.js";
+  PostgresReadonlyInventoryReader,
+  type ReadonlyInventoryVerificationCode,
+  type VerifiedPilotIdentity,
+  verifyReadonlyInventoryForIdentityPin,
+} from "./verify-readonly-inventory.js";
 
 const IDENTITY_KEYS = [
   "LARK_AUTHORIZED_OPEN_ID",
@@ -28,7 +28,7 @@ const IDENTITY_KEYS = [
 
 type IdentityKey = (typeof IDENTITY_KEYS)[number];
 
-export type Phase2IdentityPinCode =
+export type PilotIdentityPinCode =
   | "PINNED"
   | "ALREADY_PINNED"
   | "NO_VERIFIED_RUN"
@@ -41,10 +41,10 @@ export type Phase2IdentityPinCode =
   | "CONFIG_INVALID"
   | "DATABASE_UNAVAILABLE";
 
-export type Phase2IdentityPinReport = {
+export type PilotIdentityPinReport = {
   status: "pass" | "pending" | "fail";
-  pin_code: Phase2IdentityPinCode;
-  live_verification_code: Phase2LiveVerificationCode;
+  pin_code: PilotIdentityPinCode;
+  live_verification_code: ReadonlyInventoryVerificationCode;
   live_gate_passed: boolean;
   env_updated: boolean;
   identity_pinned: boolean;
@@ -89,9 +89,9 @@ function matchingIdentityLines(
   return lines.filter((line) => pattern.test(line));
 }
 
-export function planPhase2IdentityEnvUpdate(
+export function planPilotIdentityEnvUpdate(
   contents: string,
-  identity: VerifiedPhase2Identity,
+  identity: VerifiedPilotIdentity,
 ): EnvUpdatePlan {
   assertWritableIdentityValue(identity.openId);
   assertWritableIdentityValue(identity.tenantKey);
@@ -147,9 +147,9 @@ function noFollowFlag(): number {
   return "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
 }
 
-export async function pinPhase2IdentityEnvFile(
+export async function pinPilotIdentityEnvFile(
   envFilePath: string,
-  identity: VerifiedPhase2Identity,
+  identity: VerifiedPilotIdentity,
 ): Promise<"PINNED" | "ALREADY_PINNED"> {
   let initialStat;
   try {
@@ -175,7 +175,7 @@ export async function pinPhase2IdentityEnvFile(
       throw new IdentityEnvError("ENV_FILE_UNSAFE");
     }
     const contents = await source.readFile({ encoding: "utf8" });
-    const plan = planPhase2IdentityEnvUpdate(contents, identity);
+    const plan = planPilotIdentityEnvUpdate(contents, identity);
 
     if (plan.action === "noop") {
       await source.chmod(0o600);
@@ -228,15 +228,15 @@ export async function pinPhase2IdentityEnvFile(
 }
 
 function report(
-  status: Phase2IdentityPinReport["status"],
-  pinCode: Phase2IdentityPinCode,
-  liveVerificationCode: Phase2LiveVerificationCode,
+  status: PilotIdentityPinReport["status"],
+  pinCode: PilotIdentityPinCode,
+  liveVerificationCode: ReadonlyInventoryVerificationCode,
   options: {
     liveGatePassed?: boolean;
     envUpdated?: boolean;
     identityPinned?: boolean;
   } = {},
-): Phase2IdentityPinReport {
+): PilotIdentityPinReport {
   return {
     status,
     pin_code: pinCode,
@@ -247,14 +247,14 @@ function report(
   };
 }
 
-export async function runPhase2IdentityPin(options: {
+export async function runPilotIdentityPin(options: {
   config: AppConfig;
-  reader: Pick<PostgresPhase2LiveReader, "loadLatestRun">;
+  reader: Pick<PostgresReadonlyInventoryReader, "loadLatestRun">;
   envFilePath: string;
   now?: Date;
-  writeIdentity?: typeof pinPhase2IdentityEnvFile;
-}): Promise<Phase2IdentityPinReport> {
-  const verification = await verifyPhase2LiveForIdentityPin({
+  writeIdentity?: typeof pinPilotIdentityEnvFile;
+}): Promise<PilotIdentityPinReport> {
+  const verification = await verifyReadonlyInventoryForIdentityPin({
     config: options.config,
     reader: options.reader,
     now: options.now,
@@ -289,7 +289,7 @@ export async function runPhase2IdentityPin(options: {
   }
 
   try {
-    const result = await (options.writeIdentity ?? pinPhase2IdentityEnvFile)(
+    const result = await (options.writeIdentity ?? pinPilotIdentityEnvFile)(
       options.envFilePath,
       verification.identity,
     );
@@ -305,14 +305,14 @@ export async function runPhase2IdentityPin(options: {
   }
 }
 
-export function serializePhase2IdentityPinReport(
-  value: Phase2IdentityPinReport,
+export function serializePilotIdentityPinReport(
+  value: PilotIdentityPinReport,
 ): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
-export function phase2IdentityPinExitCode(
-  value: Phase2IdentityPinReport,
+export function pilotIdentityPinExitCode(
+  value: PilotIdentityPinReport,
 ): number {
   if (value.status === "pass") {
     return 0;
@@ -320,11 +320,11 @@ export function phase2IdentityPinExitCode(
   return value.status === "pending" ? 2 : 1;
 }
 
-function configFailureReport(): Phase2IdentityPinReport {
+function configFailureReport(): PilotIdentityPinReport {
   return report("fail", "CONFIG_INVALID", configInvalidReport().verification_code);
 }
 
-function databaseFailureReport(config: AppConfig): Phase2IdentityPinReport {
+function databaseFailureReport(config: AppConfig): PilotIdentityPinReport {
   return report(
     "fail",
     "DATABASE_UNAVAILABLE",
@@ -338,8 +338,8 @@ async function main(): Promise<void> {
     config = loadConfig();
   } catch {
     const result = configFailureReport();
-    process.stdout.write(serializePhase2IdentityPinReport(result));
-    process.exitCode = phase2IdentityPinExitCode(result);
+    process.stdout.write(serializePilotIdentityPinReport(result));
+    process.exitCode = pilotIdentityPinExitCode(result);
     return;
   }
 
@@ -351,11 +351,11 @@ async function main(): Promise<void> {
   });
   pool.on("error", () => undefined);
 
-  let result: Phase2IdentityPinReport;
+  let result: PilotIdentityPinReport;
   try {
-    result = await runPhase2IdentityPin({
+    result = await runPilotIdentityPin({
       config,
-      reader: new PostgresPhase2LiveReader(pool),
+      reader: new PostgresReadonlyInventoryReader(pool),
       envFilePath: fileURLToPath(new URL("../../.env", import.meta.url)),
     });
   } catch {
@@ -364,8 +364,8 @@ async function main(): Promise<void> {
     await pool.end().catch(() => undefined);
   }
 
-  process.stdout.write(serializePhase2IdentityPinReport(result));
-  process.exitCode = phase2IdentityPinExitCode(result);
+  process.stdout.write(serializePilotIdentityPinReport(result));
+  process.exitCode = pilotIdentityPinExitCode(result);
 }
 
 if (

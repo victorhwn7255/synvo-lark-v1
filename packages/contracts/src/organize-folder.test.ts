@@ -2,28 +2,28 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  driveScanResultAssociatedData,
-  driveScanFolderInputSchema,
-  driveScanFolderResultSchema,
+  driveFolderInventoryResultAssociatedData,
+  driveFolderInventoryInputSchema,
+  driveFolderInventoryResultSchema,
 } from "./organize-folder.js";
 
 test("keeps the encrypted scan-result associated-data contract stable", () => {
   assert.equal(
-    driveScanResultAssociatedData("4d872758-1f71-4ed8-b141-a2d193ceea91"),
+    driveFolderInventoryResultAssociatedData("4d872758-1f71-4ed8-b141-a2d193ceea91"),
     "organize-folder-run:4d872758-1f71-4ed8-b141-a2d193ceea91:scan-result:v1",
   );
 });
 
 test("drive scan accepts only a server-owned UUID run id", () => {
   assert.deepEqual(
-    driveScanFolderInputSchema.parse({
+    driveFolderInventoryInputSchema.parse({
       run_id: "4d872758-1f71-4ed8-b141-a2d193ceea91",
     }),
     { run_id: "4d872758-1f71-4ed8-b141-a2d193ceea91" },
   );
 
   assert.throws(() =>
-    driveScanFolderInputSchema.parse({
+    driveFolderInventoryInputSchema.parse({
       run_id: "4d872758-1f71-4ed8-b141-a2d193ceea91",
       access_token: "must-never-be-an-argument",
     }),
@@ -31,7 +31,7 @@ test("drive scan accepts only a server-owned UUID run id", () => {
 });
 
 test("drive scan result never requires native Drive tokens", () => {
-  const result = driveScanFolderResultSchema.parse({
+  const result = driveFolderInventoryResultSchema.parse({
     ok: false,
     error: {
       code: "OAUTH_REQUIRED",
@@ -47,7 +47,7 @@ test("drive scan result never requires native Drive tokens", () => {
 
 test("drive scan result rejects native tokens and ambiguous envelopes", () => {
   assert.throws(() =>
-    driveScanFolderResultSchema.parse({
+    driveFolderInventoryResultSchema.parse({
       ok: false,
       access_token: "must-never-cross-the-boundary",
       error: {
@@ -57,9 +57,9 @@ test("drive scan result rejects native tokens and ambiguous envelopes", () => {
       },
     }),
   );
-  assert.throws(() => driveScanFolderResultSchema.parse({ ok: true }));
+  assert.throws(() => driveFolderInventoryResultSchema.parse({ ok: true }));
   assert.throws(() =>
-    driveScanFolderResultSchema.parse({
+    driveFolderInventoryResultSchema.parse({
       ok: false,
       error: {
         code: "OAUTH_REQUIRED",

@@ -1,17 +1,17 @@
 import { pathToFileURL } from "node:url";
 
 import {
-  driveScanResultAssociatedData,
-  driveScanFolderResultSchema,
-  phase2ErrorCodeSchema,
+  driveFolderInventoryResultAssociatedData,
+  driveFolderInventoryResultSchema,
+  driveInventoryErrorCodeSchema,
   type DriveInventory,
 } from "@synvo/contracts";
 import {
   hasExactScopes,
-  PHASE_2_USER_SCOPES,
+  DRIVE_INVENTORY_USER_SCOPES,
   TokenCipher,
 } from "@synvo/lark-auth";
-import { digestFolderToken } from "@synvo/synvo-lark-mcp/drive";
+import { digestFolderToken } from "@synvo/lark-mcp/drive";
 import { Pool } from "pg";
 import { z } from "zod";
 
@@ -40,7 +40,7 @@ const knownDeliveryErrorCodeSchema = z.enum([
 ]);
 
 const knownRunErrorCodeSchema = z.union([
-  phase2ErrorCodeSchema,
+  driveInventoryErrorCodeSchema,
   z.enum([
     "WRONG_SCOPE",
     "WRONG_USER",
@@ -74,12 +74,12 @@ const latestRunRowSchema = z.object({
 
 type LatestRunRow = z.infer<typeof latestRunRowSchema>;
 
-export type VerifiedPhase2Identity = Readonly<{
+export type VerifiedPilotIdentity = Readonly<{
   openId: string;
   tenantKey: string;
 }>;
 
-export type Phase2LiveVerificationCode =
+export type ReadonlyInventoryVerificationCode =
   | "NONE"
   | "NO_LIVE_RUN"
   | "LIVE_RUN_PENDING"
@@ -91,27 +91,27 @@ export type Phase2LiveVerificationCode =
   | "RUN_FAILED"
   | "GATE_MISMATCH";
 
-export type Phase2LiveRunState =
+export type ReadonlyInventoryRunState =
   | z.infer<typeof runStateSchema>
   | "NO_RUN"
   | "UNKNOWN";
 
-export type Phase2LiveRunErrorCode =
+export type ReadonlyInventoryRunErrorCode =
   | z.infer<typeof knownRunErrorCodeSchema>
   | "NONE"
   | "INVALID";
 
-export type Phase2LiveDeliveryState =
+export type ReadonlyInventoryDeliveryState =
   | z.infer<typeof deliveryStateSchema>
   | "NO_DELIVERY"
   | "UNKNOWN";
 
-export type Phase2LiveDeliveryErrorCode =
+export type ReadonlyInventoryDeliveryErrorCode =
   | z.infer<typeof knownDeliveryErrorCodeSchema>
   | "NONE"
   | "INVALID";
 
-export type Phase2LiveChecks = {
+export type ReadonlyInventoryChecks = {
   write_disabled: boolean;
   root_digest_matches: boolean;
   static_identity_configured: boolean;
@@ -144,7 +144,7 @@ export type Phase2LiveChecks = {
   owners_matched: boolean;
 };
 
-export type Phase2LiveCounts = {
+export type ReadonlyInventoryCounts = {
   root_folder_count: number;
   root_file_count: number;
   root_skipped_count: number;
@@ -154,27 +154,27 @@ export type Phase2LiveCounts = {
   issue_count: number;
 };
 
-export type Phase2LiveReport = {
+export type ReadonlyInventoryReport = {
   status: "pass" | "pending" | "fail";
-  verification_code: Phase2LiveVerificationCode;
-  run_state: Phase2LiveRunState;
-  run_error_code: Phase2LiveRunErrorCode;
-  delivery_state: Phase2LiveDeliveryState;
-  delivery_error_code: Phase2LiveDeliveryErrorCode;
+  verification_code: ReadonlyInventoryVerificationCode;
+  run_state: ReadonlyInventoryRunState;
+  run_error_code: ReadonlyInventoryRunErrorCode;
+  delivery_state: ReadonlyInventoryDeliveryState;
+  delivery_error_code: ReadonlyInventoryDeliveryErrorCode;
   latest_run_found: boolean;
   grant_found: boolean;
-  checks: Phase2LiveChecks;
-  counts?: Phase2LiveCounts;
+  checks: ReadonlyInventoryChecks;
+  counts?: ReadonlyInventoryCounts;
 };
 
-export interface Phase2LiveQueryable {
+export interface ReadonlyInventoryQueryable {
   query(text: string): Promise<{ rows: unknown[] }>;
 }
 
-export class PostgresPhase2LiveReader {
-  readonly #database: Phase2LiveQueryable;
+export class PostgresReadonlyInventoryReader {
+  readonly #database: ReadonlyInventoryQueryable;
 
-  constructor(database: Phase2LiveQueryable) {
+  constructor(database: ReadonlyInventoryQueryable) {
     this.#database = database;
   }
 
@@ -204,6 +204,7 @@ export class PostgresPhase2LiveReader {
          LEFT JOIN lark_delivery_jobs AS delivery
            ON delivery.run_id = run.id
           AND delivery.kind = 'ORGANIZE_FOLDER_SCAN'
+        WHERE run.workflow_phase = 2
         ORDER BY run.created_at DESC, run.id DESC
         LIMIT 1`,
     );
@@ -211,7 +212,7 @@ export class PostgresPhase2LiveReader {
   }
 }
 
-function emptyChecks(writeDisabled: boolean): Phase2LiveChecks {
+function emptyChecks(writeDisabled: boolean): ReadonlyInventoryChecks {
   return {
     write_disabled: writeDisabled,
     root_digest_matches: false,
@@ -246,7 +247,7 @@ function emptyChecks(writeDisabled: boolean): Phase2LiveChecks {
   };
 }
 
-function sanitizeRunErrorCode(value: string | null): Phase2LiveRunErrorCode {
+function sanitizeRunErrorCode(value: string | null): ReadonlyInventoryRunErrorCode {
   if (value === null) {
     return "NONE";
   }
@@ -256,7 +257,7 @@ function sanitizeRunErrorCode(value: string | null): Phase2LiveRunErrorCode {
 
 function sanitizeDeliveryErrorCode(
   value: string | null,
-): Phase2LiveDeliveryErrorCode {
+): ReadonlyInventoryDeliveryErrorCode {
   if (value === null) {
     return "NONE";
   }
@@ -264,7 +265,7 @@ function sanitizeDeliveryErrorCode(
   return parsed.success ? parsed.data : "INVALID";
 }
 
-function inventoryCounts(inventory: DriveInventory): Phase2LiveCounts {
+function inventoryCounts(inventory: DriveInventory): ReadonlyInventoryCounts {
   return {
     root_folder_count: inventory.summary.root_folder_count,
     root_file_count: inventory.summary.root_file_count,
@@ -296,7 +297,7 @@ function operationalFailure(
     writeDisabled?: boolean;
     staticIdentityConfigured?: boolean;
   } = {},
-): Phase2LiveReport {
+): ReadonlyInventoryReport {
   const checks = emptyChecks(options.writeDisabled ?? false);
   checks.static_identity_configured =
     options.staticIdentityConfigured ?? false;
@@ -313,13 +314,13 @@ function operationalFailure(
   };
 }
 
-export function configInvalidReport(): Phase2LiveReport {
+export function configInvalidReport(): ReadonlyInventoryReport {
   return operationalFailure("CONFIG_INVALID");
 }
 
 export function databaseUnavailableReport(
   config?: AppConfig,
-): Phase2LiveReport {
+): ReadonlyInventoryReport {
   return operationalFailure("DATABASE_UNAVAILABLE", {
     writeDisabled: config?.organizeFolderWriteEnabled === false,
     staticIdentityConfigured: Boolean(
@@ -328,11 +329,11 @@ export function databaseUnavailableReport(
   });
 }
 
-export async function verifyPhase2Live(options: {
+export async function verifyReadonlyInventory(options: {
   config: AppConfig;
-  reader: Pick<PostgresPhase2LiveReader, "loadLatestRun">;
+  reader: Pick<PostgresReadonlyInventoryReader, "loadLatestRun">;
   now?: Date;
-}): Promise<Phase2LiveReport> {
+}): Promise<ReadonlyInventoryReport> {
   const { config, reader } = options;
   const now = options.now ?? new Date();
   const writeDisabled = config.organizeFolderWriteEnabled === false;
@@ -409,7 +410,7 @@ export async function verifyPhase2Live(options: {
   );
   checks.exact_scopes = hasExactScopes(
     row.granted_scopes ?? [],
-    PHASE_2_USER_SCOPES,
+    DRIVE_INVENTORY_USER_SCOPES,
   );
   checks.refresh_expiry_future = Boolean(
     row.refresh_expires_at && row.refresh_expires_at.getTime() > now.getTime(),
@@ -432,9 +433,9 @@ export async function verifyPhase2Live(options: {
       );
       const plaintext = cipher.decrypt(
         row.scan_result_ciphertext,
-        driveScanResultAssociatedData(row.run_id),
+        driveFolderInventoryResultAssociatedData(row.run_id),
       );
-      const parsedResult = driveScanFolderResultSchema.parse(
+      const parsedResult = driveFolderInventoryResultSchema.parse(
         JSON.parse(plaintext) as unknown,
       );
       checks.cached_result_valid = true;
@@ -445,7 +446,7 @@ export async function verifyPhase2Live(options: {
     }
   }
 
-  let counts: Phase2LiveCounts | undefined;
+  let counts: ReadonlyInventoryCounts | undefined;
   if (inventory) {
     counts = inventoryCounts(inventory);
     checks.cached_result_bound_to_run = inventory.run_id === row.run_id;
@@ -523,20 +524,20 @@ export async function verifyPhase2Live(options: {
   };
 }
 
-export async function verifyPhase2LiveForIdentityPin(options: {
+export async function verifyReadonlyInventoryForIdentityPin(options: {
   config: AppConfig;
-  reader: Pick<PostgresPhase2LiveReader, "loadLatestRun">;
+  reader: Pick<PostgresReadonlyInventoryReader, "loadLatestRun">;
   now?: Date;
 }): Promise<{
-  report: Phase2LiveReport;
-  identity?: VerifiedPhase2Identity;
+  report: ReadonlyInventoryReport;
+  identity?: VerifiedPilotIdentity;
 }> {
   const candidate = await options.reader.loadLatestRun();
   const parsedRow = latestRunRowSchema.safeParse(candidate);
 
   if (!parsedRow.success) {
     return {
-      report: await verifyPhase2Live({
+      report: await verifyReadonlyInventory({
         config: options.config,
         reader: { loadLatestRun: async () => candidate },
         now: options.now,
@@ -544,11 +545,11 @@ export async function verifyPhase2LiveForIdentityPin(options: {
     };
   }
 
-  const identity: VerifiedPhase2Identity = {
+  const identity: VerifiedPilotIdentity = {
     openId: parsedRow.data.requester_open_id,
     tenantKey: parsedRow.data.run_tenant_key,
   };
-  const report = await verifyPhase2Live({
+  const report = await verifyReadonlyInventory({
     config: {
       ...options.config,
       authorizedOpenId: identity.openId,
@@ -561,11 +562,11 @@ export async function verifyPhase2LiveForIdentityPin(options: {
   return report.status === "pass" ? { report, identity } : { report };
 }
 
-export function serializePhase2LiveReport(report: Phase2LiveReport): string {
+export function serializeReadonlyInventoryReport(report: ReadonlyInventoryReport): string {
   return `${JSON.stringify(report, null, 2)}\n`;
 }
 
-export function phase2LiveExitCode(report: Phase2LiveReport): number {
+export function readonlyInventoryExitCode(report: ReadonlyInventoryReport): number {
   if (report.status === "pass") {
     return 0;
   }
@@ -578,18 +579,18 @@ async function main(): Promise<void> {
     config = loadConfig();
   } catch {
     const report = configInvalidReport();
-    process.stdout.write(serializePhase2LiveReport(report));
-    process.exitCode = phase2LiveExitCode(report);
+    process.stdout.write(serializeReadonlyInventoryReport(report));
+    process.exitCode = readonlyInventoryExitCode(report);
     return;
   }
 
   if (config.organizeFolderWriteEnabled) {
-    const report = await verifyPhase2Live({
+    const report = await verifyReadonlyInventory({
       config,
       reader: { loadLatestRun: async () => null },
     });
-    process.stdout.write(serializePhase2LiveReport(report));
-    process.exitCode = phase2LiveExitCode(report);
+    process.stdout.write(serializeReadonlyInventoryReport(report));
+    process.exitCode = readonlyInventoryExitCode(report);
     return;
   }
 
@@ -601,11 +602,11 @@ async function main(): Promise<void> {
   });
   pool.on("error", () => undefined);
 
-  let report: Phase2LiveReport;
+  let report: ReadonlyInventoryReport;
   try {
-    report = await verifyPhase2Live({
+    report = await verifyReadonlyInventory({
       config,
-      reader: new PostgresPhase2LiveReader(pool),
+      reader: new PostgresReadonlyInventoryReader(pool),
     });
   } catch {
     report = databaseUnavailableReport(config);
@@ -613,8 +614,8 @@ async function main(): Promise<void> {
     await pool.end().catch(() => undefined);
   }
 
-  process.stdout.write(serializePhase2LiveReport(report));
-  process.exitCode = phase2LiveExitCode(report);
+  process.stdout.write(serializeReadonlyInventoryReport(report));
+  process.exitCode = readonlyInventoryExitCode(report);
 }
 
 if (

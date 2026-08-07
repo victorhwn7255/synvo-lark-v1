@@ -1,5 +1,10 @@
 import type { Pool, PoolClient } from "pg";
 
+import {
+  DRIVE_INVENTORY_SCOPE_PROFILE,
+  type OAuthScopeProfile,
+} from "./oauth-client.js";
+
 export type StoredOAuthGrant = {
   id: string;
   openId: string;
@@ -72,6 +77,7 @@ async function selectGrant(
   client: Pick<PoolClient, "query">,
   openId: string,
   tenantKey: string,
+  scopeProfile: OAuthScopeProfile,
   lock: boolean,
 ): Promise<StoredOAuthGrant | null> {
   const result = await client.query<GrantRow>(
@@ -85,10 +91,12 @@ async function selectGrant(
             refresh_expires_at,
             refresh_version,
             revoked_at
-       FROM lark_oauth_grants
-      WHERE open_id = $1 AND tenant_key = $2
+      FROM lark_oauth_grants
+      WHERE open_id = $1
+        AND tenant_key = $2
+        AND scope_profile = $3
       ${lock ? "FOR UPDATE" : ""}`,
-    [openId, tenantKey],
+    [openId, tenantKey, scopeProfile],
   );
 
   return result.rows[0] ? toGrant(result.rows[0]) : null;
@@ -96,16 +104,27 @@ async function selectGrant(
 
 export class PostgresOAuthGrantStore implements OAuthGrantStore {
   readonly #pool: Pool;
+  readonly #scopeProfile: OAuthScopeProfile;
 
-  constructor(pool: Pool) {
+  constructor(
+    pool: Pool,
+    options: { scopeProfile?: OAuthScopeProfile } = {},
+  ) {
     this.#pool = pool;
+    this.#scopeProfile = options.scopeProfile ?? DRIVE_INVENTORY_SCOPE_PROFILE;
   }
 
   async findBySubject(
     openId: string,
     tenantKey: string,
   ): Promise<StoredOAuthGrant | null> {
-    return selectGrant(this.#pool, openId, tenantKey, false);
+    return selectGrant(
+      this.#pool,
+      openId,
+      tenantKey,
+      this.#scopeProfile,
+      false,
+    );
   }
 
   async save(input: SaveOAuthGrantInput): Promise<StoredOAuthGrant> {
@@ -114,6 +133,7 @@ export class PostgresOAuthGrantStore implements OAuthGrantStore {
           id,
           open_id,
           tenant_key,
+          scope_profile,
           access_token_ciphertext,
           refresh_token_ciphertext,
           granted_scopes,
@@ -121,8 +141,8 @@ export class PostgresOAuthGrantStore implements OAuthGrantStore {
           refresh_expires_at,
           refresh_version,
           revoked_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       ON CONFLICT (tenant_key, open_id) DO UPDATE SET
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       ON CONFLICT (tenant_key, open_id, scope_profile) DO UPDATE SET
           access_token_ciphertext = EXCLUDED.access_token_ciphertext,
           refresh_token_ciphertext = EXCLUDED.refresh_token_ciphertext,
           granted_scopes = EXCLUDED.granted_scopes,
@@ -145,6 +165,7 @@ export class PostgresOAuthGrantStore implements OAuthGrantStore {
         input.id,
         input.openId,
         input.tenantKey,
+        this.#scopeProfile,
         input.accessTokenCiphertext,
         input.refreshTokenCiphertext,
         input.grantedScopes,
@@ -170,7 +191,13 @@ export class PostgresOAuthGrantStore implements OAuthGrantStore {
     const client = await this.#pool.connect();
     try {
       await client.query("BEGIN");
-      const grant = await selectGrant(client, openId, tenantKey, true);
+      const grant = await selectGrant(
+        client,
+        openId,
+        tenantKey,
+        this.#scopeProfile,
+        true,
+      );
       if (!grant) {
         throw new Error("OAUTH_GRANT_NOT_FOUND");
       }

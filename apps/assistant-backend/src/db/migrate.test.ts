@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import type { Pool } from "pg";
 
-import { isPhase2SchemaReady } from "./migrate.js";
+import { isDatabaseSchemaReady } from "./migrate.js";
 
 type MigrationRecord = {
   name: string;
@@ -65,7 +65,7 @@ async function withMigrationDirectory(
   files: Record<string, string>,
   run: (directory: string, expected: MigrationRecord[]) => Promise<void>,
 ): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "synvo-phase2-migrations-"));
+  const directory = await mkdtemp(join(tmpdir(), "synvo-assistant-migrations-"));
   const expected = Object.entries(files)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([name, sql]) => ({
@@ -85,14 +85,14 @@ async function withMigrationDirectory(
 }
 
 const migrationFiles = {
-  "0001_phase2.sql": "SELECT 1;\n",
+  "0001_initial.sql": "SELECT 1;\n",
   "0002_delivery.sql": "SELECT 2;\n",
 };
 
-test("reports the complete Phase 2 schema and migration ledger as ready", async () => {
+test("reports the complete assistant schema and migration ledger as ready", async () => {
   await withMigrationDirectory(migrationFiles, async (directory, expected) => {
     assert.equal(
-      await isPhase2SchemaReady(
+      await isDatabaseSchemaReady(
         poolWithSchema({ migrations: expected }),
         directory,
       ),
@@ -101,10 +101,25 @@ test("reports the complete Phase 2 schema and migration ledger as ready", async 
   });
 });
 
+test("the Drive move spike migration isolates scope profiles and durably constrains move attempts", async () => {
+  const sql = await readFile(
+    new URL("../../../../database/migrations/0003_phase3_move_spike.sql", import.meta.url),
+    "utf8",
+  );
+  assert.match(sql, /UNIQUE \(tenant_key, open_id, scope_profile\)/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS phase3_mutation_batches/);
+  assert.match(sql, /operation_key text NOT NULL UNIQUE/);
+  assert.match(sql, /manifest_ciphertext text NOT NULL/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS phase3_move_attempts/);
+  assert.match(sql, /attempt_key text NOT NULL UNIQUE/);
+  assert.match(sql, /UNIQUE \(batch_id, direction\)/);
+  assert.doesNotMatch(sql, /file_token\s+text|folder_token\s+text/);
+});
+
 test("fails readiness without querying a missing schema_migrations table", async () => {
   let queriedMigrationLedger = false;
   assert.equal(
-    await isPhase2SchemaReady(
+    await isDatabaseSchemaReady(
       poolWithSchema({
         tableNames: [...completeTables.slice(0, -1), null],
         onMigrationQuery: () => {
@@ -118,9 +133,9 @@ test("fails readiness without querying a missing schema_migrations table", async
   assert.equal(queriedMigrationLedger, false);
 });
 
-test("fails readiness when another required Phase 2 table is missing", async () => {
+test("fails readiness when another required assistant table is missing", async () => {
   assert.equal(
-    await isPhase2SchemaReady(
+    await isDatabaseSchemaReady(
       poolWithSchema({
         tableNames: completeTables.map((name) =>
           name === "lark_delivery_jobs" ? null : name,
@@ -135,7 +150,7 @@ test("fails readiness when another required Phase 2 table is missing", async () 
 test("fails readiness when an expected migration is missing", async () => {
   await withMigrationDirectory(migrationFiles, async (directory, expected) => {
     assert.equal(
-      await isPhase2SchemaReady(
+      await isDatabaseSchemaReady(
         poolWithSchema({ migrations: expected.slice(0, 1) }),
         directory,
       ),
@@ -150,7 +165,7 @@ test("fails readiness when an applied migration checksum differs", async () => {
       index === 0 ? { ...migration, checksum: "0".repeat(64) } : migration,
     );
     assert.equal(
-      await isPhase2SchemaReady(
+      await isDatabaseSchemaReady(
         poolWithSchema({ migrations: changed }),
         directory,
       ),
@@ -162,7 +177,7 @@ test("fails readiness when an applied migration checksum differs", async () => {
 test("fails readiness when the migration ledger has an unexpected entry", async () => {
   await withMigrationDirectory(migrationFiles, async (directory, expected) => {
     assert.equal(
-      await isPhase2SchemaReady(
+      await isDatabaseSchemaReady(
         poolWithSchema({
           migrations: [
             ...expected,
@@ -182,7 +197,7 @@ test("fails readiness if schema_migrations disappears between checks", async () 
       code: "42P01",
     });
     assert.equal(
-      await isPhase2SchemaReady(
+      await isDatabaseSchemaReady(
         poolWithSchema({ migrationError: missingTableError }),
         directory,
       ),

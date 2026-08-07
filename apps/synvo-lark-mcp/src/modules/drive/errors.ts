@@ -1,15 +1,15 @@
-import type { Phase2SafeError } from "@synvo/contracts";
+import type { DriveInventorySafeError } from "@synvo/contracts";
 
 export type DriveToolErrorMetadata = {
   authFailure?: "ACCESS_TOKEN_REJECTED" | "FORBIDDEN";
 };
 
 export class DriveToolError extends Error {
-  readonly safeError: Phase2SafeError;
+  readonly safeError: DriveInventorySafeError;
   readonly metadata: DriveToolErrorMetadata;
 
   constructor(
-    safeError: Phase2SafeError,
+    safeError: DriveInventorySafeError,
     metadata: DriveToolErrorMetadata = {},
   ) {
     super(safeError.message);
@@ -20,7 +20,7 @@ export class DriveToolError extends Error {
 }
 
 export function driveToolError(
-  code: Phase2SafeError["code"],
+  code: DriveInventorySafeError["code"],
   message: string,
   retryable = false,
   metadata: DriveToolErrorMetadata = {},

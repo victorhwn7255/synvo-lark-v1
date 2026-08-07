@@ -9,11 +9,16 @@
   ],
   "scripts": {
     "test": "npm run test --workspaces --if-present",
-    "test:integration:phase2": "node --import tsx --test \"tests/integration/phase2/**/*.test.ts\"",
+    "test:integration": "node --import tsx --test \"tests/integration/postgres/**/*.test.ts\"",
+    "test:integration:workflow-state": "node --import tsx --test tests/integration/postgres/workflow-state.test.ts",
+    "test:integration:drive-mutations": "node --import tsx --test tests/integration/postgres/drive-mutations.test.ts",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "migrate": "npm run migrate --workspace @synvo/assistant-backend",
-    "pin:phase2-identity": "node --env-file=apps/assistant-backend/.env --import tsx apps/assistant-backend/src/verification/phase2-identity-pin.ts",
-    "verify:phase2-live": "node --env-file=apps/assistant-backend/.env --import tsx apps/assistant-backend/src/verification/phase2-live.ts"
+    "pin:pilot-identity": "node --env-file=apps/assistant-backend/.env --import tsx apps/assistant-backend/src/verification/pin-pilot-identity.ts",
+    "verify:readonly-inventory": "node --env-file=apps/assistant-backend/.env --import tsx apps/assistant-backend/src/verification/verify-readonly-inventory.ts",
+    "drive-spike:prepare": "npm run drive-spike:prepare --workspace @synvo/lark-mcp",
+    "drive-spike:execute": "npm run drive-spike:execute --workspace @synvo/lark-mcp --",
+    "verify:drive-spike": "npm run verify:drive-spike --workspace @synvo/lark-mcp"
   },
   "engines": {
     "node": ">=20.6"

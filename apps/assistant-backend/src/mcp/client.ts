@@ -6,14 +6,14 @@ import {
   StdioClientTransport,
 } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
-  driveScanFolderResultSchema,
-  type DriveScanFolderResult,
+  driveFolderInventoryResultSchema,
+  type DriveFolderInventoryResult,
 } from "@synvo/contracts";
 
 import type { AppConfig } from "../config.js";
 
 export interface DriveInventoryClient {
-  scanFolder(runId: string): Promise<DriveScanFolderResult>;
+  getFolderInventory(runId: string): Promise<DriveFolderInventoryResult>;
   close(): Promise<void>;
 }
 
@@ -33,14 +33,14 @@ export class SynvoLarkMcpClient implements DriveInventoryClient {
     this.#connectClient = options.connect ?? (() => this.#connect());
   }
 
-  async scanFolder(runId: string): Promise<DriveScanFolderResult> {
+  async getFolderInventory(runId: string): Promise<DriveFolderInventoryResult> {
     const client = await this.#getClient();
     try {
       const response = await client.callTool({
-        name: "drive_scan_folder",
+        name: "drive_get_folder_inventory",
         arguments: { run_id: runId },
       });
-      return driveScanFolderResultSchema.parse(response.structuredContent);
+      return driveFolderInventoryResultSchema.parse(response.structuredContent);
     } catch (error) {
       await this.#discardClient(client);
       throw error;

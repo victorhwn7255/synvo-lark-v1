@@ -2,14 +2,16 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   LarkOAuthHttpClient,
   LarkTokenBroker,
+  DRIVE_MOVE_SPIKE_SCOPE_PROFILE,
+  DRIVE_MOVE_SPIKE_USER_SCOPES,
   PostgresOAuthGrantStore,
   TokenCipher,
 } from "@synvo/lark-auth";
 import { Pool } from "pg";
 
 import { loadMcpConfig } from "./config.js";
-import { LarkDriveReader } from "./modules/drive/client.js";
-import { PostgresDriveRunRepository } from "./repositories/run-context.js";
+import { LarkDriveReader } from "./modules/drive/read-client.js";
+import { PostgresDriveInventoryRunRepository } from "./repositories/inventory-run.js";
 import { createSynvoLarkMcpServer } from "./server.js";
 
 async function main(): Promise<void> {
@@ -17,15 +19,18 @@ async function main(): Promise<void> {
   const pool = new Pool({ connectionString: config.databaseUrl, max: 5 });
   const cipher = TokenCipher.fromEncodedKey(config.oauthTokenEncryptionKey);
   const oauthClient = new LarkOAuthHttpClient();
-  const grantStore = new PostgresOAuthGrantStore(pool);
+  const grantStore = new PostgresOAuthGrantStore(pool, {
+    scopeProfile: DRIVE_MOVE_SPIKE_SCOPE_PROFILE,
+  });
   const tokenBroker = new LarkTokenBroker({
     clientId: config.appId,
     clientSecret: config.appSecret,
     cipher,
     grantStore,
     oauthClient,
+    requiredScopes: DRIVE_MOVE_SPIKE_USER_SCOPES,
   });
-  const runRepository = new PostgresDriveRunRepository({
+  const runRepository = new PostgresDriveInventoryRunRepository({
     pool,
     tokenBroker,
     cipher,
