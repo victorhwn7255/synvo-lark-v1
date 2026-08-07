@@ -1,0 +1,21 @@
+{
+  "name": "synvo-lark-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "test:integration:phase2": "node --import tsx --test \"tests/integration/phase2/**/*.test.ts\"",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "migrate": "npm run migrate --workspace @synvo/assistant-backend",
+    "pin:phase2-identity": "node --env-file=apps/assistant-backend/.env --import tsx apps/assistant-backend/src/verification/phase2-identity-pin.ts",
+    "verify:phase2-live": "node --env-file=apps/assistant-backend/.env --import tsx apps/assistant-backend/src/verification/phase2-live.ts"
+  },
+  "engines": {
+    "node": ">=20.6"
+  }
+}

@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: synvo_assistant
+      POSTGRES_USER: synvo_assistant
+      POSTGRES_PASSWORD: synvo_assistant_dev
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synvo_assistant -d synvo_assistant"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - synvo_assistant_postgres:/var/lib/postgresql/data
+
+volumes:
+  synvo_assistant_postgres:
