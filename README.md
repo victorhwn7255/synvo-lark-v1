@@ -1,85 +1,99 @@
-# Synvo Lark Assistant
+# Synvo AI Assistant
 
-Synvo Lark Assistant is a trusted internal work assistant that runs inside Lark.
-It turns bounded natural-language requests into permission-aware workflows and returns verified outcomes in the same Lark conversation.
+Synvo AI Assistant is an internal work assistant currently delivered through Lark. Team members use bounded chat commands; the application authenticates the requester, calls approved services, and returns a verified outcome in the same conversation.
 
-The active pilot is `/organize-folder`, which operates only on one allowlisted Lark My Space sandbox.
-Phase 3 is complete: one disposable PDF completed an explicitly confirmed and externally verified `root -> Research -> root` capability spike, and the exact baseline was restored.
-Phase 4 is the next milestone: an immutable read-only folder snapshot and deterministic organization proposal.
+The active pilot is `/organize-folder` against one allowlisted Lark My Space folder. Its current production path authorizes Victor, validates the folder, inventories two destination folders and four PDF fixtures, and returns a deterministic two-Product/two-Research proposal. Victor can approve or reject that proposal in Lark, but Phase 4 records intent only: it never opens, downloads, moves, or changes files.
 
 ## Architecture
 
 ```text
-Lark user
-   |
-   v
-assistant-backend
-   |  messaging, OAuth, workflow orchestration, delivery
-   v
-synvo-lark-mcp
-   |  bounded provider-specific Lark capabilities
-   v
-Lark Open Platform APIs
+Lark App Bot --------> message handling and OAuth --+
+                                                    |
+Approved AI agent --> authenticated /mcp endpoint --+--> organize-folder workflow
+                                                         --> Lark Drive client
+                                                         --> delivery worker
+                                                         --> PostgreSQL
 ```
 
-GPT or Codex models may eventually propose structured actions, but deterministic application code owns authorization, policy validation, execution, reconciliation, and verification.
-Models never receive Lark credentials or native Drive tokens.
+Everything runs in one Synvo Assistant Node.js application with one database pool. MCP is a protocol adapter, not a second service, workflow engine, or tool framework. Its first tool reuses the same allowlisted read-only inventory path used by Lark.
 
-## Repository structure
+## Repository
 
 ```text
-apps/
-├── assistant-backend/       Lark-facing orchestrator and OAuth service
-└── synvo-lark-mcp/          Private MCP server for bounded Lark capabilities
-    ├── src/                 Production MCP implementation
-    └── tools/
-        └── drive-move-spike/  Development-only capability verifier
+apps/synvo-assistant/src/
+├── db/                         migrations and pool
+├── delivery/                   durable outbound jobs
+├── lark/                       chat commands and Lark integrations
+│   ├── auth/                   OAuth grants, encryption, refresh
+│   └── drive/                  bounded read-only Drive client
+├── mcp/                        authenticated MCP protocol adapter
+├── web/                        health, OAuth, and MCP HTTP routing
+├── workflows/organize-folder/  authorization, persistence, policy, workflow
+├── config.ts                   application configuration
+├── index.ts                    composition and lifecycle
+└── doctor.ts                   concise local readiness check
 
-packages/
-├── contracts/               Shared typed workflow contracts
-└── lark-auth/               OAuth, encrypted grants, and token refresh
-
-database/migrations/         Immutable versioned PostgreSQL migrations
-tests/integration/postgres/  PostgreSQL integration tests
-tasks/                       Active and archived implementation plans
+database/migrations/            immutable applied migrations
+tests/integration/postgres/     focused database integration path
+tasks/                          active plans and archived evidence
 ```
 
-The normal MCP server exposes only the bounded read-only Drive inventory tool.
-The Drive move spike is development-only operator tooling and is not part of the normal MCP tool surface.
+The database has four active runtime tables—OAuth grants, OAuth sessions, organize-folder runs, and delivery jobs—plus the migration ledger. Obsolete Phase 1 and Phase 3 tables are removed by a forward-only migration.
 
-## Local verification
-
-From the repository root:
+## Local setup
 
 ```bash
 npm install
+docker compose up -d postgres
+cp apps/synvo-assistant/.env.example apps/synvo-assistant/.env
+npm run migrate
+npm run doctor
+npm run dev
+```
+
+Merge missing keys into an existing `.env`; never overwrite working secrets. Register the exact configured OAuth callback URL in Lark.
+
+To enable the local MCP endpoint, generate a separate service credential and add it to the ignored `.env`:
+
+```bash
+node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))'
+```
+
+Save the result as `SYNVO_MCP_AUTH_TOKEN`. Do not reuse a Lark secret. Without this variable, `/mcp` remains disabled. The local URL is `http://localhost:3000/mcp`; a remotely hosted agent will require the same application behind managed HTTPS.
+
+## MCP foundation
+
+The server currently exposes exactly one tool:
+
+- `organize_folder_inventory({ folder_url })`: returns bounded metadata for the configured pilot root and approved destinations. It never opens, downloads, moves, renames, or changes a file.
+
+The bearer credential identifies an approved service client. For the current Victor-only pilot, the application maps every authenticated call to Victor's configured Lark `open_id` and tenant; callers cannot select another employee. The stored Lark OAuth grant is still what authorizes the application to call Lark. Future tools should be added as thin adapters to proven workflow methods, one at a time.
+
+## Verification
+
+```bash
 npm run typecheck
 npm test
 npm run test:integration
+npm run doctor
 ```
 
-PostgreSQL integration tests require `TEST_DATABASE_URL` to reference an isolated migrated development database.
-Do not count skipped integration tests as passing database verification.
+Manual Lark acceptance:
 
-Useful operational commands:
+1. `/ping` returns `pong`.
+2. `/organize-folder <allowlisted-folder-link>` returns exactly two Product and two Research moves plus a proposal ID.
+3. `/approve-folder <proposal-id>` records approval and a repeated approval is idempotent.
+4. A conflicting `/reject-folder <proposal-id>` fails safely.
+5. Run `/organize-folder <allowlisted-folder-link>` again and use `/reject-folder <new-proposal-id>` to verify rejection.
+6. External, sibling, malformed, and unknown proposal inputs fail safely.
+7. All four PDFs remain in the root and both destination folders remain empty.
 
-```bash
-npm run migrate
-npm run pin:pilot-identity
-npm run verify:readonly-inventory
-npm run drive-spike:prepare
-npm run verify:drive-spike
-```
+## Safety
 
-Keep `ORGANIZE_FOLDER_WRITE_ENABLED=false` in persistent configuration.
-Never commit `.env`, OAuth tokens, Lark secrets, native Drive tokens, or restricted folder links.
+- Keep `ORGANIZE_FOLDER_WRITE_ENABLED=false`.
+- Keep the pilot restricted to the configured Lark user and tenant.
+- Never expose or commit `.env`, Lark secrets, OAuth tokens, native Drive tokens, or restricted links.
+- Do not modify applied migrations; use a new forward-only migration for schema changes.
+- Add one narrow workflow at a time and close its request-to-verified-outcome loop before adding platform abstractions.
 
-## Project documentation
-
-- [`AGENTS.md`](AGENTS.md) is the canonical project contract and engineering guidance.
-- [`tasks/organize-folder-implementation-plan.md`](tasks/organize-folder-implementation-plan.md) is the active executable plan.
-- [`apps/assistant-backend/README.md`](apps/assistant-backend/README.md) is the local backend and Lark OAuth runbook.
-- [`tasks/archive/organize-wiki-implementation-plan.md`](tasks/archive/organize-wiki-implementation-plan.md) is historical reference material for the blocked Wiki target.
-
-The project is intentionally not a general-purpose autonomous agent platform.
-New capabilities are added through small, explicit workflows that close the full request-to-verified-outcome loop.
+See [AGENTS.md](AGENTS.md) and [the active organize-folder plan](tasks/organize-folder-implementation-plan.md).

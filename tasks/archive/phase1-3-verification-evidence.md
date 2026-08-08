@@ -61,3 +61,7 @@ The final move-spike verifier reported:
 The applied migrations and durable database records preserve the technical evidence. The application does not need to continue compiling or shipping the one-time move-spike, identity-pinning, or large live-verifier utilities.
 
 This evidence certifies only the completed messaging, OAuth, read-only inventory, and one-file capability spike. It does not certify the future user-facing proposal, approval, multi-file execution, or undo loop.
+
+## Post-simplification acceptance
+
+On 2026-08-07, the simplified single-process backend passed manual Lark acceptance. It received `/ping` and `/organize-folder`, reused the read-only OAuth grant, and returned the exact two-folder, four-file baseline. The response confirmed that no file was opened, downloaded, or changed.
