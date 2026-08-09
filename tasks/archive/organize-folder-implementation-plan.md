@@ -1,6 +1,6 @@
-# `/organize-folder` Implementation Plan
+# Deterministic `/organize-folder` Foundation Plan
 
-Status: Complete
+Status: Phase 0-5 foundation complete; full AI-powered workflow not complete
 
 Current phase: Phase 5 closed on 2026-08-08.
 
@@ -16,7 +16,9 @@ A Synvo employee sends:
 /organize-folder <Lark Drive folder link>
 ```
 
-The assistant authenticates the requester, inventories an allowlisted folder, proposes a deterministic organization plan, obtains explicit approval, performs only approved moves, verifies the result, and offers undo—all from Lark.
+The assistant authenticates the requester, inventories an allowlisted folder, proposes a deterministic organization plan from approved filename prefixes, obtains explicit approval, performs only approved moves, verifies the result, and offers undo—all from Lark.
+
+This archived plan covers the safe deterministic foundation only. It does not read or analyze file contents, infer categories from messy files, or let an AI agent decide how the folder should be organized. Those capabilities require the later attachment-analysis, Drive-file-analysis MCP, and content-based organization loops.
 
 The future target is Lark Wiki. The My Space pilot exists because Victor does not currently have the Wiki permissions needed to build and safely test the full loop there.
 

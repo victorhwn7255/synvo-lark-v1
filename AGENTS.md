@@ -8,9 +8,9 @@ The product is delivered by closing small loops: a workflow is complete only whe
 
 ## Current scope
 
-The active pilot is `/organize-folder` for Victor's allowlisted Lark My Space folder, `Test_Synvo_AI_Assistant`.
+The deterministic `/organize-folder` foundation for Victor's allowlisted Lark My Space folder, `Test_Synvo_AI_Assistant`, is complete through Phase 5. The full AI-powered `/organize-folder` workflow is not complete.
 
-Current behavior:
+Implemented behavior:
 
 - `/ping` proves the App Bot connection.
 - `/organize-folder <folder-link>` performs user-bound OAuth when needed.
@@ -23,24 +23,53 @@ Current behavior:
 - The Phase 5 acceptance window is closed and the operator write switch is false; any future write window requires separate explicit approval.
 - An optional authenticated `/mcp` endpoint exposes the same inventory capability to approved AI agents without duplicating the workflow.
 
-The long-term target is Lark Wiki, once the application has appropriate Wiki access. The Drive pilot proves the same analysis, proposal, approval, execution, verification, and undo loop in a controlled sandbox.
+This foundation organizes only the four controlled fixtures from approved filename prefixes. It does not open or analyze file contents, infer categories from messy documents, or let an AI agent decide the organization plan.
+
+The active implementation target is Phase 6, `/analyze-attachment`:
+
+- Victor sends one disposable, text-based PDF directly to the bot in a Lark direct message.
+- The file message itself starts the workflow; do not add a pending upload session.
+- The application downloads only that message's resource, extracts bounded text locally, and sends only that text to NVIDIA NIM.
+- One Lark progress message is updated with the final grounded analysis or a safe failure.
+- `nvidia/nemotron-3-super-120b-a12b` is the only Phase 6 inference model.
+- `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` is configured but remains unused until a separately approved image, audio, or video workflow needs it.
+- The model receives no tools, and the MCP server remains unchanged with one read-only tool.
+
+After Phase 6 is closed, plan the next loop separately:
+
+1. Reuse the proven download, extraction, and analysis capability behind a narrow read-only MCP tool for authorized Lark Drive files, such as `analyze_lark_file`.
+2. Let an approved AI agent combine `organize_folder_inventory` with that analysis tool to produce an evidence-backed, content-based organization proposal.
+3. Reuse the existing approval, move, provider verification, and undo machinery to execute the proposal safely.
+
+Do not implement this future MCP tool or agent loop during Phase 6.
+
+The long-term target is Lark Wiki, once the application has appropriate Wiki access. The Drive pilot currently proves the bounded inventory, proposal, approval, execution, verification, and undo foundation in a controlled sandbox; content analysis and AI-generated organization remain future loops.
 
 ## Architecture
 
 Use one modular Synvo Assistant Node.js application and PostgreSQL:
 
 ```text
-Lark App Bot -> message/OAuth handlers --+
+Lark App Bot -> message/OAuth handlers --+-> organize-folder workflow
+                                        |   -> direct Lark Drive client
+                                        |   -> durable delivery worker
+                                        |   -> PostgreSQL
                                         |
-Approved AI agent -> authenticated /mcp +-> organize-folder workflow
-                                           -> direct Lark Drive client
-                                           -> durable delivery worker
-                                           -> PostgreSQL
+                                        +-> planned analyze-attachment workflow
+                                            -> bounded Lark attachment download
+                                            -> local PDF text extraction
+                                            -> NVIDIA NIM
+
+Approved AI agent -> authenticated /mcp -> read-only organize-folder inventory
 ```
+
+The intended post-Phase-6 direction is an approved AI agent using two narrow read-only MCP capabilities—folder inventory and authorized Drive-file analysis—to create a content-based proposal. The existing Synvo workflow, not the model or MCP adapter, continues to own approval, writes, verification, and undo.
 
 Keep one process, one npm package, one configuration loader, and one database pool. Logical source modules are useful; extra deployables, RPC boundaries, package boundaries, registries, and frameworks require a current independent consumer or operational need.
 
 MCP is a thin adapter in the existing process for external AI agents. It may expose only workflow capabilities that already have an authoritative policy owner; it must not duplicate provider access, workflow state, or authorization logic. Add tools individually when a real agent or workflow needs them—do not build a generic registry or second backend.
+
+NVIDIA NIM is a provider boundary inside the existing application, not another Synvo service. Phase 6 may add one small chat-completions client. Do not build a provider framework, automatic model router, model registry, fallback chain, prompt framework, or autonomous tool loop.
 
 ## Simplicity rules
 
@@ -88,9 +117,15 @@ If a change would introduce a new service, package, table, state machine, regist
 - Restrict the pilot to the configured Lark `open_id` and tenant.
 - Keep the MCP endpoint disabled unless a strong service credential is configured. During the single-user pilot, map that credential only to the configured Lark `open_id` and tenant; never accept actor identity from MCP tool arguments.
 - Expose only the read-only `organize_folder_inventory` MCP tool until a separately approved workflow requires another capability.
+- Keep `LLM_API_KEY` only in ignored local configuration or hosted secret management. Never log it, persist it, place it in a job payload, or send it to Lark.
+- Accept Phase 6 input only from the configured user's direct PDF message. Bind the resource to the triggering message and reject arbitrary URLs, pasted resource keys, group messages, and attachments from other messages.
+- Treat extracted document content as untrusted data. The model receives no tools and cannot call MCP, Lark, Drive, the database, or another operational capability.
+- Enforce the Phase 6 file, page, extracted-text, output, timeout, and retry limits from the active plan before calling NVIDIA.
+- Never send Lark tokens, resource identifiers, links, user identifiers, raw attachment bytes, or unnecessary metadata to NVIDIA.
+- Use only disposable, non-sensitive documents with the hosted NVIDIA trial endpoint until Synvo approves processing real internal documents through that provider.
 - Bind OAuth state to the initiating message, user, tenant, redirect URI, scopes, and PKCE verifier.
 - Encrypt access and refresh tokens at rest and rotate refresh tokens atomically.
-- Request the exact active Phase 5 scopes and no others:
+- For the completed deterministic `/organize-folder` foundation, request the exact active Drive OAuth scopes and no others:
   - `space:document:retrieve`
   - `space:document:move`
   - `drive:drive.metadata:readonly`
@@ -166,4 +201,4 @@ A workflow phase is done when:
 - Documentation describes the current implementation once, without duplicated phase history.
 - Every path named in the source-ownership list exists and still has the stated responsibility.
 
-For current status and next actions, use `tasks/organize-folder-implementation-plan.md`. Historical Phase 1-3 evidence is in `tasks/archive/phase1-3-verification-evidence.md`.
+For current status and next actions, use `tasks/analyze-attachment-implementation-plan.md`. The completed deterministic `/organize-folder` Phase 0-5 foundation plan and Phase 1-3 verification evidence are in `tasks/archive/`.
