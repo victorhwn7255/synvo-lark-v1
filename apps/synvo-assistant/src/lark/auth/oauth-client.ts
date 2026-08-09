@@ -9,12 +9,13 @@ export const LARK_USER_INFO_URL =
 
 export const ORGANIZE_FOLDER_USER_SCOPES = [
   "drive:drive.metadata:readonly",
+  "drive:file:download",
   "offline_access",
   "space:document:retrieve",
   "space:document:move",
 ] as const;
 
-export const ORGANIZE_FOLDER_SCOPE_PROFILE = "phase5_execute";
+export const ORGANIZE_FOLDER_SCOPE_PROFILE = "phase7_drive_pdf";
 
 export type LarkTokenResponse = {
   accessToken: string;

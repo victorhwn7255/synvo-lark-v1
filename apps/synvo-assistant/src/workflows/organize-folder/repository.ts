@@ -4,16 +4,6 @@ import { insertDeliveryJob } from "../../delivery/repository.js";
 import type { ExecutionStatus, UndoStatus } from "./execution.js";
 import type { ProposalStatus } from "./proposal.js";
 
-export type OrganizeFolderRun = {
-  id: string;
-  messageId: string;
-  chatId: string;
-  requesterOpenId: string;
-  tenantKey: string;
-  state: string;
-  oauthGrantId: string | null;
-};
-
 export type InventoryRun = {
   id: string;
   chatId: string;
@@ -70,7 +60,6 @@ export type OAuthSession = {
   requestTokenDigest: string;
   requesterOpenId: string;
   tenantKey: string;
-  chatId: string;
   redirectUri: string;
   requestedScopes: string[];
   codeVerifierCiphertext: string;
@@ -78,7 +67,7 @@ export type OAuthSession = {
 };
 
 export interface OrganizeFolderRepository {
-  findRunByMessageId(messageId: string): Promise<OrganizeFolderRun | null>;
+  hasRunForMessage(messageId: string): Promise<boolean>;
   findInventoryRunById(runId: string): Promise<InventoryRun | null>;
   createReadyRun(input: {
     id: string;
@@ -149,23 +138,12 @@ export interface OrganizeFolderRepository {
   }): Promise<boolean>;
 }
 
-type RunRow = {
-  id: string;
-  message_id: string;
-  chat_id: string;
-  requester_open_id: string;
-  tenant_key: string;
-  state: string;
-  oauth_grant_id: string | null;
-};
-
 type SessionRow = {
   id: string;
   run_id: string;
   request_token_digest: string;
   requester_open_id: string;
   tenant_key: string;
-  chat_id: string;
   redirect_uri: string;
   requested_scopes: string[];
   code_verifier_ciphertext: string;
@@ -196,18 +174,6 @@ type ProposalDecisionRow = {
 
 type UndoStatusRow = { undo_status: UndoStatus | null };
 
-function toRun(row: RunRow): OrganizeFolderRun {
-  return {
-    id: row.id,
-    messageId: row.message_id,
-    chatId: row.chat_id,
-    requesterOpenId: row.requester_open_id,
-    tenantKey: row.tenant_key,
-    state: row.state,
-    oauthGrantId: row.oauth_grant_id,
-  };
-}
-
 function toSession(row: SessionRow): OAuthSession {
   return {
     id: row.id,
@@ -215,7 +181,6 @@ function toSession(row: SessionRow): OAuthSession {
     requestTokenDigest: row.request_token_digest,
     requesterOpenId: row.requester_open_id,
     tenantKey: row.tenant_key,
-    chatId: row.chat_id,
     redirectUri: row.redirect_uri,
     requestedScopes: [...row.requested_scopes].sort(),
     codeVerifierCiphertext: row.code_verifier_ciphertext,
@@ -269,20 +234,16 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
     this.#pool = pool;
   }
 
-  async findRunByMessageId(messageId: string): Promise<OrganizeFolderRun | null> {
-    const result = await this.#pool.query<RunRow>(
-      `SELECT id,
-              message_id,
-              chat_id,
-              requester_open_id,
-              tenant_key,
-              state,
-              oauth_grant_id
-         FROM organize_folder_runs
-        WHERE message_id = $1`,
+  async hasRunForMessage(messageId: string): Promise<boolean> {
+    const result = await this.#pool.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM organize_folder_runs
+          WHERE message_id = $1
+       ) AS exists`,
       [messageId],
     );
-    return result.rows[0] ? toRun(result.rows[0]) : null;
+    return result.rows[0]?.exists ?? false;
   }
 
   async findInventoryRunById(runId: string): Promise<InventoryRun | null> {
@@ -412,18 +373,16 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
             request_token_digest,
             requester_open_id,
             tenant_key,
-            chat_id,
             redirect_uri,
             requested_scopes,
             expires_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           input.sessionId,
           input.runId,
           input.requestTokenDigest,
           input.requesterOpenId,
           input.tenantKey,
-          input.chatId,
           input.redirectUri,
           input.requestedScopes,
           input.expiresAt,
@@ -471,7 +430,6 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
                 request_token_digest,
                 requester_open_id,
                 tenant_key,
-                chat_id,
                 redirect_uri,
                 requested_scopes,
                 code_verifier_ciphertext,
@@ -501,7 +459,6 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
                 request_token_digest,
                 requester_open_id,
                 tenant_key,
-                chat_id,
                 redirect_uri,
                 requested_scopes,
                 code_verifier_ciphertext,

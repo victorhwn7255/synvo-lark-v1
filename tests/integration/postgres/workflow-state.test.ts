@@ -397,3 +397,123 @@ test(
     }
   },
 );
+
+test(
+  "Postgres deduplicates and recovers one attachment-analysis job",
+  { skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured" },
+  async () => {
+    assert.ok(databaseUrl);
+    const pool = new Pool({ connectionString: databaseUrl, max: 2 });
+    const queue = new PostgresDeliveryQueue(pool);
+    const jobId = randomUUID();
+    const duplicateJobId = randomUUID();
+    const messageId = `om_${randomUUID()}`;
+    const dedupeKey = `analyze-attachment:${messageId}`;
+    try {
+      await runMigrations(pool);
+      assert.equal(
+        await queue.enqueue({
+          id: jobId,
+          dedupeKey,
+          kind: "ANALYZE_ATTACHMENT",
+          chatId: "oc_phase6_pilot",
+          expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+        }),
+        true,
+      );
+      assert.equal(
+        await queue.enqueue({
+          id: duplicateJobId,
+          dedupeKey,
+          kind: "ANALYZE_ATTACHMENT",
+          chatId: "oc_phase6_pilot",
+        }),
+        false,
+      );
+
+      const firstLease = await queue.claimNext(new Date(), 1);
+      assert.ok(firstLease);
+      assert.equal(firstLease.id, jobId);
+      assert.equal(firstLease.kind, "ANALYZE_ATTACHMENT");
+      assert.equal(firstLease.dedupeKey, dedupeKey);
+      assert.equal(firstLease.runId, null);
+      assert.equal(await queue.storePayload(firstLease, "encrypted-progress-id"), true);
+
+      const recoveredLease = await queue.claimNext(new Date(Date.now() + 10), 60_000);
+      assert.ok(recoveredLease);
+      assert.equal(recoveredLease.id, jobId);
+      assert.equal(recoveredLease.payloadCiphertext, "encrypted-progress-id");
+      assert.equal(await queue.complete(recoveredLease), true);
+
+      const stored = await pool.query<{ state: string; payload_ciphertext: string | null }>(
+        "SELECT state, payload_ciphertext FROM lark_delivery_jobs WHERE id = $1",
+        [jobId],
+      );
+      assert.deepEqual(stored.rows[0], {
+        state: "COMPLETED",
+        payload_ciphertext: null,
+      });
+    } finally {
+      await pool.query("DELETE FROM lark_delivery_jobs WHERE id = $1", [jobId]);
+      await pool.end();
+    }
+  },
+);
+
+test(
+  "Postgres preserves and clears one encrypted Drive-file analysis context",
+  { skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured" },
+  async () => {
+    assert.ok(databaseUrl);
+    const pool = new Pool({ connectionString: databaseUrl, max: 2 });
+    const queue = new PostgresDeliveryQueue(pool);
+    const jobId = randomUUID();
+    const dedupeKey = `analyze-drive-file:om_${randomUUID()}`;
+    try {
+      await runMigrations(pool);
+      assert.equal(
+        await queue.enqueue({
+          id: jobId,
+          dedupeKey,
+          kind: "ANALYZE_DRIVE_FILE",
+          chatId: "oc_phase7_pilot",
+          payloadCiphertext: "encrypted-file-context",
+          expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+        }),
+        true,
+      );
+      assert.equal(
+        await queue.enqueue({
+          id: randomUUID(),
+          dedupeKey,
+          kind: "ANALYZE_DRIVE_FILE",
+          chatId: "oc_phase7_pilot",
+          payloadCiphertext: "another-context",
+        }),
+        false,
+      );
+
+      const job = await queue.claimNext(new Date(), 60_000);
+      assert.ok(job);
+      assert.equal(job.kind, "ANALYZE_DRIVE_FILE");
+      assert.equal(job.runId, null);
+      assert.equal(job.payloadCiphertext, "encrypted-file-context");
+      assert.equal(await queue.complete(job), true);
+
+      const stored = await pool.query<{
+        state: string;
+        payload_ciphertext: string | null;
+      }>(
+        "SELECT state, payload_ciphertext FROM lark_delivery_jobs WHERE id = $1",
+        [jobId],
+      );
+      assert.deepEqual(stored.rows[0], {
+        state: "COMPLETED",
+        payload_ciphertext: null,
+      });
+    } finally {
+      await pool.query("DELETE FROM lark_delivery_jobs WHERE id = $1", [jobId]);
+      await pool.end();
+    }
+  },
+);

@@ -63,9 +63,7 @@ export type UndoMove = {
 };
 
 export type OrganizeFolderExecutionRecord = {
-  schemaVersion: 1;
   proposalId: string;
-  inventoryScanId: string;
   startedAt: string;
   finishedAt?: string;
   moves: ExecutionMove[];
@@ -149,9 +147,7 @@ export function createExecutionRecord(
     };
   });
   return {
-    schemaVersion: 1,
     proposalId: proposal.proposal_id,
-    inventoryScanId: proposal.inventory_scan_id,
     startedAt: now.toISOString(),
     moves,
   };

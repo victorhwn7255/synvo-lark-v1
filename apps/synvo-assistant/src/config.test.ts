@@ -10,6 +10,7 @@ const validEnvironment = {
   LARK_OAUTH_REDIRECT_URI: "http://localhost:3000/oauth/lark/callback",
   OAUTH_TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 4).toString("base64url"),
   ORGANIZE_FOLDER_ROOT_TOKEN: "fldcnRoot123",
+  LLM_API_KEY: "nvidia-test-key-with-safe-length",
 };
 
 test("loads production-aligned assistant configuration", () => {
@@ -26,6 +27,7 @@ test("loads production-aligned assistant configuration", () => {
     synvoMcpAuthToken: undefined,
     organizeFolderRootToken: "fldcnRoot123",
     organizeFolderWriteEnabled: false,
+    llmApiKey: "nvidia-test-key-with-safe-length",
   });
 });
 
@@ -98,7 +100,7 @@ test("rejects a non-loopback HTTP OAuth redirect", () => {
       loadConfig({
         ...validEnvironment,
         LARK_OAUTH_REDIRECT_URI:
-          "http://lark-assistant-staging.synvo.ai/oauth/lark/callback",
+          "http://synvo-assistant-staging.synvo.ai/oauth/lark/callback",
       }),
     /must use HTTPS or an HTTP loopback host/,
   );
@@ -159,4 +161,13 @@ test("requires a fixed pilot identity when MCP is enabled", () => {
       }),
     /SYNVO_MCP_AUTH_TOKEN requires the authorized pilot identity/,
   );
+});
+
+test("rejects missing, placeholder, and malformed NVIDIA credentials", () => {
+  for (const apiKey of ["", "replace_with_nvidia_api_key", "too-short"]) {
+    assert.throws(
+      () => loadConfig({ ...validEnvironment, LLM_API_KEY: apiKey }),
+      /LLM_API_KEY/,
+    );
+  }
 });

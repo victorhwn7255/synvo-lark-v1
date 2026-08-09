@@ -10,7 +10,7 @@ import type {
   DeliveryQueue,
 } from "./repository.js";
 
-export type DeliveryWorkerOptions = {
+type DeliveryWorkerOptions = {
   queue: DeliveryQueue;
   cipher: TokenCipher;
   prepareMessage: (runId: string, kind: DeliveryJobKind) => Promise<string>;
@@ -22,6 +22,16 @@ export type DeliveryWorkerOptions = {
     chatId: string,
     text: string,
     idempotencyKey: string,
+  ) => Promise<void>;
+  handleAnalyzeAttachment?: (
+    job: DeliveryJob,
+    progressMessageId: string | null,
+    storeProgressMessageId: (messageId: string) => Promise<boolean>,
+  ) => Promise<void>;
+  handleAnalyzeDriveFile?: (
+    job: DeliveryJob,
+    payload: string | null,
+    storePayload: (payload: string) => Promise<boolean>,
   ) => Promise<void>;
   now?: () => Date;
   leaseMs?: number;
@@ -48,6 +58,8 @@ export class DeliveryWorker {
     text: string,
     idempotencyKey: string,
   ) => Promise<void>;
+  readonly #handleAnalyzeAttachment?: DeliveryWorkerOptions["handleAnalyzeAttachment"];
+  readonly #handleAnalyzeDriveFile?: DeliveryWorkerOptions["handleAnalyzeDriveFile"];
   readonly #now: () => Date;
   readonly #leaseMs: number;
   readonly #pollMs: number;
@@ -62,6 +74,8 @@ export class DeliveryWorker {
     this.#prepareMessage = options.prepareMessage;
     this.#prepareExhaustedMessage = options.prepareExhaustedMessage;
     this.#sendText = options.sendText;
+    this.#handleAnalyzeAttachment = options.handleAnalyzeAttachment;
+    this.#handleAnalyzeDriveFile = options.handleAnalyzeDriveFile;
     this.#now = options.now ?? (() => new Date());
     this.#leaseMs = options.leaseMs ?? 120_000;
     this.#pollMs = options.pollMs ?? 500;
@@ -101,6 +115,13 @@ export class DeliveryWorker {
     }
 
     try {
+      if (
+        job.kind === "ANALYZE_ATTACHMENT" ||
+        job.kind === "ANALYZE_DRIVE_FILE"
+      ) {
+        await this.#processAnalysis(job);
+        return true;
+      }
       let payloadCiphertext: string;
       try {
         payloadCiphertext = await this.#preparePayload(job);
@@ -144,6 +165,40 @@ export class DeliveryWorker {
       }
     }
     return true;
+  }
+
+  async #processAnalysis(job: DeliveryJob): Promise<void> {
+    const handler =
+      job.kind === "ANALYZE_ATTACHMENT"
+        ? this.#handleAnalyzeAttachment
+        : this.#handleAnalyzeDriveFile;
+    if (!handler) {
+      throw new PermanentDeliveryError("Document analysis is not configured");
+    }
+    let payload: string | null = null;
+    if (job.payloadCiphertext) {
+      try {
+        payload = decryptDeliveryMessage(
+          this.#cipher,
+          job.id,
+          job.payloadCiphertext,
+        );
+      } catch {
+        throw new PermanentDeliveryError("Document analysis payload is invalid");
+      }
+    }
+    await handler(
+      job,
+      payload,
+      async (value) =>
+        this.#queue.storePayload(
+          job,
+          encryptDeliveryMessage(this.#cipher, job.id, value),
+        ),
+    );
+    if (!(await this.#queue.complete(job))) {
+      throw new Error("Delivery lease was lost before completion");
+    }
   }
 
   async #preparePayload(job: DeliveryJob): Promise<string> {

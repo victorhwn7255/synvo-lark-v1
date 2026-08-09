@@ -17,7 +17,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-test("builds a PKCE S256 authorization URL with the exact Phase 5 scopes", () => {
+test("builds a PKCE S256 authorization URL with the exact Drive PDF scopes", () => {
   const client = new LarkOAuthHttpClient();
   const url = client.buildAuthorizationUrl({
     clientId: "cli_0123456789abcdef",
@@ -33,7 +33,7 @@ test("builds a PKCE S256 authorization URL with the exact Phase 5 scopes", () =>
   assert.equal(url.searchParams.get("state"), "state-value");
   assert.equal(
     url.searchParams.get("scope"),
-    "drive:drive.metadata:readonly offline_access space:document:move space:document:retrieve",
+    "drive:drive.metadata:readonly drive:file:download offline_access space:document:move space:document:retrieve",
   );
 });
 
@@ -53,7 +53,7 @@ test("exchanges a code through Lark's documented browser OAuth endpoint", async 
       refresh_token_expires_in: 2_592_000,
       token_type: "Bearer",
       scope:
-        "space:document:retrieve space:document:move drive:drive.metadata:readonly offline_access",
+        "space:document:retrieve space:document:move drive:drive.metadata:readonly drive:file:download offline_access",
     });
   };
   const client = new LarkOAuthHttpClient({ fetch: fakeFetch });
@@ -74,6 +74,7 @@ test("exchanges a code through Lark's documented browser OAuth endpoint", async 
   assert.equal(observedBody.redirect_uri, "http://localhost:3000/oauth/lark/callback");
   assert.deepEqual(token.scopes, [
     "drive:drive.metadata:readonly",
+    "drive:file:download",
     "offline_access",
     "space:document:move",
     "space:document:retrieve",
@@ -211,7 +212,7 @@ test("treats the standard OAuth invalid_grant HTTP response as revoked", async (
   );
 });
 
-test("accepts only the exact Phase 5 scope set", () => {
+test("accepts only the exact Drive PDF scope set", () => {
   assert.equal(
     hasExactScopes(ORGANIZE_FOLDER_USER_SCOPES),
     true,
@@ -223,7 +224,7 @@ test("accepts only the exact Phase 5 scope set", () => {
   for (const extraScope of [
     "drive:drive",
     "docx:document",
-    "drive:file:download",
+    "space:document:delete",
   ]) {
     assert.equal(
       hasExactScopes([...ORGANIZE_FOLDER_USER_SCOPES, extraScope]),

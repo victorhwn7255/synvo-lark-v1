@@ -17,14 +17,14 @@ import {
   type TokenCipher,
 } from "./token-crypto.js";
 
-export type NewOAuthGrantInput = {
+type NewOAuthGrantInput = {
   openId: string;
   tenantKey: string;
   token: LarkTokenResponse;
   now?: Date;
 };
 
-export type TokenBrokerOptions = {
+type TokenBrokerOptions = {
   clientId: string;
   clientSecret: string;
   cipher: TokenCipher;

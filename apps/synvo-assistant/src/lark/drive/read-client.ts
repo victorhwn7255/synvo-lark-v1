@@ -96,7 +96,7 @@ export type DriveFetch = (
   init?: RequestInit,
 ) => Promise<Response>;
 
-export type LarkDriveReaderOptions = {
+type LarkDriveReaderOptions = {
   fetcher?: DriveFetch;
   apiOrigin?: string;
   requestTimeoutMs?: number;

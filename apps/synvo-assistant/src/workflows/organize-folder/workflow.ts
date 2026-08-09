@@ -19,6 +19,7 @@ import {
   normalizeDriveError,
   parseLarkDriveFolderLink,
   requireAllowlistedRoot,
+  withReadOnlyDriveTokenRecovery,
   type DriveMover,
   type DriveReader,
 } from "../../lark/drive/index.js";
@@ -71,9 +72,9 @@ export type ReadOnlyFolderInventoryRequest = Pick<
 >;
 
 export type OrganizeFolderStartResult =
-  | { kind: "authorization_required"; runId: string; replyText: string }
-  | { kind: "inventory_ready"; runId: string; replyText: string }
-  | { kind: "duplicate"; replyText: string }
+  | { kind: "authorization_required" }
+  | { kind: "inventory_ready" }
+  | { kind: "duplicate" }
   | { kind: "rejected"; replyText: string };
 
 export type ProposalDecision = "APPROVED" | "REJECTED";
@@ -172,11 +173,8 @@ export class OrganizeFolderWorkflow {
       return { kind: "rejected", replyText: message };
     }
 
-    if (await this.#repository.findRunByMessageId(request.messageId)) {
-      return {
-        kind: "duplicate",
-        replyText: "This request is already being processed.",
-      };
+    if (await this.#repository.hasRunForMessage(request.messageId)) {
+      return { kind: "duplicate" };
     }
 
     const grant = await this.#grantStore.findBySubject(
@@ -193,31 +191,17 @@ export class OrganizeFolderWorkflow {
     );
 
     if (!grantUsable) {
-      const pending = await this.#oauthService.createPendingAuthorization({
+      const created = await this.#oauthService.createPendingAuthorization({
         messageId: request.messageId,
         chatId: request.chatId,
         requesterOpenId: request.requesterOpenId,
         tenantKey: request.tenantKey,
         rootTokenDigest,
       });
-      if (!pending) {
-        return {
-          kind: "duplicate",
-          replyText: "This request is already being processed.",
-        };
+      if (!created) {
+        return { kind: "duplicate" };
       }
-      return {
-        kind: "authorization_required",
-        runId: pending.runId,
-        replyText: [
-          "Lark Drive authorization is required.",
-          "",
-          `Authorize this request: ${pending.startUrl.toString()}`,
-          "",
-          "The link expires in 10 minutes. The assistant requests folder-list access, read-only metadata, approved file-move access, and offline refresh access.",
-          "Files can move only after an exact proposal is approved while the operator write switch is enabled.",
-        ].join("\n"),
-      };
+      return { kind: "authorization_required" };
     }
 
     const runId = randomUUID();
@@ -232,17 +216,9 @@ export class OrganizeFolderWorkflow {
       deliveryJobId: randomUUID(),
     });
     if (!created) {
-      return {
-        kind: "duplicate",
-        replyText: "This request is already being processed.",
-      };
+      return { kind: "duplicate" };
     }
-    return {
-      kind: "inventory_ready",
-      runId,
-      replyText:
-        "Authorization found. Building a read-only inventory of the approved pilot folder...",
-    };
+    return { kind: "inventory_ready" };
   }
 
   async readInventory(
@@ -849,42 +825,33 @@ export class OrganizeFolderWorkflow {
     requesterOpenId: string,
     tenantKey: string,
   ): Promise<Map<string, ObservedParent>> {
-    let accessToken = await this.#tokenBroker.getAccessToken(
+    const accessToken = await this.#tokenBroker.getAccessToken(
       requesterOpenId,
       tenantKey,
     );
-    try {
-      return await observeExecutionParents(this.#driveReader, {
+    const recovered = await withReadOnlyDriveTokenRecovery(
+      {
         accessToken,
-        record,
-      });
-    } catch (error) {
-      const normalized = normalizeDriveError(error);
-      if (normalized.metadata.authFailure !== "ACCESS_TOKEN_REJECTED") {
-        throw normalized;
-      }
-    }
-    accessToken = await this.#tokenBroker.recoverAccessToken(
-      requesterOpenId,
-      tenantKey,
-      accessToken,
+        recoverAccessToken: (rejectedAccessToken) =>
+          this.#tokenBroker.recoverAccessToken(
+            requesterOpenId,
+            tenantKey,
+            rejectedAccessToken,
+          ),
+        markAccessTokenRejected: (rejectedAccessToken) =>
+          this.#tokenBroker.markAccessTokenRejected(
+            requesterOpenId,
+            tenantKey,
+            rejectedAccessToken,
+          ),
+      },
+      (currentAccessToken) =>
+        observeExecutionParents(this.#driveReader, {
+          accessToken: currentAccessToken,
+          record,
+        }),
     );
-    try {
-      return await observeExecutionParents(this.#driveReader, {
-        accessToken,
-        record,
-      });
-    } catch (error) {
-      const normalized = normalizeDriveError(error);
-      if (normalized.metadata.authFailure === "ACCESS_TOKEN_REJECTED") {
-        await this.#tokenBroker.markAccessTokenRejected(
-          requesterOpenId,
-          tenantKey,
-          accessToken,
-        );
-      }
-      throw normalized;
-    }
+    return recovered.result;
   }
 
   async #observeExpectedParent(

@@ -25,7 +25,6 @@ export type DriveInventoryFolder = {
 
 export type DriveInventory = {
   run_id: string;
-  scan_id: string;
   complete: boolean;
   baseline_matches: boolean;
   root: DriveInventoryFolder;
@@ -45,6 +44,7 @@ export type DriveInventoryErrorCode =
   | "UNAUTHORIZED"
   | "WRONG_TENANT"
   | "INVALID_FOLDER_LINK"
+  | "INVALID_FILE_LINK"
   | "ROOT_NOT_ALLOWLISTED"
   | "LIMIT_EXCEEDED"
   | "INCOMPLETE_SCAN"

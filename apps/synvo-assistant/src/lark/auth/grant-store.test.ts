@@ -38,7 +38,7 @@ function row() {
   };
 }
 
-test("uses one fixed Phase 5 OAuth grant profile", async () => {
+test("uses one fixed Drive PDF OAuth grant profile", async () => {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const pool = {
     async query(text: string, values: unknown[]) {

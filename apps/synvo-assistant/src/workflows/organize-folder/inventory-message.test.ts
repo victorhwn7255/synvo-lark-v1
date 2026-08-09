@@ -20,7 +20,6 @@ function inventory(overrides: {
 } = {}): DriveInventory {
   return {
     run_id: "4d872758-1f71-4ed8-b141-a2d193ceea91",
-    scan_id: "4e41b888-b1b9-46cf-aac8-3e0f35e0d266",
     complete: true,
     baseline_matches: false,
     root: {
@@ -135,7 +134,6 @@ test("renders the exact bounded pilot inventory without internal references", ()
   assert.match(output, /Baseline verified: two empty folders and four files/u);
   assert.equal(output.includes("private-"), false);
   assert.equal(output.includes(pilot.run_id), false);
-  assert.equal(output.includes(pilot.scan_id), false);
 });
 
 test("collapses line, tab, control, and bidi characters in display values", () => {
@@ -198,7 +196,6 @@ test("caps each rendered display value without splitting Unicode code points", (
 test("renders a concise proposal without internal references or links", () => {
   const proposal: OrganizeFolderProposal = {
     proposal_id: "4d872758-1f71-4ed8-b141-a2d193ceea91",
-    inventory_scan_id: "4e41b888-b1b9-46cf-aac8-3e0f35e0d266",
     moves: [
       {
         file_ref: "f001-private",
@@ -229,6 +226,5 @@ test("renders a concise proposal without internal references or links", () => {
   assert.match(output, /\/approve-folder 4d872758/u);
   assert.match(output, /\/reject-folder 4d872758/u);
   assert.equal(output.includes("private"), false);
-  assert.equal(output.includes(proposal.inventory_scan_id), false);
   assert.equal(output.includes("http"), false);
 });

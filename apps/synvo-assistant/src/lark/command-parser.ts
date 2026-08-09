@@ -1,6 +1,7 @@
 export type BotCommand =
   | { type: "ping" }
   | { type: "organize-folder"; folderLink: string }
+  | { type: "analyze-file"; fileLink: string }
   | {
       type: "decide-folder";
       proposalId: string;
@@ -18,6 +19,11 @@ export function parseCommand(text: string): BotCommand {
   const match = normalized.match(/^\/organize-folder\s+(\S+)$/i);
   if (match?.[1]) {
     return { type: "organize-folder", folderLink: match[1] };
+  }
+
+  const analyzeFileMatch = normalized.match(/^\/analyze-file\s+(\S+)$/i);
+  if (analyzeFileMatch?.[1]) {
+    return { type: "analyze-file", fileLink: analyzeFileMatch[1] };
   }
 
   const decisionMatch = normalized.match(

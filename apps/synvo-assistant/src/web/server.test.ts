@@ -134,12 +134,6 @@ test("requires an explicit browser confirmation before starting OAuth", async ()
 
 test("accepts the exact callback after atomically queueing the scan", async () => {
   let completed = false;
-  const authorization = {
-    runId: "4d872758-1f71-4ed8-b141-a2d193ceea91",
-    chatId: "oc_chat",
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
-  };
   const handler = createAssistantWebHandler({
     oauthService: {
       async beginAuthorization() {
@@ -152,7 +146,6 @@ test("accepts the exact callback after atomically queueing the scan", async () =
           providerError: undefined,
         });
         completed = true;
-        return authorization;
       },
     },
     healthCheck: async () => true,

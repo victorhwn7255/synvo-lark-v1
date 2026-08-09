@@ -4,10 +4,13 @@ export type DeliveryJobKind =
   | "TEXT"
   | "ORGANIZE_FOLDER_SCAN"
   | "ORGANIZE_FOLDER_EXECUTE"
-  | "ORGANIZE_FOLDER_UNDO";
+  | "ORGANIZE_FOLDER_UNDO"
+  | "ANALYZE_ATTACHMENT"
+  | "ANALYZE_DRIVE_FILE";
 
 export type DeliveryJob = {
   id: string;
+  dedupeKey: string;
   runId: string | null;
   kind: DeliveryJobKind;
   chatId: string;
@@ -28,6 +31,7 @@ export type InsertDeliveryJobInput = {
 
 type DeliveryJobRow = {
   id: string;
+  dedupe_key: string;
   run_id: string | null;
   kind: DeliveryJobKind;
   chat_id: string;
@@ -39,6 +43,7 @@ type DeliveryJobRow = {
 function toDeliveryJob(row: DeliveryJobRow): DeliveryJob {
   return {
     id: row.id,
+    dedupeKey: row.dedupe_key,
     runId: row.run_id,
     kind: row.kind,
     chatId: row.chat_id,
@@ -142,6 +147,7 @@ export class PostgresDeliveryQueue implements DeliveryQueue {
          FROM candidate
         WHERE job.id = candidate.id
       RETURNING job.id,
+                job.dedupe_key,
                 job.run_id,
                 job.kind,
                 job.chat_id,

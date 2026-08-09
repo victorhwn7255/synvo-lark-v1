@@ -1,6 +1,6 @@
 import type { TokenCipher } from "../lark/auth/index.js";
 
-export function deliveryMessageAssociatedData(jobId: string): string {
+function deliveryMessageAssociatedData(jobId: string): string {
   return `lark-delivery-job:${jobId}:message:v1`;
 }
 

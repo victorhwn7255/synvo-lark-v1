@@ -11,6 +11,7 @@ export type AppConfig = {
   synvoMcpAuthToken?: string;
   organizeFolderRootToken: string;
   organizeFolderWriteEnabled: boolean;
+  llmApiKey: string;
 };
 
 function readRequiredValue(
@@ -145,6 +146,17 @@ function readHttpHost(value: string | undefined): string {
   return host;
 }
 
+function readLlmApiKey(environment: NodeJS.ProcessEnv): string {
+  const apiKey = readRequiredValue(environment.LLM_API_KEY, "LLM_API_KEY", [
+    "replace_with_nvidia_api_key",
+    "replace_locally_only",
+  ]);
+  if (apiKey.length < 20 || apiKey.length > 512 || /\s/u.test(apiKey)) {
+    throw new Error("LLM_API_KEY is malformed");
+  }
+  return apiKey;
+}
+
 // Defends Synvo tools against callers using a guessable MCP bearer credential.
 function readOptionalMcpAuthToken(value: string | undefined): string | undefined {
   const token = value?.trim();
@@ -207,6 +219,7 @@ export function loadConfig(
   const organizeFolderRootToken = readFolderToken(
     environment.ORGANIZE_FOLDER_ROOT_TOKEN,
   );
+  const llmApiKey = readLlmApiKey(environment);
 
   return {
     appId,
@@ -221,5 +234,6 @@ export function loadConfig(
     synvoMcpAuthToken,
     organizeFolderRootToken,
     organizeFolderWriteEnabled,
+    llmApiKey,
   };
 }

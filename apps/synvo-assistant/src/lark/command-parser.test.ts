@@ -28,6 +28,23 @@ test("rejects missing or extra organize-folder arguments", () => {
   assert.deepEqual(parseCommand("/organize-wiki"), { type: "unknown" });
 });
 
+test("parses one analyze-file link", () => {
+  assert.deepEqual(
+    parseCommand("/analyze-file https://synvo-ai.larksuite.com/file/boxcnPdf123"),
+    {
+      type: "analyze-file",
+      fileLink: "https://synvo-ai.larksuite.com/file/boxcnPdf123",
+    },
+  );
+});
+
+test("rejects missing or extra analyze-file arguments", () => {
+  assert.deepEqual(parseCommand("/analyze-file"), { type: "unknown" });
+  assert.deepEqual(parseCommand("/analyze-file one two"), {
+    type: "unknown",
+  });
+});
+
 test("parses approve and reject commands with one proposal ID", () => {
   assert.deepEqual(parseCommand("/approve-folder proposal-id"), {
     type: "decide-folder",

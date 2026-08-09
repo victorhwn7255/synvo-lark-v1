@@ -41,7 +41,7 @@ function assertExpectedSessionPolicy(
   }
 }
 
-export type OAuthServiceOptions = {
+type OAuthServiceOptions = {
   appId: string;
   appSecret: string;
   redirectUri: string;
@@ -54,24 +54,12 @@ export type OAuthServiceOptions = {
   now?: () => Date;
 };
 
-export type PendingAuthorizationInput = {
+type PendingAuthorizationInput = {
   messageId: string;
   chatId: string;
   requesterOpenId: string;
   tenantKey: string;
   rootTokenDigest: string;
-};
-
-export type PendingAuthorization = {
-  runId: string;
-  startUrl: URL;
-};
-
-export type CompletedAuthorization = {
-  runId: string;
-  chatId: string;
-  requesterOpenId: string;
-  tenantKey: string;
 };
 
 function authorizationRequiredMessage(startUrl: URL): string {
@@ -80,7 +68,7 @@ function authorizationRequiredMessage(startUrl: URL): string {
     "",
     `Authorize this request: ${startUrl.toString()}`,
     "",
-    "The link expires in 10 minutes. The assistant requests folder-list access, read-only metadata, approved file-move access, and offline refresh access.",
+    "The link expires in 10 minutes. The assistant requests folder-list access, read-only metadata, approved PDF-download access, approved file-move access, and offline refresh access.",
     "Files can move only after an exact proposal is approved while the operator write switch is enabled.",
   ].join("\n");
 }
@@ -114,7 +102,7 @@ export class LarkOAuthService {
 
   async createPendingAuthorization(
     input: PendingAuthorizationInput,
-  ): Promise<PendingAuthorization | null> {
+  ): Promise<boolean> {
     const now = this.#now();
     const runId = randomUUID();
     const sessionId = randomUUID();
@@ -142,10 +130,7 @@ export class LarkOAuthService {
         authorizationRequiredMessage(startUrl),
       ),
     });
-    if (!created) {
-      return null;
-    }
-    return { runId, startUrl };
+    return created;
   }
 
   async beginAuthorization(requestToken: string): Promise<URL> {
@@ -199,7 +184,7 @@ export class LarkOAuthService {
     state: string | undefined;
     code: string | undefined;
     providerError?: string;
-  }): Promise<CompletedAuthorization> {
+  }): Promise<void> {
     if (!input.state || !/^[A-Za-z0-9_-]{32,256}$/.test(input.state)) {
       throw new LarkAuthError(
         "OAUTH_REJECTED",
@@ -298,12 +283,6 @@ export class LarkOAuthService {
         grant.id,
         randomUUID(),
       );
-      return {
-        runId: session.runId,
-        chatId: session.chatId,
-        requesterOpenId: session.requesterOpenId,
-        tenantKey: session.tenantKey,
-      };
     } catch (error) {
       const errorCode =
         error instanceof LarkAuthError ? error.code : "OAUTH_REJECTED";

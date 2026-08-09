@@ -19,6 +19,7 @@
     "@larksuiteoapi/node-sdk": "^1.72.0",
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.22.0",
     "zod": "^4.4.3"
   },

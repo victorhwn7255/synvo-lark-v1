@@ -23,7 +23,6 @@ import type { AppConfig } from "../../config.js";
 import type {
   InventoryRun,
   OAuthSession,
-  OrganizeFolderRun,
   OrganizeFolderRepository,
   ProposalDecisionStoreResult,
   StoreInventoryResultInput,
@@ -61,6 +60,7 @@ const config: AppConfig = {
   authorizedTenantKey: "tenant_synvo",
   organizeFolderRootToken: "fldcnRoot123",
   organizeFolderWriteEnabled: false,
+  llmApiKey: "nvapi-test-key-that-is-long-enough",
 };
 
 class StubGrantStore implements OAuthGrantStore {
@@ -83,7 +83,7 @@ class StubGrantStore implements OAuthGrantStore {
 }
 
 class StubRepository implements OrganizeFolderRepository {
-  existingRun: OrganizeFolderRun | null = null;
+  existingRun = false;
   readyRunId: string | null = null;
   inventoryRun: InventoryRun | null = null;
   storedResult: string | null = null;
@@ -99,7 +99,7 @@ class StubRepository implements OrganizeFolderRepository {
   } | null = null;
   staleCalls = 0;
 
-  async findRunByMessageId(): Promise<OrganizeFolderRun | null> {
+  async hasRunForMessage(): Promise<boolean> {
     return this.existingRun;
   }
   async findInventoryRunById(): Promise<InventoryRun | null> {
@@ -408,10 +408,7 @@ function createWorkflow(options: {
     repository,
     oauthService: {
       async createPendingAuthorization() {
-        return {
-          runId,
-          startUrl: new URL("http://localhost:3000/oauth/lark/start?request=opaque"),
-        };
+        return true;
       },
     },
     tokenBroker: {
@@ -463,18 +460,15 @@ test("applies the same pilot boundaries to direct inventory consumers", async ()
   assert.equal(wrongRoot.error?.code, "ROOT_NOT_ALLOWLISTED");
 });
 
-test("returns a bounded Phase 5 authorization link when no grant exists", async () => {
+test("starts authorization when no usable grant exists", async () => {
   const { workflow } = createWorkflow();
   const result = await workflow.start(
     request("https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123"),
   );
   assert.equal(result.kind, "authorization_required");
-  assert.match(result.replyText, /read-only metadata/);
-  assert.match(result.replyText, /approved file-move access/);
-  assert.match(result.replyText, /operator write switch is enabled/);
 });
 
-test("creates an inventory run only for the exact Phase 5 grant", async () => {
+test("creates an inventory run only for the exact Drive PDF grant", async () => {
   const accepted = createWorkflow({ grant: grant() });
   assert.equal(
     (await accepted.workflow.start(
@@ -485,7 +479,7 @@ test("creates an inventory run only for the exact Phase 5 grant", async () => {
   assert.ok(accepted.repository.readyRunId);
 
   const broader = createWorkflow({
-    grant: grant([...ORGANIZE_FOLDER_USER_SCOPES, "drive:file:download"]),
+    grant: grant([...ORGANIZE_FOLDER_USER_SCOPES, "space:document:delete"]),
   });
   assert.equal(
     (await broader.workflow.start(
@@ -497,15 +491,7 @@ test("creates an inventory run only for the exact Phase 5 grant", async () => {
 
 test("does not create another run for a duplicate Lark command", async () => {
   const repository = new StubRepository();
-  repository.existingRun = {
-    id: runId,
-    messageId: "om_message",
-    chatId: "oc_chat",
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
-    state: "COMPLETED",
-    oauthGrantId: "grant-id",
-  };
+  repository.existingRun = true;
   const { workflow } = createWorkflow({ repository, grant: grant() });
 
   const result = await workflow.start(
@@ -557,7 +543,6 @@ test("reuses the stored proposal on a delivery retry", async () => {
   const cipher = new TokenCipher(Buffer.alloc(32, 4));
   const proposal: OrganizeFolderProposal = {
     proposal_id: runId,
-    inventory_scan_id: "4e41b888-b1b9-46cf-aac8-3e0f35e0d266",
     moves: [
       {
         file_ref: "f1",
@@ -743,7 +728,6 @@ test("rejects a stored proposal encrypted for another run", async () => {
   const cipher = new TokenCipher(Buffer.alloc(32, 5));
   const proposal = {
     proposal_id: runId,
-    inventory_scan_id: "4e41b888-b1b9-46cf-aac8-3e0f35e0d266",
     moves: [],
   } satisfies OrganizeFolderProposal;
   repository.inventoryRun = {

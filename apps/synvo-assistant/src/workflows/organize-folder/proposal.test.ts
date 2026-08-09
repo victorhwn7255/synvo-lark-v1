@@ -18,7 +18,6 @@ function inventory(fileNames: string[] = [
 ]): DriveInventory {
   return {
     run_id: "4d872758-1f71-4ed8-b141-a2d193ceea91",
-    scan_id: "4e41b888-b1b9-46cf-aac8-3e0f35e0d266",
     complete: true,
     baseline_matches: true,
     root: {
@@ -85,10 +84,6 @@ test("builds the exact deterministic four-file proposal", () => {
   );
 
   assert.equal(proposal.proposal_id, "4d872758-1f71-4ed8-b141-a2d193ceea91");
-  assert.equal(
-    proposal.inventory_scan_id,
-    "4e41b888-b1b9-46cf-aac8-3e0f35e0d266",
-  );
   assert.deepEqual(
     proposal.moves.map((move) => [move.file_ref, move.destination_ref]),
     [

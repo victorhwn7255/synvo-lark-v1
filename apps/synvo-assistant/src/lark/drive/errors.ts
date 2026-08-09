@@ -144,3 +144,37 @@ export function normalizeDriveError(error: unknown): DriveToolError {
     "The read-only Lark Drive request failed.",
   );
 }
+
+export async function withReadOnlyDriveTokenRecovery<Result>(
+  input: {
+    accessToken: string;
+    recoverAccessToken(rejectedAccessToken: string): Promise<string>;
+    markAccessTokenRejected(rejectedAccessToken: string): Promise<void>;
+  },
+  operation: (accessToken: string) => Promise<Result>,
+): Promise<{ result: Result; accessToken: string }> {
+  let accessToken = input.accessToken;
+  try {
+    return { result: await operation(accessToken), accessToken };
+  } catch (error) {
+    const normalized = normalizeDriveError(error);
+    if (normalized.metadata.authFailure !== "ACCESS_TOKEN_REJECTED") {
+      throw normalized;
+    }
+  }
+
+  accessToken = await input.recoverAccessToken(accessToken);
+  try {
+    return { result: await operation(accessToken), accessToken };
+  } catch (error) {
+    const normalized = normalizeDriveError(error);
+    if (normalized.metadata.authFailure === "ACCESS_TOKEN_REJECTED") {
+      await input.markAccessTokenRejected(accessToken);
+      throw driveToolError(
+        "OAUTH_REVOKED",
+        "The Lark authorization is no longer usable.",
+      );
+    }
+    throw normalized;
+  }
+}

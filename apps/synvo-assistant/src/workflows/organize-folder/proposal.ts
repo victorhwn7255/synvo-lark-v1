@@ -9,7 +9,6 @@ export type ProposalStatus =
 
 export type OrganizeFolderProposal = {
   proposal_id: string;
-  inventory_scan_id: string;
   moves: Array<{
     file_ref: string;
     file_identity_digest: string;
@@ -170,7 +169,6 @@ export function buildOrganizeFolderProposal(
 
   return {
     proposal_id: runId,
-    inventory_scan_id: inventory.scan_id,
     moves,
   };
 }

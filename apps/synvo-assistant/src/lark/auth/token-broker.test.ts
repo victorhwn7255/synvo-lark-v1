@@ -370,12 +370,12 @@ test("rejects a grant that is missing offline access", async () => {
   );
 });
 
-test("rejects stored grants with any scope outside the Phase 5 policy", async (t) => {
+test("rejects stored grants with any scope outside the Drive PDF policy", async (t) => {
   const now = new Date("2026-08-07T00:00:00.000Z");
   for (const extraScope of [
     "drive:drive",
     "docx:document",
-    "drive:file:download",
+    "space:document:delete",
   ]) {
     await t.test(extraScope, async () => {
       const grant = createEncryptedOAuthGrant(cipher, {
@@ -401,13 +401,13 @@ test("rejects stored grants with any scope outside the Phase 5 policy", async (t
   }
 });
 
-test("rejects a refresh response with any scope outside the Phase 5 policy", async (t) => {
+test("rejects a refresh response with any scope outside the Drive PDF policy", async (t) => {
   const issuedAt = new Date("2026-08-07T00:00:00.000Z");
   const now = new Date("2026-08-07T00:10:00.000Z");
   for (const extraScope of [
     "drive:drive",
     "docx:document",
-    "drive:file:download",
+    "space:document:delete",
   ]) {
     await t.test(extraScope, async () => {
       const grant = createEncryptedOAuthGrant(cipher, {

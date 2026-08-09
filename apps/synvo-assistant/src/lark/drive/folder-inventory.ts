@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 
 import type {
   DriveInventory,
@@ -12,7 +12,7 @@ import type {
   NativeDriveItem,
 } from "./read-client.js";
 import { listFolderCompletely } from "./read-client.js";
-import { driveToolError, normalizeDriveError } from "./errors.js";
+import { withReadOnlyDriveTokenRecovery } from "./errors.js";
 
 export type DriveInventoryContext = {
   runId: string;
@@ -47,29 +47,16 @@ function withAccessTokenRecovery(
   const read = async <Result>(
     operation: (currentAccessToken: string) => Promise<Result>,
   ): Promise<Result> => {
-    try {
-      return await operation(accessToken);
-    } catch (error) {
-      const normalized = normalizeDriveError(error);
-      if (normalized.metadata.authFailure !== "ACCESS_TOKEN_REJECTED") {
-        throw normalized;
-      }
-    }
-
-    accessToken = await context.recoverAccessToken(accessToken);
-    try {
-      return await operation(accessToken);
-    } catch (error) {
-      const normalized = normalizeDriveError(error);
-      if (normalized.metadata.authFailure === "ACCESS_TOKEN_REJECTED") {
-        await context.markAccessTokenRejected(accessToken);
-        throw driveToolError(
-          "OAUTH_REVOKED",
-          "The Lark authorization is no longer usable.",
-        );
-      }
-      throw normalized;
-    }
+    const recovered = await withReadOnlyDriveTokenRecovery(
+      {
+        accessToken,
+        recoverAccessToken: context.recoverAccessToken,
+        markAccessTokenRejected: context.markAccessTokenRejected,
+      },
+      operation,
+    );
+    accessToken = recovered.accessToken;
+    return recovered.result;
   };
 
   return {
@@ -247,7 +234,6 @@ export async function observeAllowlistedFolder(
 
   const inventory: DriveInventory = {
     run_id: context.runId,
-    scan_id: randomUUID(),
     complete: true,
     baseline_matches: issues.length === 0,
     root: {

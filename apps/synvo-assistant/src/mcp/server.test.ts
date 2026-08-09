@@ -7,6 +7,7 @@ import {
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
 
+import type { AnalyzeDriveFileResult } from "../workflows/analyze-drive-file/workflow.js";
 import type { DriveFolderInventoryResult } from "../workflows/organize-folder/contracts.js";
 import {
   createSynvoMcpEndpoint,
@@ -17,11 +18,11 @@ const authToken = "m".repeat(43);
 const identityDigest = "a".repeat(64);
 const folderUrl =
   "https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123";
+const fileName = "pilot.pdf";
 const inventoryResult: DriveFolderInventoryResult = {
   ok: true,
   inventory: {
     run_id: "4d872758-1f71-4ed8-b141-a2d193ceea91",
-    scan_id: "597d9407-03d3-4a3f-9309-ca25f1dc8b91",
     complete: true,
     baseline_matches: true,
     root: {
@@ -30,7 +31,7 @@ const inventoryResult: DriveFolderInventoryResult = {
       name: "Test_Synvo_AI_Assistant",
       parent_ref: null,
       owner_verification: "matched",
-      child_count: 6,
+      child_count: 3,
     },
     destinations: [
       {
@@ -50,15 +51,34 @@ const inventoryResult: DriveFolderInventoryResult = {
         child_count: 0,
       },
     ],
-    files: [],
+    files: [
+      {
+        ref: "f001",
+        identity_digest: "d".repeat(64),
+        name: fileName,
+        type: "file",
+        parent_ref: "root",
+        owner_verification: "matched",
+      },
+    ],
     skipped: [],
     issues: [],
     summary: {
       root_folder_count: 2,
-      root_file_count: 4,
+      root_file_count: 1,
       root_skipped_count: 0,
       destination_child_count: 0,
     },
+  },
+};
+const analysisResult: AnalyzeDriveFileResult = {
+  ok: true,
+  analysis: {
+    filename: "pilot.pdf",
+    page_count: 2,
+    text: "Grounded result",
+    input_truncated: false,
+    output_truncated: false,
   },
 };
 
@@ -92,6 +112,11 @@ test("rejects an MCP request without the configured bearer credential", async ()
         throw new Error("must not be called");
       },
     },
+    driveFileAnalyzer: {
+      async analyzeListedFile() {
+        throw new Error("must not be called");
+      },
+    },
   });
 
   await withEndpoint(endpoint, async (origin) => {
@@ -106,16 +131,23 @@ test("rejects an MCP request without the configured bearer credential", async ()
   });
 });
 
-test("lists and calls the read-only inventory tool over Streamable HTTP", async () => {
-  const calls: unknown[] = [];
+test("lists and calls both read-only Synvo tools over Streamable HTTP", async () => {
+  const inventoryCalls: unknown[] = [];
+  const analysisCalls: unknown[] = [];
   const endpoint = createSynvoMcpEndpoint({
     authToken,
     requesterOpenId: "ou_victor",
     tenantKey: "tenant_synvo",
     inventoryReader: {
       async readInventory(request) {
-        calls.push(request);
+        inventoryCalls.push(request);
         return inventoryResult;
+      },
+    },
+    driveFileAnalyzer: {
+      async analyzeListedFile(request) {
+        analysisCalls.push(request);
+        return analysisResult;
       },
     },
   });
@@ -139,10 +171,13 @@ test("lists and calls the read-only inventory tool over Streamable HTTP", async 
       const listed = await client.listTools();
       assert.deepEqual(
         listed.tools.map((tool) => tool.name),
-        ["organize_folder_inventory"],
+        ["organize_folder_inventory", "analyze_drive_file"],
       );
-      assert.equal(listed.tools[0]?.annotations?.readOnlyHint, true);
-      assert.equal(listed.tools[0]?.inputSchema.additionalProperties, false);
+      for (const tool of listed.tools) {
+        assert.equal(tool.annotations?.readOnlyHint, true);
+        assert.equal(tool.annotations?.destructiveHint, false);
+        assert.equal(tool.inputSchema.additionalProperties, false);
+      }
 
       const result = await client.callTool({
         name: "organize_folder_inventory",
@@ -150,11 +185,28 @@ test("lists and calls the read-only inventory tool over Streamable HTTP", async 
       });
       assert.equal(result.isError, false);
       assert.deepEqual(result.structuredContent, inventoryResult);
-      assert.deepEqual(calls, [
+      assert.deepEqual(inventoryCalls, [
         {
           requesterOpenId: "ou_victor",
           tenantKey: "tenant_synvo",
           folderLink: folderUrl,
+        },
+      ]);
+
+      const selectedFileName = inventoryResult.inventory.files[0]?.name;
+      assert.equal(selectedFileName, fileName);
+      const analysis = await client.callTool({
+        name: "analyze_drive_file",
+        arguments: { folder_url: folderUrl, file_name: selectedFileName },
+      });
+      assert.equal(analysis.isError, false);
+      assert.deepEqual(analysis.structuredContent, analysisResult);
+      assert.deepEqual(analysisCalls, [
+        {
+          requesterOpenId: "ou_victor",
+          tenantKey: "tenant_synvo",
+          folderLink: folderUrl,
+          fileName,
         },
       ]);
 
@@ -166,7 +218,27 @@ test("lists and calls the read-only inventory tool over Streamable HTTP", async 
         },
       });
       assert.equal(identityOverride.isError, true);
-      assert.equal(calls.length, 1);
+      assert.equal(inventoryCalls.length, 1);
+
+      const analysisIdentityOverride = await client.callTool({
+        name: "analyze_drive_file",
+        arguments: {
+          folder_url: folderUrl,
+          file_name: fileName,
+          requester_open_id: "ou_other",
+        },
+      });
+      assert.equal(analysisIdentityOverride.isError, true);
+      assert.equal(analysisCalls.length, 1);
+
+      const obsoleteFileUrlContract = await client.callTool({
+        name: "analyze_drive_file",
+        arguments: {
+          file_url: "https://synvo-ai.larksuite.com/file/boxcnPdf123",
+        },
+      });
+      assert.equal(obsoleteFileUrlContract.isError, true);
+      assert.equal(analysisCalls.length, 1);
     } finally {
       await client.close();
     }

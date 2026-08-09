@@ -10,7 +10,7 @@ type OAuthFlow = Pick<
   "beginAuthorization" | "completeAuthorization"
 >;
 
-export type WebServerOptions = {
+type WebServerOptions = {
   host: string;
   port: number;
   oauthService: OAuthFlow;

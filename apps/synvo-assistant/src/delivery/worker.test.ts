@@ -30,6 +30,7 @@ class FakeQueue implements DeliveryQueue {
 function scanJob(attemptCount = 1, payloadCiphertext: string | null = null): DeliveryJob {
   return {
     id: "ca55f05b-f138-41a1-8a73-7cf609866d79",
+    dedupeKey: "scan:test",
     runId: "9d8b0137-ab5d-4b88-bbc3-fef37e1849a2",
     kind: "ORGANIZE_FOLDER_SCAN",
     chatId: "oc_pilot",
@@ -121,6 +122,101 @@ test("uses the existing worker for execution and forwards the job kind", async (
   await worker.processOne();
 
   assert.deepEqual(observed, ["ORGANIZE_FOLDER_EXECUTE"]);
+  assert.equal(queue.completed, 1);
+});
+
+test("uses the existing worker for attachment analysis and stores its progress id", async () => {
+  const queue = new FakeQueue();
+  queue.jobs.push({
+    ...scanJob(),
+    dedupeKey: "analyze-attachment:om_source",
+    runId: null,
+    kind: "ANALYZE_ATTACHMENT",
+  });
+  const observedProgress: Array<string | null> = [];
+  const worker = new DeliveryWorker({
+    queue,
+    cipher: new TokenCipher(Buffer.alloc(32, 3)),
+    prepareMessage: async () => "unused",
+    prepareExhaustedMessage: async () => "unused",
+    sendText: async () => {},
+    handleAnalyzeAttachment: async (_job, progressId, storeProgress) => {
+      observedProgress.push(progressId);
+      assert.equal(await storeProgress("om_progress"), true);
+    },
+  });
+
+  await worker.processOne();
+
+  assert.deepEqual(observedProgress, [null]);
+  assert.ok(queue.storedPayload);
+  assert.equal(queue.completed, 1);
+});
+
+test("attachment restart recovery supplies the stored progress id", async () => {
+  const queue = new FakeQueue();
+  const cipher = new TokenCipher(Buffer.alloc(32, 3));
+  queue.jobs.push({
+    ...scanJob(),
+    dedupeKey: "analyze-attachment:om_source",
+    runId: null,
+    kind: "ANALYZE_ATTACHMENT",
+    payloadCiphertext: encryptDeliveryMessage(
+      cipher,
+      scanJob().id,
+      "om_existing_progress",
+    ),
+  });
+  let observedProgress: string | null = null;
+  const worker = new DeliveryWorker({
+    queue,
+    cipher,
+    prepareMessage: async () => "unused",
+    prepareExhaustedMessage: async () => "unused",
+    sendText: async () => {},
+    handleAnalyzeAttachment: async (_job, progressId) => {
+      observedProgress = progressId;
+    },
+  });
+
+  await worker.processOne();
+  assert.equal(observedProgress, "om_existing_progress");
+  assert.equal(queue.completed, 1);
+});
+
+test("uses the same worker for Drive file analysis and preserves encrypted context", async () => {
+  const queue = new FakeQueue();
+  const cipher = new TokenCipher(Buffer.alloc(32, 3));
+  const context = JSON.stringify({
+    version: 1,
+    fileLink: "https://synvo-ai.larksuite.com/file/boxcnPdf123",
+    progressMessageId: null,
+  });
+  queue.jobs.push({
+    ...scanJob(),
+    dedupeKey: "analyze-drive-file:om_source",
+    runId: null,
+    kind: "ANALYZE_DRIVE_FILE",
+    payloadCiphertext: encryptDeliveryMessage(cipher, scanJob().id, context),
+  });
+  let observedPayload: string | null = null;
+  const worker = new DeliveryWorker({
+    queue,
+    cipher,
+    prepareMessage: async () => "unused",
+    prepareExhaustedMessage: async () => "unused",
+    sendText: async () => {},
+    handleAnalyzeDriveFile: async (_job, payload, storePayload) => {
+      observedPayload = payload;
+      assert.equal(await storePayload("updated context"), true);
+    },
+  });
+
+  await worker.processOne();
+
+  assert.equal(observedPayload, context);
+  assert.ok(queue.storedPayload);
+  assert.equal(queue.storedPayload.includes("updated context"), false);
   assert.equal(queue.completed, 1);
 });
 

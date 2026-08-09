@@ -19,10 +19,10 @@ import {
   ORGANIZE_FOLDER_USER_SCOPES,
   TokenCipher,
 } from "../../lark/auth/index.js";
+import { decryptDeliveryMessage } from "../../delivery/crypto.js";
 
 import type {
   OAuthSession,
-  OrganizeFolderRun,
   OrganizeFolderRepository,
 } from "./repository.js";
 import { LarkOAuthService } from "./authorization.js";
@@ -59,10 +59,10 @@ class MemoryOrganizeFolderRepository implements OrganizeFolderRepository {
   }) | null = null;
   failedCode: string | null = null;
   boundGrantId: string | null = null;
+  deliveryJobId: string | null = null;
+  authorizationMessageCiphertext: string | null = null;
 
-  async findRunByMessageId(): Promise<OrganizeFolderRun | null> {
-    return null;
-  }
+  async hasRunForMessage(): Promise<boolean> { return false; }
 
   async findInventoryRunById() { return null; }
 
@@ -80,6 +80,8 @@ class MemoryOrganizeFolderRepository implements OrganizeFolderRepository {
     redirectUri: string;
     requestedScopes: string[];
     expiresAt: Date;
+    deliveryJobId: string;
+    authorizationMessageCiphertext: string;
   }): Promise<boolean> {
     this.session = {
       id: input.sessionId,
@@ -87,12 +89,13 @@ class MemoryOrganizeFolderRepository implements OrganizeFolderRepository {
       requestTokenDigest: input.requestTokenDigest,
       requesterOpenId: input.requesterOpenId,
       tenantKey: input.tenantKey,
-      chatId: input.chatId,
       redirectUri: input.redirectUri,
       requestedScopes: input.requestedScopes,
       codeVerifierCiphertext: "",
       expiresAt: input.expiresAt,
     };
+    this.deliveryJobId = input.deliveryJobId;
+    this.authorizationMessageCiphertext = input.authorizationMessageCiphertext;
     return true;
   }
 
@@ -190,11 +193,12 @@ function createFixture(options: {
   const repository = new MemoryOrganizeFolderRepository();
   const grantStore = new MemoryGrantStore();
   const oauthClient = new FakeOAuthClient();
+  const cipher = new TokenCipher(Buffer.alloc(32, 9));
   const service = new LarkOAuthService({
     appId: "cli_0123456789abcdef",
     appSecret: "app-secret",
     redirectUri: "http://localhost:3000/oauth/lark/callback",
-    cipher: new TokenCipher(Buffer.alloc(32, 9)),
+    cipher,
     oauthClient,
     grantStore,
     repository,
@@ -202,38 +206,49 @@ function createFixture(options: {
     authorizedTenantKey: options.authorizedTenantKey ?? "tenant_synvo",
     now: () => new Date("2026-08-07T00:00:00.000Z"),
   });
-  return { repository, grantStore, oauthClient, service };
+  return { repository, grantStore, oauthClient, cipher, service };
+}
+
+function pendingStartUrl(fixture: ReturnType<typeof createFixture>): URL {
+  assert.ok(fixture.repository.deliveryJobId);
+  assert.ok(fixture.repository.authorizationMessageCiphertext);
+  const message = decryptDeliveryMessage(
+    fixture.cipher,
+    fixture.repository.deliveryJobId,
+    fixture.repository.authorizationMessageCiphertext,
+  );
+  const match = message.match(/Authorize this request: (https?:\/\/\S+)/u);
+  assert.ok(match?.[1]);
+  return new URL(match[1]);
 }
 
 async function startAuthorization(fixture: ReturnType<typeof createFixture>) {
-  const pending = await fixture.service.createPendingAuthorization({
+  const created = await fixture.service.createPendingAuthorization({
     messageId: "om_message",
     chatId: "oc_chat",
     requesterOpenId: "ou_victor",
     tenantKey: "tenant_synvo",
     rootTokenDigest: "root-digest",
   });
-  assert.ok(pending);
-  const requestToken = pending.startUrl.searchParams.get("request");
+  assert.equal(created, true);
+  const requestToken = pendingStartUrl(fixture).searchParams.get("request");
   assert.ok(requestToken);
   const authorizationUrl = await fixture.service.beginAuthorization(requestToken);
   const state = authorizationUrl.searchParams.get("state");
   assert.ok(state);
-  return { pending, authorizationUrl, state };
+  return { authorizationUrl, state };
 }
 
 test("binds a single-use PKCE OAuth grant to the initiating actor and tenant", async () => {
   const fixture = createFixture();
-  const { pending, authorizationUrl, state } = await startAuthorization(fixture);
+  const { authorizationUrl, state } = await startAuthorization(fixture);
 
   assert.equal(authorizationUrl.searchParams.get("code_challenge_method"), "S256");
-  const completed = await fixture.service.completeAuthorization({
+  await fixture.service.completeAuthorization({
     state,
     code: "one-time-code",
   });
 
-  assert.equal(completed.runId, pending.runId);
-  assert.equal(completed.requesterOpenId, "ou_victor");
   assert.ok(fixture.oauthClient.exchangedVerifier.length >= 43);
   assert.equal(fixture.repository.boundGrantId, fixture.grantStore.grant?.id);
   const serializedGrant = JSON.stringify(fixture.grantStore.grant);
@@ -260,19 +275,19 @@ test("rejects state mismatch and callback replay", async () => {
 
 test("rejects expired OAuth start and callback sessions", async () => {
   const expiredStart = createFixture();
-  const pending = await expiredStart.service.createPendingAuthorization({
+  const created = await expiredStart.service.createPendingAuthorization({
     messageId: "om_expired_start",
     chatId: "oc_chat",
     requesterOpenId: "ou_victor",
     tenantKey: "tenant_synvo",
     rootTokenDigest: "root-digest",
   });
-  assert.ok(pending);
+  assert.equal(created, true);
   assert.ok(expiredStart.repository.session);
   expiredStart.repository.session.expiresAt = new Date(
     "2026-08-07T00:00:00.000Z",
   );
-  const requestToken = pending.startUrl.searchParams.get("request");
+  const requestToken = pendingStartUrl(expiredStart).searchParams.get("request");
   assert.ok(requestToken);
   await assert.rejects(
     expiredStart.service.beginAuthorization(requestToken),
@@ -295,17 +310,17 @@ test("rejects expired OAuth start and callback sessions", async () => {
 
 test("rejects a persisted redirect mismatch before building authorization", async () => {
   const fixture = createFixture();
-  const pending = await fixture.service.createPendingAuthorization({
+  const created = await fixture.service.createPendingAuthorization({
     messageId: "om_message",
     chatId: "oc_chat",
     requesterOpenId: "ou_victor",
     tenantKey: "tenant_synvo",
     rootTokenDigest: "root-digest",
   });
-  assert.ok(pending);
+  assert.equal(created, true);
   assert.ok(fixture.repository.session);
   fixture.repository.session.redirectUri = "https://attacker.example/callback";
-  const requestToken = pending.startUrl.searchParams.get("request");
+  const requestToken = pendingStartUrl(fixture).searchParams.get("request");
   assert.ok(requestToken);
 
   await assert.rejects(
@@ -433,11 +448,11 @@ test("rejects a grant missing offline access", async () => {
   );
 });
 
-test("rejects callback tokens with any scope outside the Phase 5 policy", async (t) => {
+test("rejects callback tokens with any scope outside the Drive PDF policy", async (t) => {
   for (const extraScope of [
     "drive:drive",
     "docx:document",
-    "drive:file:download",
+    "space:document:delete",
   ]) {
     await t.test(extraScope, async () => {
       const fixture = createFixture();

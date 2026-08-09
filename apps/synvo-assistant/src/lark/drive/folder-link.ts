@@ -14,15 +14,19 @@ function isAllowedHost(hostname: string): boolean {
   );
 }
 
-export function parseLarkDriveFolderLink(value: string): string {
+export function parseLarkDriveUrl(
+  value: string,
+  errorCode: "INVALID_FOLDER_LINK" | "INVALID_FILE_LINK",
+  message: string,
+): URL {
+  if (value.length > 2_048) {
+    throw driveToolError(errorCode, message);
+  }
   let url: URL;
   try {
     url = new URL(value.trim());
   } catch {
-    throw driveToolError(
-      "INVALID_FOLDER_LINK",
-      "Provide a valid Lark Drive folder link.",
-    );
+    throw driveToolError(errorCode, message);
   }
 
   if (
@@ -32,11 +36,17 @@ export function parseLarkDriveFolderLink(value: string): string {
     url.password ||
     url.hash
   ) {
-    throw driveToolError(
-      "INVALID_FOLDER_LINK",
-      "Provide a valid Lark Drive folder link.",
-    );
+    throw driveToolError(errorCode, message);
   }
+  return url;
+}
+
+export function parseLarkDriveFolderLink(value: string): string {
+  const url = parseLarkDriveUrl(
+    value,
+    "INVALID_FOLDER_LINK",
+    "Provide a valid Lark Drive folder link.",
+  );
 
   const pathMatch = /^\/drive\/folder\/([A-Za-z0-9_-]+)$/.exec(url.pathname);
   const hasSupportedQuery =
