@@ -1,8 +1,8 @@
 # `/organize-folder` Implementation Plan
 
-Status: Active
+Status: Complete
 
-Current phase: Phase 4 closed; Phase 5 not started.
+Current phase: Phase 5 closed on 2026-08-08.
 
 Pilot: Victor's Lark My Space folder `Test_Synvo_AI_Assistant`
 
@@ -54,7 +54,7 @@ The canonical runtime values live in `apps/synvo-assistant/src/workflows/organiz
 Lark App Bot -> message connection and OAuth --+
                                                 |
 Approved AI agent -> authenticated /mcp --------+-> organize-folder workflow
-                                                   -> read-only Drive client
+                                                   -> bounded Drive read/move client
                                                    -> delivery worker
                                                    -> PostgreSQL
 ```
@@ -114,6 +114,7 @@ One process, one npm package, one configuration loader, and one database pool ar
 - [x] Add line-level complexity rules to the engineering guide.
 - [x] Colocate workflow authorization and persistence; keep provider OAuth mechanics under `lark/auth`.
 - [x] Remove the three inactive Phase 1 and Phase 3 tables through a forward-only migration.
+- [x] Remove the obsolete per-run scan attempt, scan lease, and numeric phase columns after the delivery job became their authoritative owner.
 
 Historical proof: `tasks/archive/phase1-3-verification-evidence.md`.
 
@@ -202,14 +203,85 @@ Do not add GPT in Phase 4. The fixture is intentionally deterministic. GPT becom
 
 Begin only after Phase 4 closes.
 
-- Re-read and compare the exact snapshot immediately before writes.
-- Require an approved, non-stale proposal.
-- Require the master write switch.
-- Move only proposed files to the approved destinations.
-- Verify every post-move parent from Lark.
-- Stop on the first mismatch and report partial state safely.
-- Persist enough source/destination data for undo.
-- Require separate confirmation for undo, then verify the restored baseline.
+Goal: execute only a newly approved proposal during an explicitly enabled write window, verify every observed parent, and restore the exact baseline through a separately confirmed undo.
+
+Implementation status: closed on 2026-08-08 after automated verification and the controlled live Lark execution-and-undo round trip.
+
+### Simplicity boundary
+
+Allowed:
+
+- Add `space:document:move` to the exact active OAuth scope profile.
+- Add one small Lark Drive move method beside the existing read client.
+- Extend the existing run row with the minimum execution and undo state.
+- Add at most one forward-only migration.
+- Extend the existing delivery job kinds and worker; do not create another worker.
+- Add `/undo-folder <proposal-id>` as the separate undo confirmation.
+
+Not allowed:
+
+- A new service, process, package, database table, queue, worker, registry, or workflow framework.
+- GPT, content analysis, Lark cards, new MCP tools, or arbitrary-folder support.
+- Delete, upload, rename, create-folder, permission, sharing, or outside-root operations.
+- Restoring the deleted Phase 3 spike architecture.
+
+### Work
+
+- [x] Support deliberate Victor reauthorization with exactly `drive:drive.metadata:readonly`, `offline_access`, `space:document:retrieve`, and `space:document:move`.
+- [x] Refuse execution unless the proposal is newly approved by the configured pilot actor and tenant while the master write switch is enabled.
+- [x] Never scan and execute historical approvals automatically at startup.
+- [x] Re-read the root and destinations immediately before the first move.
+- [x] Compare the provider state with the proposal's bound inventory snapshot; mark it `STALE` and move nothing on any mismatch.
+- [x] Queue execution durably through the existing delivery queue only when a new approval is recorded.
+- [x] Move only the four proposed files to the two policy-owned destinations.
+- [x] Observe the current parent before every write and verify the parent after every write.
+- [x] Reconcile provider state after a timeout or ambiguous response before deciding whether a retry is safe.
+- [x] Stop before the next move on failed, unknown, or inconsistent state.
+- [x] Persist a bounded encrypted execution result with attempted files, observed parents, outcome, and timestamps on the existing run.
+- [x] Recover an interrupted execution by observing provider state before issuing another move.
+- [x] Report completed, partial, stale, failed, unknown, and untouched outcomes accurately in Lark.
+- [x] Add `/undo-folder <proposal-id>` as a separate explicit confirmation.
+- [x] Undo only files verified as moved by that proposal, restoring each to its recorded original parent.
+- [x] Verify every undo result and make duplicate undo commands idempotent.
+- [x] Restore and verify the exact two-empty-folder/four-root-file baseline in automated tests.
+
+### Tests
+
+- [x] Write switch false performs zero Drive writes.
+- [x] Proposed, rejected, stale, missing, and unknown proposals cannot execute.
+- [x] Wrong user or tenant cannot execute or undo.
+- [x] Any pre-execution snapshot mismatch marks the proposal stale and moves nothing.
+- [x] The exact approved proposal moves only the four expected files and verifies every observed parent.
+- [x] Duplicate approval, event delivery, worker retry, and process recovery cannot duplicate a move.
+- [x] Timeout and ambiguous provider results are reconciled before retry.
+- [x] Unexpected parent or destination stops execution and persists a truthful partial or unknown result.
+- [x] Undo requires its own command and touches only files verified as moved by the proposal.
+- [x] Duplicate undo is idempotent and successful undo restores the exact baseline.
+- [x] User-facing output contains no native tokens, restricted links, raw provider responses, or ciphertext.
+- [x] No delete, upload, rename, create-folder, permission, or outside-root method is reachable.
+
+### Exit gate
+
+- [x] With writes disabled, an approval causes zero Drive changes.
+- [x] Victor reauthorizes with exactly `drive:drive.metadata:readonly`, `offline_access`, `space:document:retrieve`, and `space:document:move`.
+- [x] During a controlled write-enabled window, a new approved proposal moves all four files to the proposed destinations.
+- [x] Duplicate delivery causes no duplicate move.
+- [x] `/undo-folder <proposal-id>` restores all four files to the root.
+- [x] A final provider-backed scan reports the exact baseline.
+- [x] `ORGANIZE_FOLDER_WRITE_ENABLED=false` is restored before Phase 5 closes.
+
+Live acceptance evidence:
+
+- Proposal `18ba21fe-d8d4-4279-bb25-2f0f30b3a339` was approved while writes were disabled; the database recorded zero execution jobs and Drive remained unchanged.
+- Victor deliberately created an exact four-scope `phase5_execute` OAuth grant.
+- Fresh proposal `0c91c7a5-c446-4bed-ab13-a2cbaa18c4ae` executed through one durable job and verified all four destination parents.
+- Repeating its approval created no second job or move.
+- A separate `/undo-folder` command completed through one durable job and verified all four original parents.
+- The write switch was restored to false immediately after undo and the application restarted in safe mode.
+- Final provider-backed proposal `507fba7e-507f-468a-a579-f0814ca5f8ac` proved the exact four-root-file/two-empty-destination baseline with zero unsupported items; it was not approved.
+- Live acceptance exposed one inaccurate duplicate-approval sentence; it was corrected without changing behavior and covered by a regression test.
+
+Before closing Phase 5, run the complete verification suite, confirm source ownership, confirm no secret is tracked, delete unused code, and explain any implementation that exceeded this boundary.
 
 ## 8. Verification commands
 
@@ -224,10 +296,13 @@ npm run dev
 Manual Lark acceptance:
 
 1. `/ping` returns `pong`.
-2. `/organize-folder <allowlisted-link>` returns a proposal with two Product and two Research moves.
-3. The proposal states that no changes were made and contains no native Drive references or restricted links.
-4. `/approve-folder <proposal-id>` records approval; repeating it is idempotent.
-5. A conflicting `/reject-folder <proposal-id>` fails safely.
-6. A second proposal can be rejected with `/reject-folder <new-proposal-id>`.
-7. Invalid, external, sibling, malformed, stale, missing, and unknown inputs fail safely.
-8. All four PDFs remain in the root and both destination folders remain empty.
+2. Reauthorize Victor through a new `/organize-folder <allowlisted-link>` request and confirm Lark grants exactly the four active Phase 5 scopes.
+3. With `ORGANIZE_FOLDER_WRITE_ENABLED=false`, approve that new proposal and confirm no execution is queued and no file moves.
+4. Confirm all four PDFs remain in the root and both destination folders remain empty.
+5. Enable `ORGANIZE_FOLDER_WRITE_ENABLED=true` only for the controlled acceptance window and restart the application.
+6. Create and approve a new proposal; verify exactly two files move to `Product` and two to `Research`.
+7. Repeat the approval or delivery and confirm no file moves twice.
+8. Send `/undo-folder <proposal-id>` and verify all four files return to the root.
+9. Repeat the undo and confirm it is idempotent.
+10. Restore `ORGANIZE_FOLDER_WRITE_ENABLED=false` immediately and restart the application.
+11. Run a final provider-backed inventory and confirm four root PDFs, two empty destinations, and zero unsupported items.

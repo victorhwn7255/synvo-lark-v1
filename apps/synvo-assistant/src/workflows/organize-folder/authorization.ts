@@ -7,7 +7,7 @@ import {
   LarkAuthError,
   type LarkOAuthClient,
   oauthSessionAssociatedData,
-  DRIVE_INVENTORY_USER_SCOPES,
+  ORGANIZE_FOLDER_USER_SCOPES,
   type TokenCipher,
 } from "../../lark/auth/index.js";
 
@@ -76,12 +76,12 @@ export type CompletedAuthorization = {
 
 function authorizationRequiredMessage(startUrl: URL): string {
   return [
-    "Read-only Lark Drive authorization is required.",
+    "Lark Drive authorization is required.",
     "",
     `Authorize this request: ${startUrl.toString()}`,
     "",
-    "The link expires in 10 minutes. The assistant requests folder-list access, read-only file and folder metadata, and offline refresh access.",
-    "No files will be opened, downloaded, or changed.",
+    "The link expires in 10 minutes. The assistant requests folder-list access, read-only metadata, approved file-move access, and offline refresh access.",
+    "Files can move only after an exact proposal is approved while the operator write switch is enabled.",
   ].join("\n");
 }
 
@@ -108,7 +108,7 @@ export class LarkOAuthService {
     this.#repository = options.repository;
     this.#authorizedOpenId = options.authorizedOpenId;
     this.#authorizedTenantKey = options.authorizedTenantKey;
-    this.#requiredScopes = canonicalScopes(DRIVE_INVENTORY_USER_SCOPES);
+    this.#requiredScopes = canonicalScopes(ORGANIZE_FOLDER_USER_SCOPES);
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -249,7 +249,7 @@ export class LarkOAuthService {
       if (!hasExactScopes(token.scopes, this.#requiredScopes)) {
         throw new LarkAuthError(
           "WRONG_SCOPE",
-          "The Lark authorization scope set does not match the read-only policy.",
+          "The Lark authorization scope set does not match the organize-folder policy.",
         );
       }
 

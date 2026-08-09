@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type {
   DriveInventory,
@@ -22,6 +22,21 @@ export type DriveInventoryContext = {
   recoverAccessToken(rejectedAccessToken: string): Promise<string>;
   markAccessTokenRejected(rejectedAccessToken: string): Promise<void>;
 };
+
+export type AllowlistedFolderObservation = {
+  inventory: DriveInventory;
+  native: {
+    rootToken: string;
+    destinations: Array<{ ref: string; name: string; token: string }>;
+    files: Array<{ ref: string; name: string; token: string }>;
+  };
+};
+
+// Defends native Drive tokens from disclosure while preserving exact provider
+// identity comparison between proposal and execution.
+function identityDigest(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
 
 function withAccessTokenRecovery(
   reader: DriveReader,
@@ -89,10 +104,10 @@ function ownerVerification(
   return ownerId === requesterOpenId ? "matched" : "mismatched";
 }
 
-export async function buildAllowlistedFolderInventory(
+export async function observeAllowlistedFolder(
   reader: DriveReader,
   context: DriveInventoryContext,
-): Promise<DriveInventory> {
+): Promise<AllowlistedFolderObservation> {
   const authenticatedReader = withAccessTokenRecovery(reader, context);
   const rootItems = await listFolderCompletely(authenticatedReader, {
     accessToken: context.accessToken,
@@ -130,12 +145,13 @@ export async function buildAllowlistedFolderInventory(
     });
     destinationChildren.set(destination.token, children);
   }
-  const destinations: DriveInventoryFolder[] = exactDestinations
-    .sort(byNameThenToken)
+  const sortedDestinations = exactDestinations.sort(byNameThenToken);
+  const destinations: DriveInventoryFolder[] = sortedDestinations
     .map((destination, index) => {
       const ref = `d${String(index + 1).padStart(3, "0")}`;
       return {
         ref,
+        identity_digest: identityDigest(destination.token),
         name: destination.name,
         parent_ref: "root",
         owner_verification: ownerVerification(
@@ -148,6 +164,7 @@ export async function buildAllowlistedFolderInventory(
 
   const files: DriveInventoryItem[] = rootFiles.map((item, index) => ({
     ref: `f${String(index + 1).padStart(3, "0")}`,
+    identity_digest: identityDigest(item.token),
     name: item.name,
     type: item.type,
     parent_ref: "root",
@@ -156,6 +173,7 @@ export async function buildAllowlistedFolderInventory(
   }));
   const skipped: DriveInventoryItem[] = unsupportedItems.map((item, index) => ({
     ref: `s${String(index + 1).padStart(3, "0")}`,
+    identity_digest: identityDigest(item.token),
     name: item.name,
     type: item.type,
     parent_ref: "root",
@@ -227,13 +245,14 @@ export async function buildAllowlistedFolderInventory(
     issues.push(`${mismatchedOwnerCount} item(s) are not owned by the requester.`);
   }
 
-  return {
+  const inventory: DriveInventory = {
     run_id: context.runId,
     scan_id: randomUUID(),
     complete: true,
     baseline_matches: issues.length === 0,
     root: {
       ref: "root",
+      identity_digest: identityDigest(context.rootToken),
       name: rootMetadata.title,
       parent_ref: null,
       owner_verification: rootOwnerVerification,
@@ -251,6 +270,22 @@ export async function buildAllowlistedFolderInventory(
         (total, children) => total + children.length,
         0,
       ),
+    },
+  };
+  return {
+    inventory,
+    native: {
+      rootToken: context.rootToken,
+      destinations: sortedDestinations.map((destination, index) => ({
+        ref: `d${String(index + 1).padStart(3, "0")}`,
+        name: destination.name,
+        token: destination.token,
+      })),
+      files: rootFiles.map((file, index) => ({
+        ref: `f${String(index + 1).padStart(3, "0")}`,
+        name: file.name,
+        token: file.token,
+      })),
     },
   };
 }

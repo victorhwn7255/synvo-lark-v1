@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 
-import { DRIVE_INVENTORY_SCOPE_PROFILE } from "./oauth-client.js";
+import { ORGANIZE_FOLDER_SCOPE_PROFILE } from "./oauth-client.js";
 
 export type StoredOAuthGrant = {
   id: string;
@@ -92,7 +92,7 @@ async function selectGrant(
         AND tenant_key = $2
         AND scope_profile = $3
       ${lock ? "FOR UPDATE" : ""}`,
-    [openId, tenantKey, DRIVE_INVENTORY_SCOPE_PROFILE],
+    [openId, tenantKey, ORGANIZE_FOLDER_SCOPE_PROFILE],
   );
 
   return result.rows[0] ? toGrant(result.rows[0]) : null;
@@ -155,7 +155,7 @@ export class PostgresOAuthGrantStore implements OAuthGrantStore {
         input.id,
         input.openId,
         input.tenantKey,
-        DRIVE_INVENTORY_SCOPE_PROFILE,
+        ORGANIZE_FOLDER_SCOPE_PROFILE,
         input.accessTokenCiphertext,
         input.refreshTokenCiphertext,
         input.grantedScopes,

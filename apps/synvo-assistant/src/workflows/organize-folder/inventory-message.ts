@@ -130,10 +130,10 @@ export function formatDriveInventory(inventory: DriveInventory): string {
 }
 
 export function formatDriveFolderInventoryResult(result: DriveFolderInventoryResult): string {
-  if (result.ok && result.inventory) {
+  if (result.ok) {
     return formatDriveInventory(result.inventory);
   }
-  return `${result.error?.message ?? "The read-only inventory failed."}\n\nNo files were changed.`;
+  return `${result.error.message}\n\nNo files were changed.`;
 }
 
 export function formatOrganizeFolderProposal(

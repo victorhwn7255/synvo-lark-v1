@@ -14,6 +14,7 @@ import {
 } from "./server.js";
 
 const authToken = "m".repeat(43);
+const identityDigest = "a".repeat(64);
 const folderUrl =
   "https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123";
 const inventoryResult: DriveFolderInventoryResult = {
@@ -25,6 +26,7 @@ const inventoryResult: DriveFolderInventoryResult = {
     baseline_matches: true,
     root: {
       ref: "root",
+      identity_digest: identityDigest,
       name: "Test_Synvo_AI_Assistant",
       parent_ref: null,
       owner_verification: "matched",
@@ -33,6 +35,7 @@ const inventoryResult: DriveFolderInventoryResult = {
     destinations: [
       {
         ref: "d001",
+        identity_digest: "b".repeat(64),
         name: "Product",
         parent_ref: "root",
         owner_verification: "matched",
@@ -40,6 +43,7 @@ const inventoryResult: DriveFolderInventoryResult = {
       },
       {
         ref: "d002",
+        identity_digest: "c".repeat(64),
         name: "Research",
         parent_ref: "root",
         owner_verification: "matched",

@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 
 import { insertDeliveryJob } from "../../delivery/repository.js";
+import type { ExecutionStatus, UndoStatus } from "./execution.js";
 import type { ProposalStatus } from "./proposal.js";
 
 export type OrganizeFolderRun = {
@@ -15,6 +16,7 @@ export type OrganizeFolderRun = {
 
 export type InventoryRun = {
   id: string;
+  chatId: string;
   requesterOpenId: string;
   tenantKey: string;
   state: string;
@@ -24,11 +26,24 @@ export type InventoryRun = {
   resultCiphertext: string | null;
   proposalCiphertext: string | null;
   proposalStatus: ProposalStatus | null;
+  executionCiphertext: string | null;
+  executionStatus: ExecutionStatus | null;
+  undoStatus: UndoStatus | null;
 };
 
 export type ProposalDecisionStoreResult =
-  | { kind: "recorded"; status: "APPROVED" | "REJECTED" }
+  | {
+      kind: "recorded";
+      status: "APPROVED" | "REJECTED";
+      executionQueued: boolean;
+    }
   | { kind: "existing"; status: ProposalStatus }
+  | { kind: "not_found" };
+
+export type UndoRequestStoreResult =
+  | { kind: "recorded" }
+  | { kind: "existing"; status: UndoStatus }
+  | { kind: "not_ready" }
   | { kind: "not_found" };
 
 export type StoreInventoryResultInput =
@@ -110,7 +125,28 @@ export interface OrganizeFolderRepository {
     tenantKey: string;
     decision: "APPROVED" | "REJECTED";
     decidedAt: Date;
+    executionJobId?: string;
   }): Promise<ProposalDecisionStoreResult>;
+  markProposalStale(proposalId: string): Promise<boolean>;
+  startExecution(proposalId: string): Promise<boolean>;
+  storeExecution(input: {
+    proposalId: string;
+    status: ExecutionStatus;
+    ciphertext: string | null;
+  }): Promise<boolean>;
+  requestUndo(input: {
+    proposalId: string;
+    requesterOpenId: string;
+    tenantKey: string;
+    deliveryJobId: string;
+    executionCiphertext: string;
+  }): Promise<UndoRequestStoreResult>;
+  startUndo(proposalId: string): Promise<boolean>;
+  storeUndo(input: {
+    proposalId: string;
+    status: UndoStatus;
+    ciphertext: string;
+  }): Promise<boolean>;
 }
 
 type RunRow = {
@@ -138,6 +174,7 @@ type SessionRow = {
 
 type InventoryRunRow = {
   id: string;
+  chat_id: string;
   requester_open_id: string;
   tenant_key: string;
   state: string;
@@ -147,11 +184,17 @@ type InventoryRunRow = {
   scan_result_ciphertext: string | null;
   proposal_ciphertext: string | null;
   proposal_status: ProposalStatus | null;
+  execution_ciphertext: string | null;
+  execution_status: ExecutionStatus | null;
+  undo_status: UndoStatus | null;
 };
 
 type ProposalDecisionRow = {
   proposal_status: ProposalStatus;
+  chat_id: string;
 };
+
+type UndoStatusRow = { undo_status: UndoStatus | null };
 
 function toRun(row: RunRow): OrganizeFolderRun {
   return {
@@ -191,7 +234,6 @@ async function insertRun(
     rootTokenDigest: string;
     oauthGrantId: string | null;
     state: "AWAITING_OAUTH" | "READY_TO_SCAN";
-    workflowPhase: 2 | 3;
   },
 ): Promise<boolean> {
   const result = await client.query(
@@ -203,9 +245,8 @@ async function insertRun(
         tenant_key,
         root_token_digest,
         oauth_grant_id,
-        state,
-        workflow_phase
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        state
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (message_id) DO NOTHING`,
     [
       input.id,
@@ -216,7 +257,6 @@ async function insertRun(
       input.rootTokenDigest,
       input.oauthGrantId,
       input.state,
-      input.workflowPhase,
     ],
   );
   return (result.rowCount ?? 0) === 1;
@@ -248,6 +288,7 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
   async findInventoryRunById(runId: string): Promise<InventoryRun | null> {
     const result = await this.#pool.query<InventoryRunRow>(
       `SELECT run.id,
+              run.chat_id,
               run.requester_open_id,
               run.tenant_key,
               run.state,
@@ -256,6 +297,9 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
               run.scan_result_ciphertext,
               run.proposal_ciphertext,
               run.proposal_status,
+              run.execution_ciphertext,
+              run.execution_status,
+              run.undo_status,
               EXISTS (
                 SELECT 1
                   FROM lark_oauth_grants AS oauth_grant
@@ -271,6 +315,7 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
     return row
       ? {
           id: row.id,
+          chatId: row.chat_id,
           requesterOpenId: row.requester_open_id,
           tenantKey: row.tenant_key,
           state: row.state,
@@ -280,6 +325,9 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
           resultCiphertext: row.scan_result_ciphertext,
           proposalCiphertext: row.proposal_ciphertext,
           proposalStatus: row.proposal_status,
+          executionCiphertext: row.execution_ciphertext,
+          executionStatus: row.execution_status,
+          undoStatus: row.undo_status,
         }
       : null;
   }
@@ -300,7 +348,6 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
       const inserted = await insertRun(client, {
         ...input,
         state: "READY_TO_SCAN",
-        workflowPhase: 2,
       });
       if (!inserted) {
         await client.query("ROLLBACK");
@@ -353,7 +400,6 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
         rootTokenDigest: input.rootTokenDigest,
         oauthGrantId: null,
         state: "AWAITING_OAUTH",
-        workflowPhase: 2,
       });
       if (!inserted) {
         await client.query("ROLLBACK");
@@ -525,7 +571,6 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
               scan_result_ciphertext = $4,
               proposal_ciphertext = $5,
               proposal_status = $6,
-              scan_lease_expires_at = NULL,
               updated_at = now()
         WHERE id = $1
           AND state IN ('READY_TO_SCAN', 'SCANNING')
@@ -548,47 +593,226 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
     tenantKey: string;
     decision: "APPROVED" | "REJECTED";
     decidedAt: Date;
+    executionJobId?: string;
   }): Promise<ProposalDecisionStoreResult> {
-    const updated = await this.#pool.query<ProposalDecisionRow>(
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      const queueExecution =
+        input.decision === "APPROVED" && input.executionJobId !== undefined;
+      const updated = await client.query<ProposalDecisionRow>(
+        `UPDATE organize_folder_runs
+            SET proposal_status = $4,
+                proposal_decided_by_open_id = $2,
+                proposal_decided_at = $5,
+                execution_status = CASE WHEN $6 THEN 'QUEUED' ELSE execution_status END,
+                updated_at = now()
+          WHERE id = $1
+            AND requester_open_id = $2
+            AND tenant_key = $3
+            AND proposal_status = 'PROPOSED'
+            AND proposal_ciphertext IS NOT NULL
+        RETURNING proposal_status, chat_id`,
+        [
+          input.proposalId,
+          input.requesterOpenId,
+          input.tenantKey,
+          input.decision,
+          input.decidedAt,
+          queueExecution,
+        ],
+      );
+      const row = updated.rows[0];
+      if (row) {
+        if (queueExecution) {
+          const queued = await insertDeliveryJob(client, {
+            id: input.executionJobId!,
+            dedupeKey: `organize-folder-execute:${input.proposalId}`,
+            runId: input.proposalId,
+            kind: "ORGANIZE_FOLDER_EXECUTE",
+            chatId: row.chat_id,
+          });
+          if (!queued) {
+            throw new Error("Folder execution delivery job could not be created");
+          }
+        }
+        await client.query("COMMIT");
+        return {
+          kind: "recorded",
+          status: input.decision,
+          executionQueued: queueExecution,
+        };
+      }
+
+      const existing = await client.query<Pick<ProposalDecisionRow, "proposal_status">>(
+        `SELECT proposal_status
+           FROM organize_folder_runs
+          WHERE id = $1
+            AND requester_open_id = $2
+            AND tenant_key = $3
+            AND proposal_status IS NOT NULL
+            AND proposal_ciphertext IS NOT NULL`,
+        [input.proposalId, input.requesterOpenId, input.tenantKey],
+      );
+      await client.query("COMMIT");
+      const existingRow = existing.rows[0];
+      return existingRow
+        ? { kind: "existing", status: existingRow.proposal_status }
+        : { kind: "not_found" };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async markProposalStale(proposalId: string): Promise<boolean> {
+    const result = await this.#pool.query(
       `UPDATE organize_folder_runs
-          SET proposal_status = $4,
-              proposal_decided_by_open_id = $2,
-              proposal_decided_at = $5,
+          SET proposal_status = 'STALE',
+              execution_status = 'STALE',
               updated_at = now()
         WHERE id = $1
-          AND requester_open_id = $2
-          AND tenant_key = $3
-          AND proposal_status = 'PROPOSED'
-          AND proposal_ciphertext IS NOT NULL
-      RETURNING proposal_status`,
-      [
-        input.proposalId,
-        input.requesterOpenId,
-        input.tenantKey,
-        input.decision,
-        input.decidedAt,
-      ],
+          AND proposal_status = 'APPROVED'
+          AND execution_status IN ('QUEUED', 'RUNNING')`,
+      [proposalId],
     );
-    if (updated.rows[0]) {
-      return { kind: "recorded", status: input.decision };
-    }
+    return result.rowCount === 1;
+  }
 
-    const existing = await this.#pool.query<ProposalDecisionRow>(
-      `SELECT proposal_status
-         FROM organize_folder_runs
+  async startExecution(proposalId: string): Promise<boolean> {
+    const result = await this.#pool.query(
+      `UPDATE organize_folder_runs
+          SET execution_status = 'RUNNING',
+              updated_at = now()
         WHERE id = $1
-          AND requester_open_id = $2
-          AND tenant_key = $3
-          AND proposal_status IS NOT NULL
-          AND proposal_ciphertext IS NOT NULL`,
-      [input.proposalId, input.requesterOpenId, input.tenantKey],
+          AND proposal_status = 'APPROVED'
+          AND execution_status IN ('QUEUED', 'RUNNING')
+      RETURNING id`,
+      [proposalId],
     );
-    const row = existing.rows[0];
-    return row
-      ? {
-          kind: "existing",
-          status: row.proposal_status,
+    return result.rowCount === 1;
+  }
+
+  async storeExecution(input: {
+    proposalId: string;
+    status: ExecutionStatus;
+    ciphertext: string | null;
+  }): Promise<boolean> {
+    const result = await this.#pool.query(
+      `UPDATE organize_folder_runs
+          SET execution_status = $2,
+              execution_ciphertext = $3,
+              updated_at = now()
+        WHERE id = $1
+          AND proposal_status IN ('APPROVED', 'STALE')
+          AND execution_status IS NOT NULL
+      RETURNING id`,
+      [input.proposalId, input.status, input.ciphertext],
+    );
+    return result.rowCount === 1;
+  }
+
+  async requestUndo(input: {
+    proposalId: string;
+    requesterOpenId: string;
+    tenantKey: string;
+    deliveryJobId: string;
+    executionCiphertext: string;
+  }): Promise<UndoRequestStoreResult> {
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      const updated = await client.query<{ chat_id: string }>(
+        `UPDATE organize_folder_runs
+            SET undo_status = 'REQUESTED',
+                execution_ciphertext = $4,
+                updated_at = now()
+          WHERE id = $1
+            AND requester_open_id = $2
+            AND tenant_key = $3
+            AND execution_ciphertext IS NOT NULL
+            AND execution_status IN ('COMPLETED', 'PARTIAL')
+            AND undo_status IS NULL
+        RETURNING chat_id`,
+        [
+          input.proposalId,
+          input.requesterOpenId,
+          input.tenantKey,
+          input.executionCiphertext,
+        ],
+      );
+      const row = updated.rows[0];
+      if (row) {
+        const queued = await insertDeliveryJob(client, {
+          id: input.deliveryJobId,
+          dedupeKey: `organize-folder-undo:${input.proposalId}`,
+          runId: input.proposalId,
+          kind: "ORGANIZE_FOLDER_UNDO",
+          chatId: row.chat_id,
+        });
+        if (!queued) {
+          throw new Error("Folder undo delivery job could not be created");
         }
-      : { kind: "not_found" };
+        await client.query("COMMIT");
+        return { kind: "recorded" };
+      }
+
+      const existing = await client.query<UndoStatusRow>(
+        `SELECT undo_status
+           FROM organize_folder_runs
+          WHERE id = $1
+            AND requester_open_id = $2
+            AND tenant_key = $3`,
+        [input.proposalId, input.requesterOpenId, input.tenantKey],
+      );
+      await client.query("COMMIT");
+      const existingRow = existing.rows[0];
+      if (!existingRow) {
+        return { kind: "not_found" };
+      }
+      return existingRow.undo_status
+        ? { kind: "existing", status: existingRow.undo_status }
+        : { kind: "not_ready" };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async startUndo(proposalId: string): Promise<boolean> {
+    const result = await this.#pool.query(
+      `UPDATE organize_folder_runs
+          SET undo_status = 'RUNNING',
+              updated_at = now()
+        WHERE id = $1
+          AND execution_ciphertext IS NOT NULL
+          AND execution_status IN ('COMPLETED', 'PARTIAL')
+          AND undo_status IN ('REQUESTED', 'RUNNING')
+      RETURNING id`,
+      [proposalId],
+    );
+    return result.rowCount === 1;
+  }
+
+  async storeUndo(input: {
+    proposalId: string;
+    status: UndoStatus;
+    ciphertext: string;
+  }): Promise<boolean> {
+    const result = await this.#pool.query(
+      `UPDATE organize_folder_runs
+          SET undo_status = $2,
+              execution_ciphertext = $3,
+              updated_at = now()
+        WHERE id = $1
+          AND undo_status IS NOT NULL
+      RETURNING id`,
+      [input.proposalId, input.status, input.ciphertext],
+    );
+    return result.rowCount === 1;
   }
 }

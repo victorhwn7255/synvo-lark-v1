@@ -100,6 +100,30 @@ test("reuses a stored payload when Lark delivery is retried", async () => {
   assert.deepEqual(sent, ["cached inventory"]);
 });
 
+test("uses the existing worker for execution and forwards the job kind", async () => {
+  const queue = new FakeQueue();
+  queue.jobs.push({
+    ...scanJob(),
+    kind: "ORGANIZE_FOLDER_EXECUTE",
+  });
+  const observed: string[] = [];
+  const worker = new DeliveryWorker({
+    queue,
+    cipher: new TokenCipher(Buffer.alloc(32, 3)),
+    prepareMessage: async (_runId, kind) => {
+      observed.push(kind);
+      return "verified execution";
+    },
+    prepareExhaustedMessage: async () => "unused",
+    sendText: async () => {},
+  });
+
+  await worker.processOne();
+
+  assert.deepEqual(observed, ["ORGANIZE_FOLDER_EXECUTE"]);
+  assert.equal(queue.completed, 1);
+});
+
 test("retries a temporary scan failure", async () => {
   const queue = new FakeQueue();
   queue.jobs.push(scanJob());

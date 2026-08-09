@@ -10,7 +10,7 @@ import {
   hasExactScopes,
   type LarkOAuthClient,
   type LarkTokenResponse,
-  DRIVE_INVENTORY_USER_SCOPES,
+  ORGANIZE_FOLDER_USER_SCOPES,
 } from "./oauth-client.js";
 import {
   grantTokenAssociatedData,
@@ -131,7 +131,7 @@ export class LarkTokenBroker {
     this.#grantStore = options.grantStore;
     this.#oauthClient = options.oauthClient;
     this.#refreshSkewMs = options.refreshSkewMs ?? 120_000;
-    this.#requiredScopes = [...DRIVE_INVENTORY_USER_SCOPES].sort();
+    this.#requiredScopes = [...ORGANIZE_FOLDER_USER_SCOPES].sort();
     this.#now = options.now ?? (() => new Date());
   }
 

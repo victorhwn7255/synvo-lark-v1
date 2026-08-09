@@ -2,7 +2,7 @@
 
 Synvo AI Assistant is an internal work assistant currently delivered through Lark. Team members use bounded chat commands; the application authenticates the requester, calls approved services, and returns a verified outcome in the same conversation.
 
-The active pilot is `/organize-folder` against one allowlisted Lark My Space folder. Its current production path authorizes Victor, validates the folder, inventories two destination folders and four PDF fixtures, and returns a deterministic two-Product/two-Research proposal. Victor can approve or reject that proposal in Lark, but Phase 4 records intent only: it never opens, downloads, moves, or changes files.
+The active pilot is `/organize-folder` against one allowlisted Lark My Space folder. It authorizes Victor, validates the folder, inventories two destination folders and four PDF fixtures, and returns a deterministic two-Product/two-Research proposal. Phase 5 closed on 2026-08-08 after a controlled live round trip: a newly approved proposal was revalidated, executed through four bounded file moves, verified from provider state, and reversed through a separate `/undo-folder` command. The exact baseline was restored and the write switch is disabled.
 
 ## Architecture
 
@@ -25,7 +25,7 @@ apps/synvo-assistant/src/
 ├── delivery/                   durable outbound jobs
 ├── lark/                       chat commands and Lark integrations
 │   ├── auth/                   OAuth grants, encryption, refresh
-│   └── drive/                  bounded read-only Drive client
+│   └── drive/                  bounded Drive reads and one file-move operation
 ├── mcp/                        authenticated MCP protocol adapter
 ├── web/                        health, OAuth, and MCP HTTP routing
 ├── workflows/organize-folder/  authorization, persistence, policy, workflow
@@ -38,7 +38,7 @@ tests/integration/postgres/     focused database integration path
 tasks/                          active plans and archived evidence
 ```
 
-The database has four active runtime tables—OAuth grants, OAuth sessions, organize-folder runs, and delivery jobs—plus the migration ledger. Obsolete Phase 1 and Phase 3 tables are removed by a forward-only migration.
+The database has four active runtime tables—OAuth grants, OAuth sessions, organize-folder runs, and delivery jobs—plus the migration ledger. Forward-only migrations remove obsolete Phase 1/3 tables and superseded scan-lease and phase columns.
 
 ## Local setup
 
@@ -82,18 +82,18 @@ Manual Lark acceptance:
 
 1. `/ping` returns `pong`.
 2. `/organize-folder <allowlisted-folder-link>` returns exactly two Product and two Research moves plus a proposal ID.
-3. `/approve-folder <proposal-id>` records approval and a repeated approval is idempotent.
-4. A conflicting `/reject-folder <proposal-id>` fails safely.
-5. Run `/organize-folder <allowlisted-folder-link>` again and use `/reject-folder <new-proposal-id>` to verify rejection.
-6. External, sibling, malformed, and unknown proposal inputs fail safely.
-7. All four PDFs remain in the root and both destination folders remain empty.
+3. With writes disabled, approval records the decision and performs zero Drive mutations.
+4. After exact-scope reauthorization, enable writes only for the controlled test and approve a new proposal.
+5. Verify exactly two files in `Product`, two in `Research`, and none in the root; duplicate delivery must not move again.
+6. `/undo-folder <proposal-id>` restores all four files and is idempotent when repeated.
+7. Verify all four PDFs are back in the root, both destinations are empty, and restore the write switch to false.
 
 ## Safety
 
-- Keep `ORGANIZE_FOLDER_WRITE_ENABLED=false`.
+- Keep `ORGANIZE_FOLDER_WRITE_ENABLED=false` except during an explicitly controlled execute-and-undo acceptance window.
 - Keep the pilot restricted to the configured Lark user and tenant.
 - Never expose or commit `.env`, Lark secrets, OAuth tokens, native Drive tokens, or restricted links.
 - Do not modify applied migrations; use a new forward-only migration for schema changes.
 - Add one narrow workflow at a time and close its request-to-verified-outcome loop before adding platform abstractions.
 
-See [AGENTS.md](AGENTS.md) and [the active organize-folder plan](tasks/organize-folder-implementation-plan.md).
+See [AGENTS.md](AGENTS.md) and [the organize-folder plan](tasks/organize-folder-implementation-plan.md).

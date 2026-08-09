@@ -1,6 +1,10 @@
 import type { Pool, PoolClient } from "pg";
 
-export type DeliveryJobKind = "TEXT" | "ORGANIZE_FOLDER_SCAN";
+export type DeliveryJobKind =
+  | "TEXT"
+  | "ORGANIZE_FOLDER_SCAN"
+  | "ORGANIZE_FOLDER_EXECUTE"
+  | "ORGANIZE_FOLDER_UNDO";
 
 export type DeliveryJob = {
   id: string;

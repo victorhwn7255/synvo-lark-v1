@@ -47,3 +47,14 @@ test("rejects missing or extra proposal decision arguments", () => {
     type: "unknown",
   });
 });
+
+test("parses one separately confirmed undo command", () => {
+  assert.deepEqual(parseCommand(" /UNDO-folder proposal-id "), {
+    type: "undo-folder",
+    proposalId: "proposal-id",
+  });
+  assert.deepEqual(parseCommand("/undo-folder"), { type: "unknown" });
+  assert.deepEqual(parseCommand("/undo-folder one two"), {
+    type: "unknown",
+  });
+});

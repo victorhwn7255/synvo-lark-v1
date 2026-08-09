@@ -4,8 +4,8 @@ import test from "node:test";
 import type { Pool } from "pg";
 
 import {
-  DRIVE_INVENTORY_SCOPE_PROFILE,
-  DRIVE_INVENTORY_USER_SCOPES,
+  ORGANIZE_FOLDER_SCOPE_PROFILE,
+  ORGANIZE_FOLDER_USER_SCOPES,
   PostgresOAuthGrantStore,
   type StoredOAuthGrant,
 } from "./index.js";
@@ -16,7 +16,7 @@ const grant: StoredOAuthGrant = {
   tenantKey: "tenant-key",
   accessTokenCiphertext: "access-ciphertext",
   refreshTokenCiphertext: "refresh-ciphertext",
-  grantedScopes: [...DRIVE_INVENTORY_USER_SCOPES],
+  grantedScopes: [...ORGANIZE_FOLDER_USER_SCOPES],
   accessExpiresAt: new Date("2026-08-08T00:00:00Z"),
   refreshExpiresAt: new Date("2026-09-08T00:00:00Z"),
   refreshVersion: 1,
@@ -38,7 +38,7 @@ function row() {
   };
 }
 
-test("uses one fixed read-only OAuth grant profile", async () => {
+test("uses one fixed Phase 5 OAuth grant profile", async () => {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const pool = {
     async query(text: string, values: unknown[]) {
@@ -51,7 +51,7 @@ test("uses one fixed read-only OAuth grant profile", async () => {
   await store.findBySubject(grant.openId, grant.tenantKey);
   await store.save(grant);
 
-  assert.equal(calls[0]!.values[2], DRIVE_INVENTORY_SCOPE_PROFILE);
+  assert.equal(calls[0]!.values[2], ORGANIZE_FOLDER_SCOPE_PROFILE);
   assert.match(calls[1]!.text, /ON CONFLICT \(tenant_key, open_id, scope_profile\)/);
-  assert.equal(calls[1]!.values[3], DRIVE_INVENTORY_SCOPE_PROFILE);
+  assert.equal(calls[1]!.values[3], ORGANIZE_FOLDER_SCOPE_PROFILE);
 });

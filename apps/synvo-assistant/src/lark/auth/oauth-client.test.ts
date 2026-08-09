@@ -7,7 +7,7 @@ import {
   LarkOAuthHttpClient,
   LARK_OAUTH_TOKEN_URL,
   LARK_USER_INFO_URL,
-  DRIVE_INVENTORY_USER_SCOPES,
+  ORGANIZE_FOLDER_USER_SCOPES,
 } from "./index.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -17,12 +17,12 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-test("builds a PKCE S256 authorization URL with the read-only inventory scopes", () => {
+test("builds a PKCE S256 authorization URL with the exact Phase 5 scopes", () => {
   const client = new LarkOAuthHttpClient();
   const url = client.buildAuthorizationUrl({
     clientId: "cli_0123456789abcdef",
     redirectUri: "http://localhost:3000/oauth/lark/callback",
-    scopes: DRIVE_INVENTORY_USER_SCOPES,
+    scopes: ORGANIZE_FOLDER_USER_SCOPES,
     state: "state-value",
     codeChallenge: "challenge-value",
   });
@@ -33,7 +33,7 @@ test("builds a PKCE S256 authorization URL with the read-only inventory scopes",
   assert.equal(url.searchParams.get("state"), "state-value");
   assert.equal(
     url.searchParams.get("scope"),
-    "drive:drive.metadata:readonly offline_access space:document:retrieve",
+    "drive:drive.metadata:readonly offline_access space:document:move space:document:retrieve",
   );
 });
 
@@ -53,7 +53,7 @@ test("exchanges a code through Lark's documented browser OAuth endpoint", async 
       refresh_token_expires_in: 2_592_000,
       token_type: "Bearer",
       scope:
-        "space:document:retrieve drive:drive.metadata:readonly offline_access",
+        "space:document:retrieve space:document:move drive:drive.metadata:readonly offline_access",
     });
   };
   const client = new LarkOAuthHttpClient({ fetch: fakeFetch });
@@ -62,7 +62,7 @@ test("exchanges a code through Lark's documented browser OAuth endpoint", async 
     clientId: "cli_0123456789abcdef",
     clientSecret: "app-secret",
     redirectUri: "http://localhost:3000/oauth/lark/callback",
-    scopes: DRIVE_INVENTORY_USER_SCOPES,
+    scopes: ORGANIZE_FOLDER_USER_SCOPES,
     code: "one-time-code",
     codeVerifier: "v".repeat(43),
   });
@@ -75,6 +75,7 @@ test("exchanges a code through Lark's documented browser OAuth endpoint", async 
   assert.deepEqual(token.scopes, [
     "drive:drive.metadata:readonly",
     "offline_access",
+    "space:document:move",
     "space:document:retrieve",
   ]);
 });
@@ -171,7 +172,7 @@ test("normalizes a revoked refresh token without exposing provider text", async 
     client.refresh({
       clientId: "cli_0123456789abcdef",
       clientSecret: "app-secret",
-      scopes: DRIVE_INVENTORY_USER_SCOPES,
+      scopes: ORGANIZE_FOLDER_USER_SCOPES,
       refreshToken: "refresh-value",
     }),
     (error: unknown) => {
@@ -199,7 +200,7 @@ test("treats the standard OAuth invalid_grant HTTP response as revoked", async (
     client.refresh({
       clientId: "cli_0123456789abcdef",
       clientSecret: "app-secret",
-      scopes: DRIVE_INVENTORY_USER_SCOPES,
+      scopes: ORGANIZE_FOLDER_USER_SCOPES,
       refreshToken: "refresh-value",
     }),
     (error: unknown) =>
@@ -210,9 +211,9 @@ test("treats the standard OAuth invalid_grant HTTP response as revoked", async (
   );
 });
 
-test("accepts only the exact read-only inventory scope set", () => {
+test("accepts only the exact Phase 5 scope set", () => {
   assert.equal(
-    hasExactScopes(DRIVE_INVENTORY_USER_SCOPES),
+    hasExactScopes(ORGANIZE_FOLDER_USER_SCOPES),
     true,
   );
   assert.equal(
@@ -221,11 +222,11 @@ test("accepts only the exact read-only inventory scope set", () => {
   );
   for (const extraScope of [
     "drive:drive",
-    "space:document:move",
+    "docx:document",
     "drive:file:download",
   ]) {
     assert.equal(
-      hasExactScopes([...DRIVE_INVENTORY_USER_SCOPES, extraScope]),
+      hasExactScopes([...ORGANIZE_FOLDER_USER_SCOPES, extraScope]),
       false,
     );
   }
@@ -241,7 +242,7 @@ test("rejects non-Bearer token responses for exchange and refresh", async () => 
         expires_in: 7_200,
         refresh_token_expires_in: 2_592_000,
         token_type: "MAC",
-        scope: DRIVE_INVENTORY_USER_SCOPES.join(" "),
+        scope: ORGANIZE_FOLDER_USER_SCOPES.join(" "),
       }),
   });
   const isMalformedTokenType = (error: unknown) =>
@@ -252,7 +253,7 @@ test("rejects non-Bearer token responses for exchange and refresh", async () => 
       clientId: "cli_0123456789abcdef",
       clientSecret: "app-secret",
       redirectUri: "http://localhost:3000/oauth/lark/callback",
-      scopes: DRIVE_INVENTORY_USER_SCOPES,
+      scopes: ORGANIZE_FOLDER_USER_SCOPES,
       code: "one-time-code",
       codeVerifier: "v".repeat(64),
     }),
@@ -262,7 +263,7 @@ test("rejects non-Bearer token responses for exchange and refresh", async () => 
     client.refresh({
       clientId: "cli_0123456789abcdef",
       clientSecret: "app-secret",
-      scopes: DRIVE_INVENTORY_USER_SCOPES,
+      scopes: ORGANIZE_FOLDER_USER_SCOPES,
       refreshToken: "refresh-value",
     }),
     isMalformedTokenType,
@@ -284,7 +285,7 @@ test("keeps non-JSON rate limits and server failures retryable", async (t) => {
         client.refresh({
           clientId: "cli_0123456789abcdef",
           clientSecret: "app-secret",
-          scopes: DRIVE_INVENTORY_USER_SCOPES,
+          scopes: ORGANIZE_FOLDER_USER_SCOPES,
           refreshToken: "refresh-value",
         }),
         (error: unknown) => {

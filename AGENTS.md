@@ -17,8 +17,10 @@ Current behavior:
 - The Synvo Assistant application validates the exact root token.
 - It builds a bounded read-only inventory of `Product`, `Research`, and four PDF fixtures.
 - It deterministically proposes two Product and two Research moves from the approved filename prefixes.
-- `/approve-folder <proposal-id>` and `/reject-folder <proposal-id>` record Victor's decision without executing it.
-- It returns the proposal and decision result in Lark without opening, downloading, or changing files.
+- `/approve-folder <proposal-id>` records Victor's decision and queues execution only when the operator write switch is enabled; `/reject-folder` never executes.
+- Execution re-reads the approved snapshot, moves only the four proposed files, verifies every observed parent, and stops on stale, failed, or unknown state.
+- `/undo-folder <proposal-id>` is a separate confirmation that restores only verified moves and verifies the original baseline.
+- The Phase 5 acceptance window is closed and the operator write switch is false; any future write window requires separate explicit approval.
 - An optional authenticated `/mcp` endpoint exposes the same inventory capability to approved AI agents without duplicating the workflow.
 
 The long-term target is Lark Wiki, once the application has appropriate Wiki access. The Drive pilot proves the same analysis, proposal, approval, execution, verification, and undo loop in a controlled sandbox.
@@ -82,14 +84,15 @@ If a change would introduce a new service, package, table, state machine, regist
 
 ## Non-negotiable safety
 
-- Keep `ORGANIZE_FOLDER_WRITE_ENABLED=false` throughout Phase 4; approval records intent only and must not reach a Drive mutation.
+- Keep `ORGANIZE_FOLDER_WRITE_ENABLED=false` by default. Enable it only for an explicitly controlled Phase 5 execution-and-undo window, then restore false immediately.
 - Restrict the pilot to the configured Lark `open_id` and tenant.
 - Keep the MCP endpoint disabled unless a strong service credential is configured. During the single-user pilot, map that credential only to the configured Lark `open_id` and tenant; never accept actor identity from MCP tool arguments.
 - Expose only the read-only `organize_folder_inventory` MCP tool until a separately approved workflow requires another capability.
 - Bind OAuth state to the initiating message, user, tenant, redirect URI, scopes, and PKCE verifier.
 - Encrypt access and refresh tokens at rest and rotate refresh tokens atomically.
-- Request the exact active read-only scopes:
+- Request the exact active Phase 5 scopes and no others:
   - `space:document:retrieve`
+  - `space:document:move`
   - `drive:drive.metadata:readonly`
   - `offline_access`
 - Allow only the configured root folder token; reject arbitrary external, sibling, nested, Wiki, and malformed URLs.
@@ -99,7 +102,7 @@ If a change would introduce a new service, package, table, state machine, regist
 - Never rename, rewrite, or delete applied migrations. Remove obsolete schema only through a new forward-only migration.
 - Never commit `.env`, OAuth grants, secrets, tokens, or sensitive logs.
 
-Before future writes:
+For every Drive write:
 
 - Re-read and compare the approved snapshot immediately before mutation.
 - Require explicit user approval of a concrete proposal.
@@ -109,13 +112,13 @@ Before future writes:
 
 ## Source ownership
 
-- `apps/synvo-assistant/src/index.ts`: composition and lifecycle only.
+- `apps/synvo-assistant/src/index.ts`: composition, lifecycle, and the small Lark message adapter.
 - `apps/synvo-assistant/src/config.ts`: environment parsing only.
 - `apps/synvo-assistant/src/lark/command-parser.ts`: Lark chat command parsing only.
 - `apps/synvo-assistant/src/web/`: HTTP routing for health, browser-based OAuth, and the MCP endpoint.
 - `apps/synvo-assistant/src/mcp/`: MCP protocol mapping and service authentication only; delegate all policy and provider work to workflows.
 - `apps/synvo-assistant/src/lark/auth/`: Lark OAuth protocol, PKCE, encrypted grants, and refresh.
-- `apps/synvo-assistant/src/lark/drive/`: Drive link parsing, provider response validation, API reads, and inventory building.
+- `apps/synvo-assistant/src/lark/drive/`: Drive link parsing, provider response validation, bounded reads, inventory observations, and the single file-move operation.
 - `apps/synvo-assistant/src/workflows/organize-folder/`: authorization sessions, PostgreSQL persistence, workflow policy, state transitions, and user-facing formatting.
 - `apps/synvo-assistant/src/delivery/`: durable outbound jobs and retry behavior.
 - `apps/synvo-assistant/src/db/` and `database/migrations/`: database lifecycle and immutable schema history.

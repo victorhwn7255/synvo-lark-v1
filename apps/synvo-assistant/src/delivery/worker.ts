@@ -4,13 +4,20 @@ import {
   decryptDeliveryMessage,
   encryptDeliveryMessage,
 } from "./crypto.js";
-import type { DeliveryJob, DeliveryQueue } from "./repository.js";
+import type {
+  DeliveryJob,
+  DeliveryJobKind,
+  DeliveryQueue,
+} from "./repository.js";
 
 export type DeliveryWorkerOptions = {
   queue: DeliveryQueue;
   cipher: TokenCipher;
-  prepareMessage: (runId: string) => Promise<string>;
-  prepareExhaustedMessage: (runId: string) => Promise<string>;
+  prepareMessage: (runId: string, kind: DeliveryJobKind) => Promise<string>;
+  prepareExhaustedMessage: (
+    runId: string,
+    kind: DeliveryJobKind,
+  ) => Promise<string>;
   sendText: (
     chatId: string,
     text: string,
@@ -23,13 +30,19 @@ export type DeliveryWorkerOptions = {
 };
 
 class PermanentDeliveryError extends Error {}
-class RetryableScanPreparationError extends Error {}
+class RetryablePreparationError extends Error {}
 
 export class DeliveryWorker {
   readonly #queue: DeliveryQueue;
   readonly #cipher: TokenCipher;
-  readonly #prepareMessage: (runId: string) => Promise<string>;
-  readonly #prepareExhaustedMessage: (runId: string) => Promise<string>;
+  readonly #prepareMessage: (
+    runId: string,
+    kind: DeliveryJobKind,
+  ) => Promise<string>;
+  readonly #prepareExhaustedMessage: (
+    runId: string,
+    kind: DeliveryJobKind,
+  ) => Promise<string>;
   readonly #sendText: (
     chatId: string,
     text: string,
@@ -92,8 +105,8 @@ export class DeliveryWorker {
       try {
         payloadCiphertext = await this.#preparePayload(job);
       } catch (error) {
-        if (this.#shouldFinalizeExhaustedScan(job, error)) {
-          payloadCiphertext = await this.#prepareExhaustedScanPayload(job);
+        if (this.#shouldFinalizeExhaustedJob(job, error)) {
+          payloadCiphertext = await this.#prepareExhaustedJobPayload(job);
         } else {
           throw error;
         }
@@ -137,16 +150,16 @@ export class DeliveryWorker {
     if (job.payloadCiphertext) {
       return job.payloadCiphertext;
     }
-    if (job.kind !== "ORGANIZE_FOLDER_SCAN" || !job.runId) {
+    if (job.kind === "TEXT" || !job.runId) {
       throw new PermanentDeliveryError("Delivery job has no recoverable payload");
     }
 
     let message: string;
     try {
-      message = await this.#prepareMessage(job.runId);
+      message = await this.#prepareMessage(job.runId, job.kind);
     } catch {
-      throw new RetryableScanPreparationError(
-        "The read-only inventory scan could not be prepared",
+      throw new RetryablePreparationError(
+        "The workflow result could not be prepared",
       );
     }
     const payloadCiphertext = encryptDeliveryMessage(
@@ -160,10 +173,10 @@ export class DeliveryWorker {
     return payloadCiphertext;
   }
 
-  #shouldFinalizeExhaustedScan(job: DeliveryJob, error: unknown): boolean {
+  #shouldFinalizeExhaustedJob(job: DeliveryJob, error: unknown): boolean {
     return (
-      error instanceof RetryableScanPreparationError &&
-      job.kind === "ORGANIZE_FOLDER_SCAN" &&
+      error instanceof RetryablePreparationError &&
+      job.kind !== "TEXT" &&
       job.runId !== null &&
       job.payloadCiphertext === null &&
       job.attemptCount >= this.#maxAttempts &&
@@ -171,11 +184,11 @@ export class DeliveryWorker {
     );
   }
 
-  async #prepareExhaustedScanPayload(job: DeliveryJob): Promise<string> {
+  async #prepareExhaustedJobPayload(job: DeliveryJob): Promise<string> {
     if (!job.runId) {
       throw new PermanentDeliveryError("Exhausted scan has no run");
     }
-    const message = await this.#prepareExhaustedMessage(job.runId);
+    const message = await this.#prepareExhaustedMessage(job.runId, job.kind);
     const payloadCiphertext = encryptDeliveryMessage(
       this.#cipher,
       job.id,

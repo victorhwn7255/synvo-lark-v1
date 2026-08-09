@@ -6,6 +6,7 @@ export type BotCommand =
       proposalId: string;
       decision: "APPROVED" | "REJECTED";
     }
+  | { type: "undo-folder"; proposalId: string }
   | { type: "unknown" };
 
 export function parseCommand(text: string): BotCommand {
@@ -31,6 +32,10 @@ export function parseCommand(text: string): BotCommand {
           ? "APPROVED"
           : "REJECTED",
     };
+  }
+  const undoMatch = normalized.match(/^\/undo-folder\s+(\S+)$/i);
+  if (undoMatch?.[1]) {
+    return { type: "undo-folder", proposalId: undoMatch[1] };
   }
   return { type: "unknown" };
 }

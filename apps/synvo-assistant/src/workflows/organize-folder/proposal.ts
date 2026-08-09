@@ -12,8 +12,10 @@ export type OrganizeFolderProposal = {
   inventory_scan_id: string;
   moves: Array<{
     file_ref: string;
+    file_identity_digest: string;
     file_name: string;
     destination_ref: string;
+    destination_identity_digest: string;
     destination_name: "Product" | "Research";
   }>;
 };
@@ -135,8 +137,10 @@ export function buildOrganizeFolderProposal(
     }
     return {
       file_ref: file.ref,
+      file_identity_digest: file.identity_digest,
       file_name: file.name,
       destination_ref: destination.ref,
+      destination_identity_digest: destination.identity_digest,
       destination_name: classification.destinationName,
     };
   });

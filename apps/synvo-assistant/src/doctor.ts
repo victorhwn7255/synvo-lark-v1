@@ -2,7 +2,7 @@ import { loadConfig } from "./config.js";
 import { isDatabaseSchemaReady } from "./db/migrate.js";
 import { createDatabasePool } from "./db/pool.js";
 import {
-  DRIVE_INVENTORY_USER_SCOPES,
+  ORGANIZE_FOLDER_USER_SCOPES,
   hasExactScopes,
   PostgresOAuthGrantStore,
 } from "./lark/auth/index.js";
@@ -11,6 +11,8 @@ import { digestFolderToken } from "./lark/drive/index.js";
 type LatestRunRow = {
   state: string;
   root_token_digest: string;
+  execution_status: string | null;
+  undo_status: string | null;
 };
 
 async function main(): Promise<void> {
@@ -32,10 +34,13 @@ async function main(): Promise<void> {
       grant &&
         !grant.revokedAt &&
         grant.refreshExpiresAt > new Date() &&
-        hasExactScopes(grant.grantedScopes, DRIVE_INVENTORY_USER_SCOPES),
+        hasExactScopes(grant.grantedScopes, ORGANIZE_FOLDER_USER_SCOPES),
     );
     const latest = await pool.query<LatestRunRow>(
-      `SELECT state, root_token_digest
+      `SELECT state,
+              root_token_digest,
+              execution_status,
+              undo_status
          FROM organize_folder_runs
         ORDER BY created_at DESC
         LIMIT 1`,
@@ -46,7 +51,9 @@ async function main(): Promise<void> {
         digestFolderToken(config.organizeFolderRootToken)
       : null;
     const latestRunTerminal = latestRun
-      ? ["COMPLETED", "FAILED_NO_CHANGE"].includes(latestRun.state)
+      ? ["COMPLETED", "FAILED_NO_CHANGE"].includes(latestRun.state) &&
+        !["QUEUED", "RUNNING"].includes(latestRun.execution_status ?? "") &&
+        !["REQUESTED", "RUNNING"].includes(latestRun.undo_status ?? "")
       : null;
 
     const report = {
@@ -55,7 +62,7 @@ async function main(): Promise<void> {
       write_enabled: config.organizeFolderWriteEnabled,
       pilot_identity_configured: identityConfigured,
       mcp_enabled: Boolean(config.synvoMcpAuthToken),
-      readonly_grant_usable: grantUsable,
+      organize_folder_grant_usable: grantUsable,
       latest_run_targets_allowlisted_root: latestRunTargetsRoot,
       latest_run_terminal: latestRunTerminal,
     };
@@ -65,7 +72,8 @@ async function main(): Promise<void> {
       config.organizeFolderWriteEnabled ||
       !identityConfigured ||
       !grantUsable ||
-      latestRunTargetsRoot === false
+      latestRunTargetsRoot === false ||
+      latestRunTerminal === false
     ) {
       process.exitCode = 1;
     }

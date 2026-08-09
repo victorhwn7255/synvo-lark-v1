@@ -9,6 +9,8 @@ import {
   formatOrganizeFolderProposal,
 } from "./inventory-message.js";
 
+const IDENTITY_DIGEST = "a".repeat(64);
+
 function inventory(overrides: {
   rootName?: string;
   destinationName?: string;
@@ -23,6 +25,7 @@ function inventory(overrides: {
     baseline_matches: false,
     root: {
       ref: "root",
+      identity_digest: IDENTITY_DIGEST,
       name: overrides.rootName ?? "Test_Synvo_AI_Assistant",
       parent_ref: null,
       owner_verification: "matched",
@@ -31,6 +34,7 @@ function inventory(overrides: {
     destinations: [
       {
         ref: "d001",
+        identity_digest: IDENTITY_DIGEST,
         name: overrides.destinationName ?? "Research",
         parent_ref: "root",
         owner_verification: "matched",
@@ -40,6 +44,7 @@ function inventory(overrides: {
     files: [
       {
         ref: "f001",
+        identity_digest: IDENTITY_DIGEST,
         name:
           overrides.fileName ??
           "[research] - Agentic Context Engineering Research.pdf",
@@ -51,6 +56,7 @@ function inventory(overrides: {
     skipped: [
       {
         ref: "s001",
+        identity_digest: IDENTITY_DIGEST,
         name: overrides.skippedName ?? "Unsupported item",
         type: overrides.skippedType ?? "shortcut",
         parent_ref: "root",
@@ -84,6 +90,7 @@ test("renders the exact bounded pilot inventory without internal references", ()
   pilot.destinations = [
     {
       ref: "private-product-ref",
+      identity_digest: "b".repeat(64),
       name: "Product",
       parent_ref: "root",
       owner_verification: "matched",
@@ -91,6 +98,7 @@ test("renders the exact bounded pilot inventory without internal references", ()
     },
     {
       ref: "private-research-ref",
+      identity_digest: "c".repeat(64),
       name: "Research",
       parent_ref: "root",
       owner_verification: "matched",
@@ -104,6 +112,7 @@ test("renders the exact bounded pilot inventory without internal references", ()
     "[product] - Local_Cocoa_Technical_Onboarding_Guide.pdf",
   ].map((name, index) => ({
     ref: `private-file-ref-${index}`,
+    identity_digest: "d".repeat(64),
     name,
     type: "file",
     parent_ref: "root",
@@ -193,14 +202,18 @@ test("renders a concise proposal without internal references or links", () => {
     moves: [
       {
         file_ref: "f001-private",
+        file_identity_digest: "d".repeat(64),
         file_name: "[product] - Product.pdf",
         destination_ref: "d001-private",
+        destination_identity_digest: "b".repeat(64),
         destination_name: "Product",
       },
       {
         file_ref: "f002-private",
+        file_identity_digest: "e".repeat(64),
         file_name: "[research] - Research.pdf",
         destination_ref: "d002-private",
+        destination_identity_digest: "c".repeat(64),
         destination_name: "Research",
       },
     ],

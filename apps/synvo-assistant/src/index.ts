@@ -5,7 +5,7 @@ import {
   PostgresOAuthGrantStore,
   TokenCipher,
 } from "./lark/auth/index.js";
-import { LarkDriveReader } from "./lark/drive/index.js";
+import { LarkDriveMover, LarkDriveReader } from "./lark/drive/index.js";
 
 import { parseCommand } from "./lark/command-parser.js";
 import { loadConfig } from "./config.js";
@@ -43,11 +43,6 @@ function readTextContent(content: string | undefined): string | null {
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  if (config.organizeFolderWriteEnabled) {
-    throw new Error(
-      "ORGANIZE_FOLDER_WRITE_ENABLED must remain false in Synvo Assistant",
-    );
-  }
 
   const larkConnection = {
     appId: config.appId,
@@ -92,6 +87,7 @@ async function main(): Promise<void> {
     tokenBroker,
     cipher,
     driveReader: new LarkDriveReader(),
+    driveMover: new LarkDriveMover(),
   });
   const mcpEndpoint =
     config.synvoMcpAuthToken &&
@@ -127,9 +123,20 @@ async function main(): Promise<void> {
   const deliveryWorker = new DeliveryWorker({
     queue: deliveryQueue,
     cipher,
-    prepareMessage: (runId) => workflow.buildProposalMessage(runId),
-    prepareExhaustedMessage: (runId) =>
-      workflow.finalizeExhaustedInventory(runId),
+    prepareMessage: (runId, kind) => {
+      if (kind === "ORGANIZE_FOLDER_SCAN") {
+        return workflow.buildProposalMessage(runId);
+      }
+      if (kind === "ORGANIZE_FOLDER_EXECUTE") {
+        return workflow.buildExecutionMessage(runId);
+      }
+      if (kind === "ORGANIZE_FOLDER_UNDO") {
+        return workflow.buildUndoMessage(runId);
+      }
+      throw new Error("Unsupported workflow delivery job");
+    },
+    prepareExhaustedMessage: (runId, kind) =>
+      workflow.finalizeExhaustedOperation(runId, kind),
     sendText,
   });
 
@@ -171,10 +178,19 @@ async function main(): Promise<void> {
         );
         return;
       }
+      if (command.type === "undo-folder") {
+        const replyText = await workflow.requestUndo({
+          proposalId: command.proposalId,
+          requesterOpenId,
+          tenantKey,
+        });
+        await sendText(chatId, replyText, messageId);
+        return;
+      }
       if (command.type !== "organize-folder") {
         await sendText(
           chatId,
-          "Synvo AI Assistant is connected. Send /ping, /organize-folder <Lark Drive folder link>, /approve-folder <proposal ID>, or /reject-folder <proposal ID>.",
+          "Synvo AI Assistant is connected. Send /ping, /organize-folder <Lark Drive folder link>, /approve-folder <proposal ID>, /reject-folder <proposal ID>, or /undo-folder <proposal ID>.",
           messageId,
         );
         return;

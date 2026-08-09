@@ -16,7 +16,7 @@ import type {
 import {
   LarkAuthError,
   LarkOAuthHttpClient,
-  DRIVE_INVENTORY_USER_SCOPES,
+  ORGANIZE_FOLDER_USER_SCOPES,
   TokenCipher,
 } from "../../lark/auth/index.js";
 
@@ -141,6 +141,12 @@ class MemoryOrganizeFolderRepository implements OrganizeFolderRepository {
 
   async storeInventoryResult(): Promise<boolean> { return true; }
   async recordProposalDecision() { return { kind: "not_found" } as const; }
+  async markProposalStale(): Promise<boolean> { return false; }
+  async startExecution(): Promise<boolean> { return false; }
+  async storeExecution(): Promise<boolean> { return false; }
+  async requestUndo() { return { kind: "not_found" } as const; }
+  async startUndo(): Promise<boolean> { return false; }
+  async storeUndo(): Promise<boolean> { return false; }
 }
 
 class FakeOAuthClient implements LarkOAuthClient {
@@ -154,7 +160,7 @@ class FakeOAuthClient implements LarkOAuthClient {
     expiresIn: 7_200,
     refreshTokenExpiresIn: 86_400,
     tokenType: "Bearer",
-    scopes: [...DRIVE_INVENTORY_USER_SCOPES],
+    scopes: [...ORGANIZE_FOLDER_USER_SCOPES],
   };
   exchangedVerifier = "";
   readonly #urlBuilder = new LarkOAuthHttpClient();
@@ -427,10 +433,10 @@ test("rejects a grant missing offline access", async () => {
   );
 });
 
-test("rejects callback tokens with any scope outside the read-only inventory policy", async (t) => {
+test("rejects callback tokens with any scope outside the Phase 5 policy", async (t) => {
   for (const extraScope of [
     "drive:drive",
-    "space:document:move",
+    "docx:document",
     "drive:file:download",
   ]) {
     await t.test(extraScope, async () => {
@@ -438,7 +444,7 @@ test("rejects callback tokens with any scope outside the read-only inventory pol
       const { state } = await startAuthorization(fixture);
       fixture.oauthClient.token = {
         ...fixture.oauthClient.token,
-        scopes: [...DRIVE_INVENTORY_USER_SCOPES, extraScope],
+        scopes: [...ORGANIZE_FOLDER_USER_SCOPES, extraScope],
       };
 
       await assert.rejects(

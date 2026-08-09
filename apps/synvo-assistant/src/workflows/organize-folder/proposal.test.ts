@@ -8,6 +8,8 @@ import {
   ProposalBuildError,
 } from "./proposal.js";
 
+const IDENTITY_DIGEST = "a".repeat(64);
+
 function inventory(fileNames: string[] = [
   "[research] - Agentic Context Engineering Research.pdf",
   "[research] - Anthropic Agentic Engineering.pdf",
@@ -21,6 +23,7 @@ function inventory(fileNames: string[] = [
     baseline_matches: true,
     root: {
       ref: "root",
+      identity_digest: IDENTITY_DIGEST,
       name: "Test_Synvo_AI_Assistant",
       parent_ref: null,
       owner_verification: "matched",
@@ -29,6 +32,7 @@ function inventory(fileNames: string[] = [
     destinations: [
       {
         ref: "d001",
+        identity_digest: "b".repeat(64),
         name: "Product",
         parent_ref: "root",
         owner_verification: "matched",
@@ -36,6 +40,7 @@ function inventory(fileNames: string[] = [
       },
       {
         ref: "d002",
+        identity_digest: "c".repeat(64),
         name: "Research",
         parent_ref: "root",
         owner_verification: "matched",
@@ -44,6 +49,7 @@ function inventory(fileNames: string[] = [
     ],
     files: fileNames.map((name, index) => ({
       ref: `f${String(index + 1).padStart(3, "0")}`,
+      identity_digest: "d".repeat(64),
       name,
       type: "file",
       parent_ref: "root",

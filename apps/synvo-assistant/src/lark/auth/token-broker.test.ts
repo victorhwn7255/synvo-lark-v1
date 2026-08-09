@@ -19,7 +19,7 @@ import {
   LarkAuthError,
   LarkOAuthHttpClient,
   LarkTokenBroker,
-  DRIVE_INVENTORY_USER_SCOPES,
+  ORGANIZE_FOLDER_USER_SCOPES,
   TokenCipher,
 } from "./index.js";
 
@@ -99,7 +99,7 @@ class FakeOAuthClient implements LarkOAuthClient {
 }
 
 const cipher = new TokenCipher(Buffer.alloc(32, 3));
-const scopes = [...DRIVE_INVENTORY_USER_SCOPES];
+const scopes = [...ORGANIZE_FOLDER_USER_SCOPES].sort();
 const originalToken: LarkTokenResponse = {
   accessToken: "access-original",
   refreshToken: "refresh-original",
@@ -370,11 +370,11 @@ test("rejects a grant that is missing offline access", async () => {
   );
 });
 
-test("rejects stored grants with any scope outside the read-only inventory policy", async (t) => {
+test("rejects stored grants with any scope outside the Phase 5 policy", async (t) => {
   const now = new Date("2026-08-07T00:00:00.000Z");
   for (const extraScope of [
     "drive:drive",
-    "space:document:move",
+    "docx:document",
     "drive:file:download",
   ]) {
     await t.test(extraScope, async () => {
@@ -401,12 +401,12 @@ test("rejects stored grants with any scope outside the read-only inventory polic
   }
 });
 
-test("rejects a refresh response with any scope outside the read-only inventory policy", async (t) => {
+test("rejects a refresh response with any scope outside the Phase 5 policy", async (t) => {
   const issuedAt = new Date("2026-08-07T00:00:00.000Z");
   const now = new Date("2026-08-07T00:10:00.000Z");
   for (const extraScope of [
     "drive:drive",
-    "space:document:move",
+    "docx:document",
     "drive:file:download",
   ]) {
     await t.test(extraScope, async () => {
@@ -419,7 +419,7 @@ test("rejects a refresh response with any scope outside the read-only inventory 
       const store = new MemoryGrantStore(grant);
       const client = new FakeOAuthClient({
         ...rotatedToken,
-        scopes: [...DRIVE_INVENTORY_USER_SCOPES, extraScope],
+        scopes: [...ORGANIZE_FOLDER_USER_SCOPES, extraScope],
       });
 
       await assert.rejects(

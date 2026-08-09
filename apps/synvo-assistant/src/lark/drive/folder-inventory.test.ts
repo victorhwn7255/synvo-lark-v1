@@ -9,7 +9,7 @@ import type {
 } from "./read-client.js";
 import { DriveToolError, normalizeDriveError } from "./errors.js";
 import {
-  buildAllowlistedFolderInventory,
+  observeAllowlistedFolder,
   type DriveInventoryContext,
 } from "./folder-inventory.js";
 
@@ -129,8 +129,15 @@ function scanContext(
   };
 }
 
+async function readInventory(
+  reader: DriveReader,
+  context: DriveInventoryContext,
+) {
+  return (await observeAllowlistedFolder(reader, context)).inventory;
+}
+
 test("returns the exact bounded read-only pilot inventory", async () => {
-  const inventory = await buildAllowlistedFolderInventory(
+  const inventory = await readInventory(
     new FixtureReader(),
     scanContext(),
   );
@@ -157,7 +164,7 @@ test("returns the exact bounded read-only pilot inventory", async () => {
 });
 
 test("reports an unexpected starting hierarchy without repairing it", async () => {
-  const inventory = await buildAllowlistedFolderInventory(
+  const inventory = await readInventory(
     new FixtureReader({
       rootItems: [
         ...rootItems,
@@ -237,7 +244,7 @@ test("reports each bounded baseline hierarchy violation", async (t) => {
 
   for (const testCase of cases) {
     await t.test(testCase.name, async () => {
-      const inventory = await buildAllowlistedFolderInventory(
+      const inventory = await readInventory(
         new FixtureReader({ rootItems: testCase.items }),
         scanContext(),
       );
@@ -263,7 +270,7 @@ test("reports a destination that is already nonempty", async () => {
     },
   ]);
 
-  const inventory = await buildAllowlistedFolderInventory(reader, scanContext());
+  const inventory = await readInventory(reader, scanContext());
 
   assert.equal(inventory.baseline_matches, false);
   assert.equal(inventory.summary.destination_child_count, 1);
@@ -277,7 +284,7 @@ test("rejects a four-file baseline when any known fixture name differs", async (
   const changedRootItems = rootItems.map((item) =>
     item.token === "file-1" ? { ...item, name: "[research] - Renamed.pdf" } : item,
   );
-  const inventory = await buildAllowlistedFolderInventory(
+  const inventory = await readInventory(
     new FixtureReader({ rootItems: changedRootItems }),
     scanContext(),
   );
@@ -298,7 +305,7 @@ test("reports missing and mismatched owner signals", async () => {
     "someone-else",
   );
   const noListOwners = rootItems.map(({ ownerId: _ownerId, ...item }) => item);
-  const inventory = await buildAllowlistedFolderInventory(
+  const inventory = await readInventory(
     new FixtureReader({ rootItems: noListOwners as typeof rootItems, metadata }),
     scanContext(),
   );
@@ -340,7 +347,7 @@ test("requests metadata only for the root folder", async () => {
     },
   };
 
-  const inventory = await buildAllowlistedFolderInventory(reader, scanContext());
+  const inventory = await readInventory(reader, scanContext());
 
   assert.equal(
     requestedPageSize,
@@ -372,7 +379,7 @@ for (const rejection of [
       getMetadata: () => delegate.getMetadata(),
     };
 
-    const inventory = await buildAllowlistedFolderInventory(
+    const inventory = await readInventory(
       reader,
       scanContext({
         accessToken: "rejected-token",
@@ -413,7 +420,7 @@ test("revokes after the one recovered token retry is also rejected", async () =>
   };
 
   await assert.rejects(
-    buildAllowlistedFolderInventory(
+    readInventory(
       reader,
       scanContext({
         accessToken: "rejected-token",
@@ -446,7 +453,7 @@ test("never recovers an access token after a Drive 403", async () => {
   };
 
   await assert.rejects(
-    buildAllowlistedFolderInventory(
+    readInventory(
       reader,
       scanContext({
         async recoverAccessToken() {

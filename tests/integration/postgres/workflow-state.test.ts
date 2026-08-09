@@ -6,7 +6,7 @@ import { Pool } from "pg";
 
 import {
   createEncryptedOAuthGrant,
-  DRIVE_INVENTORY_USER_SCOPES,
+  ORGANIZE_FOLDER_USER_SCOPES,
   LarkTokenBroker,
   PostgresOAuthGrantStore,
   TokenCipher,
@@ -47,7 +47,7 @@ test(
       expiresIn: 60,
       refreshTokenExpiresIn: 86_400,
       tokenType: "Bearer",
-      scopes: [...DRIVE_INVENTORY_USER_SCOPES],
+      scopes: [...ORGANIZE_FOLDER_USER_SCOPES],
     };
     const rotated = {
       ...original,
@@ -106,7 +106,7 @@ test(
           rootTokenDigest: "a".repeat(64),
           requestTokenDigest: "b".repeat(64),
           redirectUri: "http://localhost:3000/oauth/lark/callback",
-          requestedScopes: [...DRIVE_INVENTORY_USER_SCOPES],
+          requestedScopes: [...ORGANIZE_FOLDER_USER_SCOPES],
           expiresAt: new Date("2099-01-01T00:00:00.000Z"),
           deliveryJobId: randomUUID(),
           authorizationMessageCiphertext: "encrypted",
@@ -170,7 +170,7 @@ test(
             expiresIn: 7_200,
             refreshTokenExpiresIn: 86_400,
             tokenType: "Bearer",
-            scopes: [...DRIVE_INVENTORY_USER_SCOPES],
+            scopes: [...ORGANIZE_FOLDER_USER_SCOPES],
           },
         }),
       );
@@ -228,9 +228,53 @@ test(
           tenantKey,
           decision: "APPROVED",
           decidedAt: new Date("2026-08-08T00:00:00.000Z"),
+          executionJobId: randomUUID(),
         }),
-        { kind: "recorded", status: "APPROVED" },
+        {
+          kind: "recorded",
+          status: "APPROVED",
+          executionQueued: true,
+        },
       );
+      const executionJob = await queue.claimNext(new Date(), 60_000);
+      assert.ok(executionJob);
+      assert.equal(executionJob.kind, "ORGANIZE_FOLDER_EXECUTE");
+      assert.equal(executionJob.runId, runId);
+      assert.equal(await repository.startExecution(runId), true);
+      assert.equal(
+        await repository.storeExecution({
+          proposalId: runId,
+          status: "COMPLETED",
+          ciphertext: "encrypted-execution",
+        }),
+        true,
+      );
+      assert.equal(await queue.complete(executionJob), true);
+
+      assert.deepEqual(
+        await repository.requestUndo({
+          proposalId: runId,
+          requesterOpenId: openId,
+          tenantKey,
+          deliveryJobId: randomUUID(),
+          executionCiphertext: "encrypted-execution-with-undo-request",
+        }),
+        { kind: "recorded" },
+      );
+      const undoJob = await queue.claimNext(new Date(), 60_000);
+      assert.ok(undoJob);
+      assert.equal(undoJob.kind, "ORGANIZE_FOLDER_UNDO");
+      assert.equal(undoJob.runId, runId);
+      assert.equal(await repository.startUndo(runId), true);
+      assert.equal(
+        await repository.storeUndo({
+          proposalId: runId,
+          status: "COMPLETED",
+          ciphertext: "encrypted-completed-undo",
+        }),
+        true,
+      );
+      assert.equal(await queue.complete(undoJob), true);
       assert.deepEqual(
         await repository.recordProposalDecision({
           proposalId: runId,
@@ -300,7 +344,11 @@ test(
           decision: "REJECTED",
           decidedAt: new Date("2026-08-08T00:04:00.000Z"),
         }),
-        { kind: "recorded", status: "REJECTED" },
+        {
+          kind: "recorded",
+          status: "REJECTED",
+          executionQueued: false,
+        },
       );
 
       const storedRun = await repository.findInventoryRunById(runId);
@@ -314,8 +362,17 @@ test(
           WHERE id = $1`,
         [runId],
       );
+      const ownedJobs = await pool.query<{ state: string }>(
+        `SELECT state
+           FROM lark_delivery_jobs
+          WHERE run_id = $1
+          ORDER BY created_at`,
+        [runId],
+      );
       assert.equal(storedRun?.state, "COMPLETED");
       assert.equal(storedRun?.proposalStatus, "APPROVED");
+      assert.equal(storedRun?.executionStatus, "COMPLETED");
+      assert.equal(storedRun?.undoStatus, "COMPLETED");
       assert.equal(rejectedRun?.proposalStatus, "REJECTED");
       assert.equal(
         decisionAudit.rows[0]?.proposal_decided_by_open_id,
@@ -324,6 +381,10 @@ test(
       assert.equal(
         decisionAudit.rows[0]?.proposal_decided_at.toISOString(),
         "2026-08-08T00:00:00.000Z",
+      );
+      assert.deepEqual(
+        ownedJobs.rows.map(({ state }) => state),
+        ["COMPLETED", "COMPLETED", "COMPLETED"],
       );
     } finally {
       await cleanRun(pool, runId);
