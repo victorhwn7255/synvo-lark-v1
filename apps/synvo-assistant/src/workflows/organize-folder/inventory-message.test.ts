@@ -204,6 +204,7 @@ test("renders a concise proposal without internal references or links", () => {
         destination_ref: "d001-private",
         destination_identity_digest: "b".repeat(64),
         destination_name: "Product",
+        rationale: "The document is a product implementation guide.",
       },
       {
         file_ref: "f002-private",
@@ -212,6 +213,7 @@ test("renders a concise proposal without internal references or links", () => {
         destination_ref: "d002-private",
         destination_identity_digest: "c".repeat(64),
         destination_name: "Research",
+        rationale: "The document presents external research findings.",
       },
     ],
   };
@@ -219,9 +221,10 @@ test("renders a concise proposal without internal references or links", () => {
   const output = formatOrganizeFolderProposal(proposal);
 
   assert.match(output, /Organization proposal 4d872758/u);
-  assert.match(output, /Product \(1 files\)/u);
-  assert.match(output, /Research \(1 files\)/u);
-  assert.match(output, /Unsupported or ambiguous files: 0/u);
+  assert.match(output, /Product \(1 file\)/u);
+  assert.match(output, /Research \(1 file\)/u);
+  assert.match(output, /Needs review \(0 files\)/u);
+  assert.match(output, /Why: The document is a product implementation guide/u);
   assert.match(output, /No changes have been made/u);
   assert.match(output, /\/approve-folder 4d872758/u);
   assert.match(output, /\/reject-folder 4d872758/u);

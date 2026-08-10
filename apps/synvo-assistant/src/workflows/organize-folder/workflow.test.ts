@@ -34,9 +34,11 @@ import {
 import { OrganizeFolderWorkflow } from "./workflow.js";
 import {
   buildOrganizeFolderProposal,
+  type ContentDecision,
   organizeFolderProposalAssociatedData,
   type OrganizeFolderProposal,
 } from "./proposal.js";
+import type { ContentPlanResult } from "./content-planner.js";
 import {
   createExecutionRecord,
   executionAssociatedData,
@@ -48,6 +50,12 @@ const runId = "4d872758-1f71-4ed8-b141-a2d193ceea91";
 const fileIdentityDigest = "a".repeat(64);
 const productIdentityDigest = "b".repeat(64);
 const researchIdentityDigest = "c".repeat(64);
+const neutralFileNames = [
+  "document-01.pdf",
+  "document-02.pdf",
+  "document-03.pdf",
+  "document-04.pdf",
+] as const;
 const config: AppConfig = {
   appId: "cli_0123456789abcdef",
   appSecret: "app-secret",
@@ -207,7 +215,7 @@ class MutablePilotDrive implements DriveReader, DriveMover {
     },
     {
       token: "file-product-one",
-      name: "[product] - Local_Cocoa_PDF_Chunking_Technical_Guide.pdf",
+      name: neutralFileNames[0],
       type: "file",
       parentToken: "fldcnRoot123",
       ownerId: "ou_victor",
@@ -215,7 +223,7 @@ class MutablePilotDrive implements DriveReader, DriveMover {
     },
     {
       token: "file-product-two",
-      name: "[product] - Local_Cocoa_Technical_Onboarding_Guide.pdf",
+      name: neutralFileNames[1],
       type: "file",
       parentToken: "fldcnRoot123",
       ownerId: "ou_victor",
@@ -223,7 +231,7 @@ class MutablePilotDrive implements DriveReader, DriveMover {
     },
     {
       token: "file-research-one",
-      name: "[research] - Agentic Context Engineering Research.pdf",
+      name: neutralFileNames[2],
       type: "file",
       parentToken: "fldcnRoot123",
       ownerId: "ou_victor",
@@ -231,7 +239,7 @@ class MutablePilotDrive implements DriveReader, DriveMover {
     },
     {
       token: "file-research-two",
-      name: "[research] - Anthropic Agentic Engineering.pdf",
+      name: neutralFileNames[3],
       type: "file",
       parentToken: "fldcnRoot123",
       ownerId: "ou_victor",
@@ -248,6 +256,7 @@ class MutablePilotDrive implements DriveReader, DriveMover {
     moveBeforeThrow?: boolean;
   } | null = null;
   skipMoveOnCall: number | null = null;
+  leaveRootDuplicates = false;
 
   async listFolderPage(input: {
     folderToken: string;
@@ -286,7 +295,15 @@ class MutablePilotDrive implements DriveReader, DriveMover {
       (!failure || failure.moveBeforeThrow) &&
       this.skipMoveOnCall !== this.moveCalls.length
     ) {
+      const original = this.items.find((item) => item.token === input.fileToken);
       this.relocate(input.fileToken, input.destinationFolderToken);
+      if (this.leaveRootDuplicates && original) {
+        this.items.push({
+          ...original,
+          token: `duplicate-${original.token}`,
+          parentToken: "fldcnRoot123",
+        });
+      }
     }
     if (failure) {
       throw failure.error;
@@ -326,7 +343,11 @@ async function approvedExecutionFixture(options: {
     async recoverAccessToken() { return "recovered-token"; },
     async markAccessTokenRejected() {},
   });
-  const proposal = buildOrganizeFolderProposal(observation.inventory, runId);
+  const proposal = buildOrganizeFolderProposal(
+    observation.inventory,
+    runId,
+    decisionsFor(observation.inventory.files.map((file) => file.name)),
+  );
   const result: DriveFolderInventoryResult = {
     ok: true,
     inventory: observation.inventory,
@@ -397,6 +418,8 @@ function createWorkflow(options: {
   cipher?: TokenCipher;
   driveReader?: DriveReader;
   driveMover?: DriveMover;
+  contentPlan?: ContentPlanResult;
+  contentPlannerEnabled?: boolean;
 } = {}) {
   const grantStore = new StubGrantStore();
   grantStore.grant = options.grant ?? null;
@@ -419,8 +442,72 @@ function createWorkflow(options: {
     cipher,
     driveReader: options.driveReader ?? noOpReader,
     driveMover: options.driveMover ?? noOpMover,
+    contentPlanner:
+      options.contentPlannerEnabled === false
+        ? undefined
+        : {
+            async plan() {
+              if (!options.contentPlan) {
+                throw new Error("unused content planner");
+              }
+              return options.contentPlan;
+            },
+          },
   });
   return { workflow, repository, cipher };
+}
+
+function decisionsFor(fileNames: string[]): ContentDecision[] {
+  return fileNames.map((fileName, index) => ({
+    file_name: fileName,
+    destination: index < 2 ? "Product" : "Research",
+    rationale: index < 2
+      ? `UNTRUSTED_RATIONALE_${index + 1}: Product documentation evidence.`
+      : `UNTRUSTED_RATIONALE_${index + 1}: Research evidence.`,
+  }));
+}
+
+async function contentPlanFixture(): Promise<
+  Extract<ContentPlanResult, { kind: "ready" }>
+> {
+  const drive = new MutablePilotDrive();
+  const observation = await observeAllowlistedFolder(drive, {
+    runId: "mcp-inventory-run",
+    requesterOpenId: "ou_victor",
+    rootToken: config.organizeFolderRootToken,
+    accessToken: "access-token",
+    async recoverAccessToken() { return "recovered-token"; },
+    async markAccessTokenRejected() {},
+  });
+  return {
+    kind: "ready",
+    inventoryResult: {
+      ok: true,
+      inventory: observation.inventory,
+    },
+    decisions: decisionsFor(
+      observation.inventory.files.map((file) => file.name),
+    ),
+  };
+}
+
+function readyInventoryRun(): InventoryRun {
+  return {
+    id: runId,
+    chatId: "oc_chat",
+    requesterOpenId: "ou_victor",
+    tenantKey: "tenant_synvo",
+    state: "READY_TO_SCAN",
+    rootTokenDigest: digestFolderToken(config.organizeFolderRootToken),
+    oauthGrantId: "grant-id",
+    oauthGrantMatchesSubject: true,
+    resultCiphertext: null,
+    proposalCiphertext: null,
+    proposalStatus: null,
+    executionCiphertext: null,
+    executionStatus: null,
+    undoStatus: null,
+  };
 }
 
 test("rejects external and unallowlisted folder links", async () => {
@@ -466,6 +553,23 @@ test("starts authorization when no usable grant exists", async () => {
     request("https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123"),
   );
   assert.equal(result.kind, "authorization_required");
+});
+
+test("fails safely before creating a run when content-aware MCP is disabled", async () => {
+  const { workflow, repository } = createWorkflow({
+    grant: grant(),
+    contentPlannerEnabled: false,
+  });
+
+  const result = await workflow.start(
+    request("https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123"),
+  );
+
+  assert.deepEqual(result, {
+    kind: "rejected",
+    replyText: "Content-aware folder organization isn’t available right now.",
+  });
+  assert.equal(repository.readyRunId, null);
 });
 
 test("creates an inventory run only for the exact Drive PDF grant", async () => {
@@ -536,6 +640,51 @@ test("uses a stored terminal result without scanning again", async () => {
     await workflow.buildProposalMessage(runId),
     "The Lark authorization is no longer usable.\n\nNo files were changed.",
   );
+});
+
+test("stores a content-aware proposal with grounded rationales", async () => {
+  const repository = new StubRepository();
+  repository.inventoryRun = readyInventoryRun();
+  const cipher = new TokenCipher(Buffer.alloc(32, 8));
+  const contentPlan = await contentPlanFixture();
+  const { workflow } = createWorkflow({ repository, cipher, contentPlan });
+
+  const message = await workflow.buildProposalMessage(runId);
+
+  assert.equal(repository.storedInput?.state, "COMPLETED");
+  assert.equal(repository.storedInput?.proposalStatus, "PROPOSED");
+  assert.match(message, /Product documentation evidence/);
+  assert.match(message, /Research evidence/);
+  assert.match(message, new RegExp(`/approve-folder ${runId}`));
+  const storedResult = JSON.parse(
+    cipher.decrypt(
+      repository.storedInput!.resultCiphertext,
+      driveFolderInventoryResultAssociatedData(runId),
+    ),
+  ) as DriveFolderInventoryResult;
+  assert.equal(storedResult.ok, true);
+  assert.equal(storedResult.ok && storedResult.inventory.run_id, runId);
+});
+
+test("stores a non-approvable result when content needs review", async () => {
+  const repository = new StubRepository();
+  repository.inventoryRun = readyInventoryRun();
+  const contentPlan = await contentPlanFixture();
+  contentPlan.decisions[0] = {
+    ...contentPlan.decisions[0]!,
+    destination: "Needs review",
+    rationale: "The evidence does not fit either approved destination.",
+  };
+  const { workflow } = createWorkflow({ repository, contentPlan });
+
+  const message = await workflow.buildProposalMessage(runId);
+
+  assert.equal(repository.storedInput?.state, "FAILED_NO_CHANGE");
+  assert.equal(repository.storedInput?.errorCode, "NEEDS_REVIEW");
+  assert.equal(repository.storedInput?.proposalStatus, null);
+  assert.match(message, /Needs review \(1 file\)/);
+  assert.doesNotMatch(message, /approve-folder/);
+  assert.match(message, /No changes have been made/);
 });
 
 test("reuses the stored proposal on a delivery retry", async () => {
@@ -631,7 +780,10 @@ test("records approval and rejection intent without a Drive mutation", async () 
     });
     assert.equal(repository.decisionInput?.decision, decision);
     assert.match(reply, new RegExp(decision.toLowerCase()));
-    assert.match(reply, /No files were moved|No execution was queued/);
+    assert.match(
+      reply,
+      /No files were moved|approval is saved|Execution is queued/,
+    );
   }
 });
 
@@ -685,23 +837,23 @@ test("handles duplicate, conflicting, stale, malformed, missing, and unknown dec
         kind: "existing",
         status: "REJECTED",
       },
-      expected: /conflicting decision was not recorded/,
+      expected: /kept the original decision/,
     },
     {
       result: {
         kind: "existing",
         status: "STALE",
       },
-      expected: /proposal is stale/,
+      expected: /proposal is out of date/,
     },
     {
       result: { kind: "not_found" },
-      expected: /proposal is unavailable/,
+      expected: /couldn’t find that proposal/,
     },
     {
       result: { kind: "not_found" },
       proposalId: "not-a-uuid",
-      expected: /valid proposal ID/,
+      expected: /couldn’t recognize that proposal/,
     },
   ];
 
@@ -718,7 +870,7 @@ test("handles duplicate, conflicting, stale, malformed, missing, and unknown dec
     assert.match(reply, testCase.expected);
     assert.match(
       reply,
-      /No files were changed|No files were moved|No execution was queued/,
+      /No files were changed|No files were moved|approval is saved|No execution was queued/,
     );
   }
 });
@@ -808,7 +960,7 @@ test("refuses execution without any Drive mutation when the write switch is disa
 
   const reply = await fixture.workflow.buildExecutionMessage(runId);
 
-  assert.match(reply, /write switch is disabled/);
+  assert.match(reply, /operator safety switch/u);
   assert.equal(fixture.drive.moveCalls.length, 0);
   assert.equal(fixture.repository.inventoryRun?.executionStatus, "FAILED");
   assert.equal(fixture.drive.countFiles("fldcnRoot123"), 4);
@@ -834,7 +986,7 @@ test("rechecks the configured pilot boundary when queued execution runs", async 
 
     const reply = await workflow.buildExecutionMessage(runId);
 
-    assert.match(reply, /no longer matches the configured pilot boundary/);
+    assert.match(reply, /no longer matches the approved folder/u);
     assert.equal(fixture.drive.moveCalls.length, 0);
     assert.equal(fixture.repository.inventoryRun?.executionStatus, "FAILED");
   }
@@ -842,17 +994,17 @@ test("rechecks the configured pilot boundary when queued execution runs", async 
 
 test("marks a changed snapshot stale before the first Drive mutation", async () => {
   const fixture = await approvedExecutionFixture();
-  fixture.drive.rename("file-product-one", "[product] - Changed.pdf");
+  fixture.drive.rename("file-product-one", "changed-document.pdf");
 
   const reply = await fixture.workflow.buildExecutionMessage(runId);
 
-  assert.match(reply, /became stale/);
+  assert.match(reply, /Drive folder changed/u);
   assert.equal(fixture.repository.staleCalls, 1);
   assert.equal(fixture.repository.inventoryRun?.proposalStatus, "STALE");
   assert.equal(fixture.drive.moveCalls.length, 0);
   assert.match(
     await fixture.workflow.buildExecutionMessage(runId),
-    /became stale before execution/,
+    /folder changed after this proposal/u,
   );
 });
 
@@ -885,12 +1037,21 @@ test("does not execute a missing proposal", async () => {
   assert.equal(drive.moveCalls.length, 0);
 });
 
-test("moves and verifies exactly four proposed files and makes delivery retries read-only", async () => {
+test("moves and verifies exactly four content-aware neutral-name files without persisting rationale as mutation input", async () => {
   const fixture = await approvedExecutionFixture();
 
   const first = await fixture.workflow.buildExecutionMessage(runId);
   const retry = await fixture.workflow.buildExecutionMessage(runId);
 
+  assert.deepEqual(
+    fixture.proposal.moves.map((move) => move.file_name).sort(),
+    [...neutralFileNames].sort(),
+  );
+  assert.equal(
+    fixture.proposal.moves.every((move) =>
+      move.rationale?.startsWith("UNTRUSTED_RATIONALE_")),
+    true,
+  );
   assert.equal(first, retry);
   assert.match(first, /Execution completed/);
   assert.equal(fixture.drive.moveCalls.length, 4);
@@ -898,8 +1059,33 @@ test("moves and verifies exactly four proposed files and makes delivery retries 
   assert.equal(fixture.drive.countFiles("folder-product"), 2);
   assert.equal(fixture.drive.countFiles("folder-research"), 2);
   assert.equal(fixture.repository.inventoryRun?.executionStatus, "COMPLETED");
+  assert.equal(
+    fixture.cipher.decrypt(
+      fixture.repository.inventoryRun!.executionCiphertext!,
+      executionAssociatedData(runId),
+    ).includes("UNTRUSTED_RATIONALE_"),
+    false,
+  );
   assert.equal(first.includes("folder-product"), false);
   assert.equal(first.includes("file-product-one"), false);
+});
+
+test("does not report completion when unexpected duplicate files remain in the root", async () => {
+  const fixture = await approvedExecutionFixture();
+  fixture.drive.leaveRootDuplicates = true;
+
+  const reply = await fixture.workflow.buildExecutionMessage(runId);
+
+  assert.match(reply, /Execution partial/u);
+  assert.equal(fixture.drive.countFiles("fldcnRoot123"), 4);
+  assert.equal(fixture.repository.inventoryRun?.executionStatus, "PARTIAL");
+  const stored = JSON.parse(
+    fixture.cipher.decrypt(
+      fixture.repository.inventoryRun!.executionCiphertext!,
+      executionAssociatedData(runId),
+    ),
+  ) as { errorCode?: string };
+  assert.equal(stored.errorCode, "FINAL_TARGET_MISMATCH");
 });
 
 test("reconciles a move recorded as requesting after a crash without repeating it", async () => {
@@ -1100,7 +1286,7 @@ test("rechecks the configured pilot boundary when queued undo runs", async () =>
 
   const reply = await workflow.buildUndoMessage(runId);
 
-  assert.match(reply, /no longer matches the configured pilot boundary/);
+  assert.match(reply, /no longer matches the approved folder/u);
   assert.equal(fixture.drive.moveCalls.length, callsAfterExecution);
   assert.equal(fixture.repository.inventoryRun?.undoStatus, "FAILED");
 });

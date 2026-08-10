@@ -66,6 +66,7 @@ export type OrganizeFolderExecutionRecord = {
   proposalId: string;
   startedAt: string;
   finishedAt?: string;
+  errorCode?: string;
   moves: ExecutionMove[];
   undo?: {
     requestedByOpenId: string;
@@ -102,6 +103,35 @@ export function inventoryMatchesApprovedSnapshot(
     observed.baseline_matches &&
     JSON.stringify(comparableInventory(approved)) ===
       JSON.stringify(comparableInventory(observed))
+  );
+}
+
+export function inventoryMatchesExecutionTarget(
+  record: OrganizeFolderExecutionRecord,
+  observed: DriveInventory,
+): boolean {
+  const expectedByDestination = new Map<string, number>();
+  for (const move of record.moves) {
+    expectedByDestination.set(
+      move.destinationRef,
+      (expectedByDestination.get(move.destinationRef) ?? 0) + 1,
+    );
+  }
+
+  return (
+    observed.complete &&
+    observed.files.length === 0 &&
+    observed.skipped.length === 0 &&
+    observed.summary.root_file_count === 0 &&
+    observed.summary.root_skipped_count === 0 &&
+    observed.summary.root_folder_count === expectedByDestination.size &&
+    observed.root.child_count === expectedByDestination.size &&
+    observed.destinations.length === expectedByDestination.size &&
+    observed.summary.destination_child_count === record.moves.length &&
+    observed.destinations.every(
+      (destination) =>
+        expectedByDestination.get(destination.ref) === destination.child_count,
+    )
   );
 }
 
@@ -236,6 +266,9 @@ export function finalExecutionStatus(
   record: OrganizeFolderExecutionRecord,
 ): Exclude<ExecutionStatus, "QUEUED" | "RUNNING" | "STALE"> {
   const counts = operationCounts(record.moves);
+  if (record.errorCode) {
+    return counts.verified > 0 ? "PARTIAL" : "UNKNOWN";
+  }
   if (counts.verified === record.moves.length) {
     return "COMPLETED";
   }

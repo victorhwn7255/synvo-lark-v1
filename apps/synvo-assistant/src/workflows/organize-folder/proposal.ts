@@ -16,15 +16,25 @@ export type OrganizeFolderProposal = {
     destination_ref: string;
     destination_identity_digest: string;
     destination_name: "Product" | "Research";
+    rationale?: string;
   }>;
+  needs_review?: Array<{
+    file_name: string;
+    rationale: string;
+  }>;
+};
+
+export type ContentDecision = {
+  file_name: string;
+  destination: "Product" | "Research" | "Needs review";
+  rationale: string;
 };
 
 export type ProposalBuildErrorCode =
   | "INVENTORY_NOT_READY"
-  | "MISSING_PREFIX"
-  | "UNKNOWN_PREFIX"
-  | "CONFLICTING_PREFIX"
-  | "AMBIGUOUS_PREFIX"
+  | "MISSING_DECISION"
+  | "UNKNOWN_DECISION"
+  | "DUPLICATE_DECISION"
   | "DUPLICATE_FILE"
   | "UNEXPECTED_PROPOSAL";
 
@@ -38,59 +48,10 @@ export class ProposalBuildError extends Error {
   }
 }
 
-function classifyFileName(
-  fileName: string,
-): (typeof organizeFolderPilotPolicy.classifications)[number] {
-  const mentioned = organizeFolderPilotPolicy.classifications.filter(({ label }) =>
-    fileName.includes(`[${label}]`),
-  );
-  if (mentioned.length > 1) {
-    throw new ProposalBuildError(
-      "CONFLICTING_PREFIX",
-      "A file name contains conflicting organization prefixes.",
-    );
-  }
-
-  const exact = organizeFolderPilotPolicy.classifications.find(({ prefix }) =>
-    fileName.startsWith(prefix),
-  );
-  if (!exact) {
-    if (mentioned.length === 1) {
-      throw new ProposalBuildError(
-        "AMBIGUOUS_PREFIX",
-        "A file name contains an ambiguous organization prefix.",
-      );
-    }
-    if (/^\[[^\]]+\]/u.test(fileName)) {
-      throw new ProposalBuildError(
-        "UNKNOWN_PREFIX",
-        "A file name contains an unknown organization prefix.",
-      );
-    }
-    throw new ProposalBuildError(
-      "MISSING_PREFIX",
-      "A file name is missing an organization prefix.",
-    );
-  }
-
-  const remainder = fileName.slice(exact.prefix.length);
-  if (
-    remainder.trim().length === 0 ||
-    organizeFolderPilotPolicy.classifications.some(({ label }) =>
-      remainder.includes(`[${label}]`),
-    )
-  ) {
-    throw new ProposalBuildError(
-      "AMBIGUOUS_PREFIX",
-      "A file name contains an ambiguous organization prefix.",
-    );
-  }
-  return exact;
-}
-
 export function buildOrganizeFolderProposal(
   inventory: DriveInventory,
   runId: string,
+  decisions: ContentDecision[],
 ): OrganizeFolderProposal {
   if (
     inventory.run_id !== runId ||
@@ -110,7 +71,7 @@ export function buildOrganizeFolderProposal(
   );
   const seenRefs = new Set<string>();
   const seenNames = new Set<string>();
-  const moves = inventory.files.map((file) => {
+  for (const file of inventory.files) {
     if (seenRefs.has(file.ref) || seenNames.has(file.name)) {
       throw new ProposalBuildError(
         "DUPLICATE_FILE",
@@ -119,29 +80,63 @@ export function buildOrganizeFolderProposal(
     }
     seenRefs.add(file.ref);
     seenNames.add(file.name);
+  }
+  const decisionsByName = new Map<string, ContentDecision>();
+  for (const decision of decisions) {
+    if (decisionsByName.has(decision.file_name)) {
+      throw new ProposalBuildError(
+        "DUPLICATE_DECISION",
+        "The content plan contains a duplicate file decision.",
+      );
+    }
+    decisionsByName.set(decision.file_name, decision);
+  }
+  const inventoryNames = new Set(inventory.files.map((file) => file.name));
+  if ([...decisionsByName.keys()].some((name) => !inventoryNames.has(name))) {
+    throw new ProposalBuildError(
+      "UNKNOWN_DECISION",
+      "The content plan contains a decision for an unknown file.",
+    );
+  }
 
+  const needsReview: NonNullable<OrganizeFolderProposal["needs_review"]> = [];
+  const moves = inventory.files.flatMap((file) => {
     if (file.parent_ref !== "root") {
       throw new ProposalBuildError(
         "INVENTORY_NOT_READY",
         "A proposed file is outside the approved root.",
       );
     }
-    const classification = classifyFileName(file.name);
-    const destination = destinations.get(classification.destinationName);
+    const decision = decisionsByName.get(file.name);
+    if (!decision) {
+      throw new ProposalBuildError(
+        "MISSING_DECISION",
+        "The content plan is missing a file decision.",
+      );
+    }
+    if (decision.destination === "Needs review") {
+      needsReview.push({
+        file_name: file.name,
+        rationale: decision.rationale,
+      });
+      return [];
+    }
+    const destination = destinations.get(decision.destination);
     if (!destination || destination.child_count !== 0) {
       throw new ProposalBuildError(
         "INVENTORY_NOT_READY",
         "An approved destination is not ready for a proposal.",
       );
     }
-    return {
+    return [{
       file_ref: file.ref,
       file_identity_digest: file.identity_digest,
       file_name: file.name,
       destination_ref: destination.ref,
       destination_identity_digest: destination.identity_digest,
-      destination_name: classification.destinationName,
-    };
+      destination_name: decision.destination,
+      rationale: decision.rationale,
+    }];
   });
 
   moves.sort(
@@ -157,9 +152,10 @@ export function buildOrganizeFolderProposal(
     (move) => move.destination_name === "Research",
   ).length;
   if (
-    moves.length !== 4 ||
-    productFileCount !== 2 ||
-    researchFileCount !== 2
+    needsReview.length === 0 &&
+    (moves.length !== organizeFolderPilotPolicy.rootFileCount ||
+      productFileCount !== 2 ||
+      researchFileCount !== 2)
   ) {
     throw new ProposalBuildError(
       "UNEXPECTED_PROPOSAL",
@@ -170,6 +166,7 @@ export function buildOrganizeFolderProposal(
   return {
     proposal_id: runId,
     moves,
+    needs_review: needsReview,
   };
 }
 

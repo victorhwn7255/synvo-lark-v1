@@ -188,16 +188,16 @@ export async function observeAllowlistedFolder(
   if (unexpectedFolderCount > 0) {
     issues.push(`Found ${unexpectedFolderCount} unexpected root folder(s).`);
   }
-  if (rootFiles.length !== 4) {
-    issues.push(`Expected four root files, found ${rootFiles.length}.`);
+  if (rootFiles.length !== organizeFolderPilotPolicy.rootFileCount) {
+    issues.push(
+      `Expected ${organizeFolderPilotPolicy.rootFileCount} root files, found ${rootFiles.length}.`,
+    );
   }
-  const expectedFileNames = new Set<string>(organizeFolderPilotPolicy.rootFileNames);
-  const actualFileNames = new Set(rootFiles.map((file) => file.name));
-  const hasExactPilotFiles =
-    actualFileNames.size === expectedFileNames.size &&
-    [...expectedFileNames].every((name) => actualFileNames.has(name));
-  if (!hasExactPilotFiles) {
-    issues.push("The root file names or types differ from the pilot baseline.");
+  const unsupportedFileCount = rootFiles.filter(
+    (file) => !/\.pdf$/iu.test(file.name),
+  ).length;
+  if (unsupportedFileCount > 0) {
+    issues.push(`Found ${unsupportedFileCount} non-PDF root file(s).`);
   }
   if (unsupportedItems.length > 0) {
     issues.push(`Found ${unsupportedItems.length} unsupported root item(s).`);

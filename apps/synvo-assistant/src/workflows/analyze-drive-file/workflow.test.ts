@@ -29,6 +29,7 @@ class FakeQueue implements DeliveryQueue {
     return this.accept;
   }
   async claimNext(): Promise<DeliveryJob | null> { return null; }
+  async extendLease(): Promise<boolean> { return true; }
   async storePayload(): Promise<boolean> { return true; }
   async complete(): Promise<boolean> { return true; }
   async retry(): Promise<boolean> { return true; }
@@ -44,6 +45,7 @@ function fixture(options: {
   items?: NativeDriveItem[];
   downloadError?: unknown;
   tokenError?: unknown;
+  listError?: unknown;
 } = {}) {
   const queue = new FakeQueue();
   const updates: string[] = [];
@@ -54,6 +56,9 @@ function fixture(options: {
   const driveReader: DriveReader = {
     async listFolderPage() {
       lists += 1;
+      if (options.listError) {
+        throw options.listError;
+      }
       return {
         items: options.items ?? [{
             token: options.token ?? "boxcnPdf123",
@@ -233,10 +238,31 @@ test("returns a safe result for an unusable OAuth grant", async () => {
     });
     const result = await testFixture.workflow.analyzeListedFile(analyzeInput);
     assert.equal(result.ok, false);
-    assert.match(result.ok ? "" : result.error.message, /authorization/i);
+    assert.match(result.ok ? "" : result.error.message, /Drive connection/i);
     assert.equal(testFixture.lists(), 0);
     assert.equal(testFixture.downloads(), 0);
   }
+});
+
+test("preserves retryability for a temporary direct-analysis failure", async () => {
+  const testFixture = fixture({
+    listError: driveToolError(
+      "LARK_RETRYABLE",
+      "private provider detail",
+      true,
+    ),
+  });
+
+  assert.deepEqual(
+    await testFixture.workflow.analyzeListedFile(analyzeInput),
+    {
+      ok: false,
+      error: {
+        message: "Lark Drive is temporarily unavailable. Please try again in a moment.",
+        retryable: true,
+      },
+    },
+  );
 });
 
 test("rejects malformed and unallowlisted folder links before Drive access", async () => {
@@ -329,7 +355,10 @@ test("rejects files outside the root, with a wrong owner, or with a non-PDF type
       async () => true,
     );
     assert.equal(testFixture.downloads(), 0);
-    assert.match(testFixture.updates.at(-1) ?? "", /outside|ordinary PDF/);
+    assert.match(
+      testFixture.updates.at(-1) ?? "",
+      /directly inside the approved folder|ordinary PDF/,
+    );
   }
 });
 
@@ -361,5 +390,5 @@ test("recovers one rejected access token and revokes after a second rejection", 
   assert.equal(rejected.rejections(), 1);
   assert.equal(rejected.downloads(), 2);
   assert.equal(calls, 0);
-  assert.match(rejected.updates.at(-1) ?? "", /authorization is unavailable/);
+  assert.match(rejected.updates.at(-1) ?? "", /can’t access Lark Drive/u);
 });

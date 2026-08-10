@@ -12,9 +12,14 @@ class FakeQueue implements DeliveryQueue {
   completed = 0;
   retried = 0;
   failedCodes: string[] = [];
+  extendedLeases: Date[] = [];
 
   async enqueue(): Promise<boolean> { return true; }
   async claimNext(): Promise<DeliveryJob | null> { return this.jobs.shift() ?? null; }
+  async extendLease(_job: DeliveryJob, leaseExpiresAt: Date): Promise<boolean> {
+    this.extendedLeases.push(leaseExpiresAt);
+    return true;
+  }
   async storePayload(_job: DeliveryJob, payload: string): Promise<boolean> {
     this.storedPayload = payload;
     return true;
@@ -74,6 +79,55 @@ test("stores a prepared scan result before idempotent delivery", async () => {
     text: "bounded inventory",
     key: "ca55f05b-f138-41a1-8a73-7cf609866d79",
   }]);
+  assert.equal(queue.completed, 1);
+});
+
+test("extends a folder scan lease for bounded content analysis", async () => {
+  const queue = new FakeQueue();
+  queue.jobs.push(scanJob());
+  const now = new Date("2026-08-09T00:00:00.000Z");
+  const worker = new DeliveryWorker({
+    queue,
+    cipher: new TokenCipher(Buffer.alloc(32, 3)),
+    prepareMessage: async () => "bounded inventory",
+    prepareExhaustedMessage: async () => "unused",
+    sendText: async () => {},
+    now: () => now,
+  });
+
+  await worker.processOne();
+
+  assert.deepEqual(queue.extendedLeases, [
+    new Date("2026-08-09T00:15:00.000Z"),
+  ]);
+});
+
+test("supports a durable folder progress card through the existing job payload", async () => {
+  const queue = new FakeQueue();
+  queue.jobs.push(scanJob(3));
+  const observed: Array<{ payload: string | null; finalAttempt: boolean }> = [];
+  const worker = new DeliveryWorker({
+    queue,
+    cipher: new TokenCipher(Buffer.alloc(32, 3)),
+    prepareMessage: async () => "unused",
+    prepareExhaustedMessage: async () => "unused",
+    sendText: async () => {},
+    maxAttempts: 3,
+    handleOrganizeFolderScan: async (
+      _job,
+      payload,
+      storePayload,
+      finalAttempt,
+    ) => {
+      observed.push({ payload, finalAttempt });
+      assert.equal(await storePayload("om_progress"), true);
+    },
+  });
+
+  await worker.processOne();
+
+  assert.deepEqual(observed, [{ payload: null, finalAttempt: true }]);
+  assert.ok(queue.storedPayload);
   assert.equal(queue.completed, 1);
 });
 

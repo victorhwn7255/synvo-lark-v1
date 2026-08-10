@@ -68,8 +68,8 @@ function authorizationRequiredMessage(startUrl: URL): string {
     "",
     `Authorize this request: ${startUrl.toString()}`,
     "",
-    "The link expires in 10 minutes. The assistant requests folder-list access, read-only metadata, approved PDF-download access, approved file-move access, and offline refresh access.",
-    "Files can move only after an exact proposal is approved while the operator write switch is enabled.",
+    "The link expires in 10 minutes. Synvo AI requests only the approved Drive access needed to analyze the folder, prepare a proposal, and carry out a separately approved move.",
+    "Nothing can move until you approve an exact proposal and the operator safety switch is enabled.",
   ].join("\n");
 }
 

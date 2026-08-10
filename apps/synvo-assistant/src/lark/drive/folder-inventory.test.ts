@@ -238,7 +238,7 @@ test("reports each bounded baseline hierarchy violation", async (t) => {
           ownerId: requesterOpenId,
         },
       ],
-      issue: "Expected four root files, found 5",
+      issue: "Expected 4 root files, found 5",
     },
   ];
 
@@ -280,7 +280,7 @@ test("reports a destination that is already nonempty", async () => {
   );
 });
 
-test("rejects a four-file baseline when any known fixture name differs", async () => {
+test("accepts neutral PDF filenames because content classification owns the decision", async () => {
   const changedRootItems = rootItems.map((item) =>
     item.token === "file-1" ? { ...item, name: "[research] - Renamed.pdf" } : item,
   );
@@ -290,9 +290,22 @@ test("rejects a four-file baseline when any known fixture name differs", async (
   );
 
   assert.equal(inventory.summary.root_file_count, 4);
+  assert.equal(inventory.baseline_matches, true);
+  assert.deepEqual(inventory.issues, []);
+});
+
+test("rejects a structural baseline containing a non-PDF root file", async () => {
+  const changedRootItems = rootItems.map((item) =>
+    item.token === "file-1" ? { ...item, name: "notes.txt" } : item,
+  );
+  const inventory = await readInventory(
+    new FixtureReader({ rootItems: changedRootItems }),
+    scanContext(),
+  );
+
   assert.equal(inventory.baseline_matches, false);
   assert.equal(
-    inventory.issues.some((issue) => issue.includes("names or types")),
+    inventory.issues.some((issue) => issue.includes("non-PDF")),
     true,
   );
 });

@@ -10,6 +10,13 @@ import type {
   DeliveryQueue,
 } from "./repository.js";
 
+type StatefulDeliveryHandler = (
+  job: DeliveryJob,
+  payload: string | null,
+  storePayload: (payload: string) => Promise<boolean>,
+  finalAttempt: boolean,
+) => Promise<void>;
+
 type DeliveryWorkerOptions = {
   queue: DeliveryQueue;
   cipher: TokenCipher;
@@ -23,21 +30,16 @@ type DeliveryWorkerOptions = {
     text: string,
     idempotencyKey: string,
   ) => Promise<void>;
-  handleAnalyzeAttachment?: (
-    job: DeliveryJob,
-    progressMessageId: string | null,
-    storeProgressMessageId: (messageId: string) => Promise<boolean>,
-  ) => Promise<void>;
-  handleAnalyzeDriveFile?: (
-    job: DeliveryJob,
-    payload: string | null,
-    storePayload: (payload: string) => Promise<boolean>,
-  ) => Promise<void>;
+  handleAnalyzeAttachment?: StatefulDeliveryHandler;
+  handleAnalyzeDriveFile?: StatefulDeliveryHandler;
+  handleOrganizeFolderScan?: StatefulDeliveryHandler;
   now?: () => Date;
   leaseMs?: number;
   pollMs?: number;
   maxAttempts?: number;
 };
+
+const CONTENT_ORGANIZATION_LEASE_MS = 15 * 60_000;
 
 class PermanentDeliveryError extends Error {}
 class RetryablePreparationError extends Error {}
@@ -60,6 +62,7 @@ export class DeliveryWorker {
   ) => Promise<void>;
   readonly #handleAnalyzeAttachment?: DeliveryWorkerOptions["handleAnalyzeAttachment"];
   readonly #handleAnalyzeDriveFile?: DeliveryWorkerOptions["handleAnalyzeDriveFile"];
+  readonly #handleOrganizeFolderScan?: DeliveryWorkerOptions["handleOrganizeFolderScan"];
   readonly #now: () => Date;
   readonly #leaseMs: number;
   readonly #pollMs: number;
@@ -76,6 +79,7 @@ export class DeliveryWorker {
     this.#sendText = options.sendText;
     this.#handleAnalyzeAttachment = options.handleAnalyzeAttachment;
     this.#handleAnalyzeDriveFile = options.handleAnalyzeDriveFile;
+    this.#handleOrganizeFolderScan = options.handleOrganizeFolderScan;
     this.#now = options.now ?? (() => new Date());
     this.#leaseMs = options.leaseMs ?? 120_000;
     this.#pollMs = options.pollMs ?? 500;
@@ -116,10 +120,21 @@ export class DeliveryWorker {
 
     try {
       if (
-        job.kind === "ANALYZE_ATTACHMENT" ||
-        job.kind === "ANALYZE_DRIVE_FILE"
+        job.kind === "ORGANIZE_FOLDER_SCAN" &&
+        !(await this.#queue.extendLease(
+          job,
+          new Date(this.#now().getTime() + CONTENT_ORGANIZATION_LEASE_MS),
+        ))
       ) {
-        await this.#processAnalysis(job);
+        throw new Error("Delivery lease was lost before content analysis");
+      }
+      if (
+        job.kind === "ANALYZE_ATTACHMENT" ||
+        job.kind === "ANALYZE_DRIVE_FILE" ||
+        (job.kind === "ORGANIZE_FOLDER_SCAN" &&
+          this.#handleOrganizeFolderScan)
+      ) {
+        await this.#processStatefulJob(job);
         return true;
       }
       let payloadCiphertext: string;
@@ -167,13 +182,15 @@ export class DeliveryWorker {
     return true;
   }
 
-  async #processAnalysis(job: DeliveryJob): Promise<void> {
+  async #processStatefulJob(job: DeliveryJob): Promise<void> {
     const handler =
       job.kind === "ANALYZE_ATTACHMENT"
         ? this.#handleAnalyzeAttachment
-        : this.#handleAnalyzeDriveFile;
+        : job.kind === "ANALYZE_DRIVE_FILE"
+          ? this.#handleAnalyzeDriveFile
+          : this.#handleOrganizeFolderScan;
     if (!handler) {
-      throw new PermanentDeliveryError("Document analysis is not configured");
+      throw new PermanentDeliveryError("Stateful delivery is not configured");
     }
     let payload: string | null = null;
     if (job.payloadCiphertext) {
@@ -195,6 +212,7 @@ export class DeliveryWorker {
           job,
           encryptDeliveryMessage(this.#cipher, job.id, value),
         ),
+      job.attemptCount >= this.#maxAttempts,
     );
     if (!(await this.#queue.complete(job))) {
       throw new Error("Delivery lease was lost before completion");

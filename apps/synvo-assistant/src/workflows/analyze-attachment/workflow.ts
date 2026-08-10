@@ -32,42 +32,42 @@ export function safeAnalysisFailureMessage(error: unknown): string | null {
   if (error instanceof LarkAttachmentError) {
     switch (error.code) {
       case "INVALID_MESSAGE":
-        return "I couldn't verify that this PDF belongs to the triggering Lark message. Please send the PDF directly to the bot again.";
+        return "I couldn’t match this PDF to the Lark message that sent it. Please send the PDF directly in this chat one more time.";
       case "PERMISSION_DENIED":
-        return "The assistant needs the approved Lark message-read permission before it can analyze attachments. Please contact the app administrator.";
+        return "I don’t have permission to read this attachment yet. Please ask the Synvo AI app administrator to enable message access.";
       case "UNSUPPORTED_FILE":
-        return "This pilot supports one text-based PDF sent directly to the bot.";
+        return "I can currently analyze one text-based PDF at a time when it’s sent directly in this chat.";
       case "TOO_LARGE":
-        return "This PDF exceeds the 10 MiB pilot limit.";
+        return "This PDF is larger than my current 10 MiB limit. Please send a smaller version.";
       case "TIMEOUT":
       case "UNAVAILABLE":
-        return "Lark could not provide this attachment right now. Please send it again later.";
+        return "I couldn’t retrieve this attachment from Lark right now. Please send it again in a moment.";
     }
   }
   if (error instanceof PdfInputError) {
     switch (error.code) {
       case "ENCRYPTED":
-        return "Encrypted PDFs are not supported in this pilot.";
+        return "This PDF is encrypted, so I can’t read it yet. Please send an unlocked copy.";
       case "TOO_MANY_PAGES":
-        return "This PDF exceeds the 50-page pilot limit.";
+        return "This PDF is longer than my current 50-page limit. Please send a shorter version.";
       case "NO_TEXT":
-        return "I couldn't find extractable text in this PDF. OCR and image-only PDFs are not supported yet.";
+        return "I couldn’t find readable text in this PDF. Scanned and image-only PDFs aren’t supported yet.";
       case "TIMEOUT":
-        return "PDF extraction timed out. No document content was retained.";
+        return "Reading this PDF took too long, so I stopped safely. No document content was retained.";
       case "MALFORMED":
-        return "I couldn't safely read this PDF. Please send a valid text-based PDF.";
+        return "I couldn’t safely read this PDF. Please try a valid text-based PDF.";
     }
   }
   if (error instanceof NimAnalysisError) {
     switch (error.code) {
       case "UNAUTHORIZED":
-        return "Document analysis is temporarily unavailable because the model credential needs attention.";
+        return "Document analysis needs an administrator’s attention right now. Please try again after the model connection is restored.";
       case "RATE_LIMITED":
       case "TIMEOUT":
       case "UNAVAILABLE":
-        return "Document analysis is temporarily unavailable. Please try again later.";
+        return "The analysis service is busy right now. Please try again in a moment.";
       case "INVALID_RESPONSE":
-        return "The model did not return a usable analysis. Please try again later.";
+        return "I didn’t receive a complete analysis this time. Please try again.";
     }
   }
   return null;

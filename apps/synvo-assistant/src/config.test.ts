@@ -24,6 +24,8 @@ test("loads production-aligned assistant configuration", () => {
     oauthTokenEncryptionKey: Buffer.alloc(32, 4).toString("base64url"),
     authorizedOpenId: undefined,
     authorizedTenantKey: undefined,
+    authorizedFirstName: undefined,
+    larkLoadingImageKey: undefined,
     synvoMcpAuthToken: undefined,
     organizeFolderRootToken: "fldcnRoot123",
     organizeFolderWriteEnabled: false,
@@ -36,14 +38,29 @@ test("loads explicit pilot identity and write switch configuration", () => {
     ...validEnvironment,
     LARK_AUTHORIZED_OPEN_ID: "ou_victor",
     LARK_AUTHORIZED_TENANT_KEY: "tenant_synvo",
+    LARK_AUTHORIZED_FIRST_NAME: "Victor",
+    LARK_LOADING_IMAGE_KEY: "img_v2_loading_hourglass",
     ORGANIZE_FOLDER_WRITE_ENABLED: "true",
     SYNVO_MCP_AUTH_TOKEN: "m".repeat(43),
   });
 
   assert.equal(config.authorizedOpenId, "ou_victor");
   assert.equal(config.authorizedTenantKey, "tenant_synvo");
+  assert.equal(config.authorizedFirstName, "Victor");
+  assert.equal(config.larkLoadingImageKey, "img_v2_loading_hourglass");
   assert.equal(config.synvoMcpAuthToken, "m".repeat(43));
   assert.equal(config.organizeFolderWriteEnabled, true);
+});
+
+test("rejects a first name without the authorized pilot identity", () => {
+  assert.throws(
+    () =>
+      loadConfig({
+        ...validEnvironment,
+        LARK_AUTHORIZED_FIRST_NAME: "Victor",
+      }),
+    /requires the authorized pilot identity/,
+  );
 });
 
 test("rejects an invalid organize-folder write switch", () => {

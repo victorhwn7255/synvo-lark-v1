@@ -77,6 +77,10 @@ function lineForDestination(
   return `  - ${sanitizeDisplayValue(destination.name, "[unnamed]")}: ${contents}`;
 }
 
+function fileCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "file" : "files"}`;
+}
+
 export function formatDriveInventory(inventory: DriveInventory): string {
   const ownershipChecks = [
     inventory.root.owner_verification,
@@ -145,23 +149,46 @@ export function formatOrganizeFolderProposal(
   const researchFiles = proposal.moves.filter(
     (move) => move.destination_name === "Research",
   );
-  return [
+  const needsReview = proposal.needs_review ?? [];
+  const lines = [
     `Organization proposal ${proposal.proposal_id}`,
     "",
-    `Product (${productFiles.length} files):`,
-    ...productFiles.map(
-      (move) => `  - ${sanitizeDisplayValue(move.file_name, "[unnamed]")}`,
-    ),
+    `Product (${fileCountLabel(productFiles.length)}):`,
+    ...productFiles.flatMap((move) => [
+      `  - ${sanitizeDisplayValue(move.file_name, "[unnamed]")}`,
+      ...(move.rationale
+        ? [`    Why: ${sanitizeDisplayValue(move.rationale, "[no rationale]")}`]
+        : []),
+    ]),
     "",
-    `Research (${researchFiles.length} files):`,
-    ...researchFiles.map(
-      (move) => `  - ${sanitizeDisplayValue(move.file_name, "[unnamed]")}`,
-    ),
+    `Research (${fileCountLabel(researchFiles.length)}):`,
+    ...researchFiles.flatMap((move) => [
+      `  - ${sanitizeDisplayValue(move.file_name, "[unnamed]")}`,
+      ...(move.rationale
+        ? [`    Why: ${sanitizeDisplayValue(move.rationale, "[no rationale]")}`]
+        : []),
+    ]),
     "",
-    "Unsupported or ambiguous files: 0",
+    `Needs review (${fileCountLabel(needsReview.length)}):`,
+    ...(needsReview.length === 0
+      ? ["  - None"]
+      : needsReview.flatMap((item) => [
+          `  - ${sanitizeDisplayValue(item.file_name, "[unnamed]")}`,
+          `    Why: ${sanitizeDisplayValue(item.rationale, "[no rationale]")}`,
+        ])),
     "No changes have been made.",
-    "",
-    `Approve: /approve-folder ${proposal.proposal_id}`,
-    `Reject: /reject-folder ${proposal.proposal_id}`,
-  ].join("\n");
+  ];
+  if (needsReview.length === 0) {
+    lines.push(
+      "",
+      `Approve: /approve-folder ${proposal.proposal_id}`,
+      `Reject: /reject-folder ${proposal.proposal_id}`,
+    );
+  } else {
+    lines.push(
+      "",
+      "This report cannot be approved until every file has a supported destination.",
+    );
+  }
+  return lines.join("\n");
 }

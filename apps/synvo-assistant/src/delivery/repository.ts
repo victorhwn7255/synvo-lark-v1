@@ -84,6 +84,7 @@ export async function insertDeliveryJob(
 export interface DeliveryQueue {
   enqueue(input: InsertDeliveryJobInput): Promise<boolean>;
   claimNext(now: Date, leaseMs: number): Promise<DeliveryJob | null>;
+  extendLease(job: DeliveryJob, leaseExpiresAt: Date): Promise<boolean>;
   storePayload(job: DeliveryJob, payloadCiphertext: string): Promise<boolean>;
   complete(job: DeliveryJob): Promise<boolean>;
   retry(job: DeliveryJob, availableAt: Date, errorCode: string): Promise<boolean>;
@@ -171,6 +172,22 @@ export class PostgresDeliveryQueue implements DeliveryQueue {
           AND state = 'PROCESSING'
           AND attempt_count = $2`,
       [job.id, job.attemptCount, payloadCiphertext],
+    );
+    return (result.rowCount ?? 0) === 1;
+  }
+
+  async extendLease(
+    job: DeliveryJob,
+    leaseExpiresAt: Date,
+  ): Promise<boolean> {
+    const result = await this.#pool.query(
+      `UPDATE lark_delivery_jobs
+          SET lease_expires_at = $3,
+              updated_at = now()
+        WHERE id = $1
+          AND state = 'PROCESSING'
+          AND attempt_count = $2`,
+      [job.id, job.attemptCount, leaseExpiresAt],
     );
     return (result.rowCount ?? 0) === 1;
   }

@@ -42,6 +42,7 @@ import {
   formatExecutionResult,
   formatUndoResult,
   inventoryMatchesApprovedSnapshot,
+  inventoryMatchesExecutionTarget,
   observeExecutionParents,
   type ExecutionStatus,
   type ObservedParent,
@@ -57,6 +58,7 @@ import type {
   InventoryRun,
   OrganizeFolderRepository,
 } from "./repository.js";
+import type { ContentAwareFolderPlanner } from "./content-planner.js";
 
 export type OrganizeFolderRequest = {
   messageId: string;
@@ -87,6 +89,7 @@ type AccessTokenProvider = Pick<
   LarkTokenBroker,
   "getAccessToken" | "recoverAccessToken" | "markAccessTokenRejected"
 >;
+type ContentPlanner = Pick<ContentAwareFolderPlanner, "plan">;
 
 function normalizeInventoryError(error: unknown): DriveToolError {
   if (!(error instanceof LarkAuthError)) {
@@ -98,34 +101,34 @@ function normalizeInventoryError(error: unknown): DriveToolError {
     case "WRONG_SCOPE":
       return driveToolError(
         "OAUTH_REQUIRED",
-        "Lark authorization is required.",
+        "Please connect Lark Drive before I analyze this folder.",
       );
     case "OAUTH_REVOKED":
       return driveToolError(
         "OAUTH_REVOKED",
-        "The Lark authorization is no longer usable.",
+        "Your Lark Drive connection has expired or was revoked. Please connect it again.",
       );
     case "OAUTH_RETRYABLE":
       return driveToolError(
         "LARK_RETRYABLE",
-        "Lark authorization is temporarily unavailable.",
+        "Lark authorization is temporarily unavailable. Please try again in a moment.",
         true,
       );
     case "WRONG_TENANT":
       return driveToolError(
         "WRONG_TENANT",
-        "The stored Lark authorization belongs to a different tenant.",
+        "This Lark Drive connection belongs to a different workspace.",
       );
     case "WRONG_USER":
       return driveToolError(
         "UNAUTHORIZED",
-        "The stored Lark authorization does not match the requesting user.",
+        "This Lark Drive connection belongs to a different user.",
       );
     case "OAUTH_REJECTED":
     case "OAUTH_MALFORMED":
       return driveToolError(
         "LARK_PERMANENT",
-        "The Lark authorization could not be used safely.",
+        "I couldn’t safely use this Lark Drive connection. Please connect it again.",
       );
   }
 }
@@ -139,6 +142,7 @@ export class OrganizeFolderWorkflow {
   readonly #cipher: TokenCipher;
   readonly #driveReader: DriveReader;
   readonly #driveMover: DriveMover;
+  readonly #contentPlanner?: ContentPlanner;
 
   constructor(options: {
     config: AppConfig;
@@ -149,6 +153,7 @@ export class OrganizeFolderWorkflow {
     cipher: TokenCipher;
     driveReader: DriveReader;
     driveMover: DriveMover;
+    contentPlanner?: ContentPlanner;
   }) {
     this.#config = options.config;
     this.#grantStore = options.grantStore;
@@ -158,6 +163,7 @@ export class OrganizeFolderWorkflow {
     this.#cipher = options.cipher;
     this.#driveReader = options.driveReader;
     this.#driveMover = options.driveMover;
+    this.#contentPlanner = options.contentPlanner;
   }
 
   async start(
@@ -169,8 +175,15 @@ export class OrganizeFolderWorkflow {
       const message =
         error instanceof DriveToolError
           ? error.safeError.message
-          : "Provide a valid allowlisted Lark Drive folder link.";
+          : "Please send a valid Lark Drive link for the approved folder.";
       return { kind: "rejected", replyText: message };
+    }
+
+    if (!this.#contentPlanner) {
+      return {
+        kind: "rejected",
+        replyText: "Content-aware folder organization isn’t available right now.",
+      };
     }
 
     if (await this.#repository.hasRunForMessage(request.messageId)) {
@@ -273,16 +286,43 @@ export class OrganizeFolderWorkflow {
       throw new Error("The read-only inventory run is not ready.");
     }
 
-    const result = await this.#collectInventory(
-      runId,
-      run.requesterOpenId,
-      run.tenantKey,
-    );
-
-    if (!result.ok && result.error.retryable) {
-      throw new Error("The read-only folder inventory should be retried.");
+    if (!this.#contentPlanner) {
+      return this.#storeAndFormat(runId, {
+        ok: false,
+        error: {
+          code: "INTERNAL",
+          message: "Content-aware folder organization is not configured.",
+          retryable: false,
+        },
+      });
     }
-    return this.#storeAndFormat(runId, result);
+    const plan = await this.#contentPlanner.plan(
+      `https://larksuite.com/drive/folder/${this.#config.organizeFolderRootToken}`,
+    );
+    if (plan.kind === "failed") {
+      if (plan.retryable) {
+        throw new Error("The content-aware folder plan should be retried.");
+      }
+      return this.#storeAndFormat(runId, {
+        ok: false,
+        error: {
+          code: "INTERNAL",
+          message: plan.message,
+          retryable: false,
+        },
+      });
+    }
+    const result: DriveFolderInventoryResult = plan.inventoryResult.ok
+      ? {
+          ok: true,
+          inventory: { ...plan.inventoryResult.inventory, run_id: runId },
+        }
+      : plan.inventoryResult;
+    return this.#storeAndFormat(
+      runId,
+      result,
+      plan.kind === "ready" ? plan.decisions : undefined,
+    );
   }
 
   async decideProposal(input: {
@@ -296,10 +336,10 @@ export class OrganizeFolderWorkflow {
     } catch (error) {
       return error instanceof DriveToolError
         ? `${error.safeError.message}\n\nNo files were changed.`
-        : "This proposal cannot be decided.\n\nNo files were changed.";
+        : "I couldn’t record that decision safely. No files were changed.";
     }
     if (!z.uuid().safeParse(input.proposalId).success) {
-      return "Provide a valid proposal ID.\n\nNo files were changed.";
+      return "I couldn’t recognize that proposal. No files were changed.";
     }
 
     const stored = await this.#repository.recordProposalDecision({
@@ -312,7 +352,7 @@ export class OrganizeFolderWorkflow {
           : undefined,
     });
     if (stored.kind === "not_found") {
-      return "That proposal is unavailable for this user and tenant.\n\nNo files were changed.";
+      return "I couldn’t find that proposal for your account. No files were changed.";
     }
     if (stored.kind === "recorded") {
       return this.#formatDecision(
@@ -323,10 +363,10 @@ export class OrganizeFolderWorkflow {
       );
     }
     if (stored.status === "STALE") {
-      return "That proposal is stale. Run /organize-folder again.\n\nNo files were changed.";
+      return "This proposal is out of date because the folder changed. Please start a fresh folder analysis. No files were changed.";
     }
     if (stored.status === "PROPOSED") {
-      return "That proposal could not be decided safely.\n\nNo files were changed.";
+      return "I couldn’t record that proposal decision safely. No files were changed.";
     }
     if (stored.status === input.decision) {
       return this.#formatDecision(
@@ -338,7 +378,7 @@ export class OrganizeFolderWorkflow {
     }
     return [
       `Proposal ${input.proposalId} was already ${stored.status.toLowerCase()}.`,
-      "The conflicting decision was not recorded.",
+      "I kept the original decision and ignored the conflicting request.",
       "",
       "No files were changed.",
     ].join("\n");
@@ -354,13 +394,13 @@ export class OrganizeFolderWorkflow {
     } catch (error) {
       return error instanceof DriveToolError
         ? `${error.safeError.message}\n\nNo files were changed.`
-        : "This undo cannot be requested.\n\nNo files were changed.";
+        : "I couldn’t start that undo safely. No files were changed.";
     }
     if (!z.uuid().safeParse(input.proposalId).success) {
-      return "Provide a valid proposal ID.\n\nNo files were changed.";
+      return "I couldn’t recognize that proposal. No files were changed.";
     }
     if (!this.#config.organizeFolderWriteEnabled) {
-      return "Undo was refused because the operator write switch is disabled.\n\nNo files were changed.";
+      return "File changes are paused by the operator safety switch, so I can’t undo these moves right now. No files were changed.";
     }
     const run = await this.#repository.findInventoryRunById(input.proposalId);
     if (
@@ -372,7 +412,7 @@ export class OrganizeFolderWorkflow {
       (run.executionStatus !== "COMPLETED" &&
         run.executionStatus !== "PARTIAL")
     ) {
-      return "That proposal has no verified execution available to undo.\n\nNo files were changed.";
+      return "I couldn’t find any verified file moves to undo for this proposal. No files were changed.";
     }
     const record = this.#decryptExecutionRecord(
       input.proposalId,
@@ -382,7 +422,7 @@ export class OrganizeFolderWorkflow {
       (move) => move.status === "VERIFIED",
     );
     if (verifiedMoves.length === 0) {
-      return "That proposal has no verified moved files to undo.\n\nNo files were changed.";
+      return "There are no verified moved files to restore for this proposal. No files were changed.";
     }
     if (!record.undo) {
       record.undo = {
@@ -400,14 +440,14 @@ export class OrganizeFolderWorkflow {
       executionCiphertext: this.#encryptExecutionRecord(record),
     });
     if (requested.kind === "recorded") {
-      return `Undo is queued for proposal ${input.proposalId}. The assistant will verify every restored parent.`;
+      return `Undo is queued for proposal ${input.proposalId}. I’ll verify every file after it is restored.`;
     }
     if (requested.kind === "existing") {
       return `Undo for proposal ${input.proposalId} is already ${requested.status.toLowerCase()}.`;
     }
     return requested.kind === "not_ready"
-      ? "That proposal is not ready for undo.\n\nNo files were changed."
-      : "That proposal is unavailable for this user and tenant.\n\nNo files were changed.";
+      ? "This proposal isn’t ready to undo yet. No files were changed."
+      : "I couldn’t find that proposal for your account. No files were changed.";
   }
 
   async buildExecutionMessage(proposalId: string): Promise<string> {
@@ -421,13 +461,13 @@ export class OrganizeFolderWorkflow {
         status: "FAILED",
         ciphertext: run.executionCiphertext,
       });
-      return "Execution was refused because the proposal no longer matches the configured pilot boundary.\n\nNo files were changed.";
+      return "I stopped because this proposal no longer matches the approved folder. No files were changed.";
     }
     if (
       run.proposalStatus === "STALE" ||
       run.executionStatus === "STALE"
     ) {
-      return "That proposal became stale before execution. Run /organize-folder again.\n\nNo files were changed.";
+      return "The folder changed after this proposal was created, so I stopped safely. Please start a fresh folder analysis. No files were changed.";
     }
     if (run.proposalStatus !== "APPROVED") {
       throw new Error("The approved proposal is unavailable.");
@@ -449,7 +489,7 @@ export class OrganizeFolderWorkflow {
         status: "FAILED",
         ciphertext: run.executionCiphertext,
       });
-      return "Execution was refused because the operator write switch is disabled.\n\nNo files were changed.";
+      return "File changes are paused by the operator safety switch, so I didn’t move anything.";
     }
     if (!(await this.#repository.startExecution(proposalId))) {
       throw new Error("The approved proposal could not be claimed for execution.");
@@ -482,7 +522,7 @@ export class OrganizeFolderWorkflow {
         )
       ) {
         await this.#repository.markProposalStale(proposalId);
-        return "That proposal became stale because the Drive folder changed. Run /organize-folder again.\n\nNo files were changed.";
+        return "The Drive folder changed after this proposal was created, so I stopped safely. Please start a fresh folder analysis. No files were changed.";
       }
       record = createExecutionRecord(
         this.#decryptStoredProposal(proposalId, run.proposalCiphertext),
@@ -572,6 +612,16 @@ export class OrganizeFolderWorkflow {
       break;
     }
 
+    if (record.moves.every((move) => move.status === "VERIFIED")) {
+      const finalObservation = await this.#observeFolder(
+        proposalId,
+        run.requesterOpenId,
+        run.tenantKey,
+      );
+      if (!inventoryMatchesExecutionTarget(record, finalObservation.inventory)) {
+        record.errorCode = "FINAL_TARGET_MISMATCH";
+      }
+    }
     record.finishedAt = new Date().toISOString();
     const status = finalExecutionStatus(record);
     await this.#storeExecutionRecord(proposalId, status, record);
@@ -589,7 +639,7 @@ export class OrganizeFolderWorkflow {
         status: "FAILED",
         ciphertext: run.executionCiphertext,
       });
-      return "Undo was refused because the proposal no longer matches the configured pilot boundary.\n\nNo files were changed.";
+      return "I stopped the undo because this proposal no longer matches the approved folder. No files were changed.";
     }
     let record = this.#decryptExecutionRecord(
       proposalId,
@@ -604,7 +654,7 @@ export class OrganizeFolderWorkflow {
         status: "FAILED",
         ciphertext: this.#encryptExecutionRecord(record),
       });
-      return "Undo was refused because the operator write switch is disabled.\n\nNo files were changed.";
+      return "File changes are paused by the operator safety switch, so I couldn’t restore the files.";
     }
     if (!(await this.#repository.startUndo(proposalId))) {
       throw new Error("The undo request could not be claimed.");
@@ -782,8 +832,8 @@ export class OrganizeFolderWorkflow {
         : duplicate
           ? "No execution was queued because this approval was already recorded."
         : executionQueued
-          ? "Execution is queued. The assistant will verify every observed parent before reporting the result."
-          : "No execution was queued. The operator write switch is disabled.";
+          ? "Execution is queued. I’ll verify every file before reporting the result."
+          : "Your approval is saved, but file changes are paused by the operator safety switch.";
     return [
       `Proposal ${proposalId} ${duplicate ? "was already" : "is now"} ${action}.`,
       "",
@@ -1050,7 +1100,7 @@ export class OrganizeFolderWorkflow {
       error: {
         code: "INTERNAL",
         message:
-          "The read-only inventory could not be completed after several attempts.",
+          "The content-aware folder proposal could not be completed after several attempts.",
         retryable: false,
       },
     });
@@ -1094,14 +1144,15 @@ export class OrganizeFolderWorkflow {
   async #storeAndFormat(
     runId: string,
     result: DriveFolderInventoryResult,
+    decisions?: Parameters<typeof buildOrganizeFolderProposal>[2],
   ): Promise<string> {
     const successfulBaseline = result.ok && result.inventory.baseline_matches;
     const resultCiphertext = this.#cipher.encrypt(
       JSON.stringify(result),
       driveFolderInventoryResultAssociatedData(runId),
     );
-    const proposal = successfulBaseline
-      ? buildOrganizeFolderProposal(result.inventory, runId)
+    const proposal = successfulBaseline && decisions
+      ? buildOrganizeFolderProposal(result.inventory, runId, decisions)
       : null;
     // Defends proposal contents against database-only compromise and binds
     // them to this workflow run.
@@ -1111,7 +1162,9 @@ export class OrganizeFolderWorkflow {
           organizeFolderProposalAssociatedData(runId),
         )
       : null;
-    const stored = successfulBaseline
+    const approvable =
+      proposal !== null && (proposal.needs_review?.length ?? 0) === 0;
+    const stored = approvable
       ? await this.#repository.storeInventoryResult({
           runId,
           resultCiphertext,
@@ -1124,9 +1177,12 @@ export class OrganizeFolderWorkflow {
           runId,
           resultCiphertext,
           state: "FAILED_NO_CHANGE",
-          errorCode:
-            result.ok ? "UNEXPECTED_SANDBOX_STATE" : result.error.code,
-          proposalCiphertext: null,
+          errorCode: proposal
+            ? "NEEDS_REVIEW"
+            : result.ok
+              ? "UNEXPECTED_SANDBOX_STATE"
+              : result.error.code,
+          proposalCiphertext,
           proposalStatus: null,
         });
     if (!stored) {

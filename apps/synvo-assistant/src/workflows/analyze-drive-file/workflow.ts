@@ -20,13 +20,16 @@ import {
   safeAnalysisFailureMessage,
   type AttachmentProgressMessenger,
 } from "../analyze-attachment/workflow.js";
-import { extractPdfText } from "../analyze-attachment/pdf.js";
+import { extractPdfText, PdfInputError } from "../analyze-attachment/pdf.js";
 import type { ExtractedPdf } from "../analyze-attachment/pdf.js";
 import {
   ANALYZE_ATTACHMENT_JOB_TTL_MS,
   ANALYZE_ATTACHMENT_MAX_BYTES,
 } from "../analyze-attachment/policy.js";
-import type { NvidiaNimClient } from "../analyze-attachment/nim-client.js";
+import {
+  NimAnalysisError,
+  type NvidiaNimClient,
+} from "../analyze-attachment/nim-client.js";
 import { organizeFolderPilotPolicy } from "../organize-folder/pilot-policy.js";
 
 const DEDUPE_PREFIX = "analyze-drive-file:";
@@ -67,7 +70,7 @@ export type AnalyzeDriveFileResult =
     }
   | {
       ok: false;
-      error: { message: string };
+      error: { message: string; retryable: boolean };
     };
 
 function parseJobContext(value: string): JobContext {
@@ -80,7 +83,7 @@ function parseJobContext(value: string): JobContext {
 
 function safeDriveFailureMessage(error: unknown): string | null {
   if (error instanceof LarkAuthError) {
-    return "Lark Drive authorization must be updated. Send /organize-folder with the approved root folder link, authorize once, and then retry /analyze-file.";
+    return "Your Lark Drive connection needs to be refreshed. Start a new folder organization request, authorize once, and then try this file again.";
   }
   if (!(error instanceof DriveToolError)) {
     return safeAnalysisFailureMessage(error);
@@ -90,22 +93,32 @@ function safeDriveFailureMessage(error: unknown): string | null {
     case "INVALID_FILE_LINK":
       return error.safeError.message;
     case "ROOT_NOT_ALLOWLISTED":
-      return "That file is outside the approved pilot folder or is not directly inside its root.";
+      return "I can only analyze files stored directly inside the approved folder.";
     case "UNAUTHORIZED":
     case "OAUTH_REQUIRED":
     case "OAUTH_REVOKED":
-      return "Lark Drive authorization is unavailable. Authorize the approved root folder again and retry.";
+      return "I can’t access Lark Drive right now. Start a new folder organization request to reconnect it, then try again.";
     case "LIMIT_EXCEEDED":
-      return "This PDF exceeds the 10 MiB pilot limit, or the approved folder exceeds its inventory limit.";
+      return "This PDF is larger than my current 10 MiB limit, or the approved folder contains more items than I can safely process.";
     case "LARK_RETRYABLE":
-      return "Lark Drive is temporarily unavailable. Please try again later.";
+      return "Lark Drive is temporarily unavailable. Please try again in a moment.";
     case "LARK_PERMANENT":
     case "MALFORMED_RESPONSE":
     case "INCOMPLETE_SCAN":
-      return "The assistant could not safely read that Lark Drive PDF.";
+      return "I couldn’t safely read that PDF from Lark Drive.";
     default:
       return null;
   }
+}
+
+function isRetryableDriveFailure(error: unknown): boolean {
+  if (error instanceof DriveToolError) {
+    return error.safeError.retryable;
+  }
+  if (error instanceof NimAnalysisError) {
+    return error.retryable;
+  }
+  return error instanceof PdfInputError && error.code === "TIMEOUT";
 }
 
 export function formatAnalyzeDriveFileResult(
@@ -183,7 +196,7 @@ export class AnalyzeDriveFileWorkflow {
     ) {
       return {
         kind: "rejected",
-        replyText: "Drive file analysis is not available for this account.",
+        replyText: "Drive file analysis isn’t available for this account yet.",
       };
     }
     let fileToken: string;
@@ -195,7 +208,7 @@ export class AnalyzeDriveFileWorkflow {
         kind: "rejected",
         replyText:
           safeDriveFailureMessage(error) ??
-          "The Drive file analysis request could not be started safely.",
+          "I couldn’t safely start this Drive file analysis.",
       };
     }
 
@@ -217,7 +230,7 @@ export class AnalyzeDriveFileWorkflow {
       ? { kind: "queued" }
       : {
           kind: "duplicate",
-          replyText: "This Drive file is already being analyzed from that message.",
+          replyText: "I’m already analyzing the Drive file from that message.",
         };
   }
 
@@ -233,7 +246,10 @@ export class AnalyzeDriveFileWorkflow {
     ) {
       return {
         ok: false,
-        error: { message: "Drive file analysis is not available for this account." },
+        error: {
+          message: "Drive file analysis is not available for this account.",
+          retryable: false,
+        },
       };
     }
 
@@ -263,7 +279,13 @@ export class AnalyzeDriveFileWorkflow {
       if (!safeMessage) {
         throw error;
       }
-      return { ok: false, error: { message: safeMessage } };
+      return {
+        ok: false,
+        error: {
+          message: safeMessage,
+          retryable: isRetryableDriveFailure(error),
+        },
+      };
     }
   }
 

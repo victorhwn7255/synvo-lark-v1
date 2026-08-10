@@ -4,20 +4,23 @@ import test from "node:test";
 import type { DriveInventory } from "./contracts.js";
 import {
   buildOrganizeFolderProposal,
+  type ContentDecision,
   organizeFolderProposalAssociatedData,
   ProposalBuildError,
 } from "./proposal.js";
 
+const RUN_ID = "4d872758-1f71-4ed8-b141-a2d193ceea91";
 const IDENTITY_DIGEST = "a".repeat(64);
+const FILE_NAMES = [
+  "document-01.pdf",
+  "document-02.pdf",
+  "document-03.pdf",
+  "document-04.pdf",
+] as const;
 
-function inventory(fileNames: string[] = [
-  "[research] - Agentic Context Engineering Research.pdf",
-  "[research] - Anthropic Agentic Engineering.pdf",
-  "[product] - Local_Cocoa_PDF_Chunking_Technical_Guide.pdf",
-  "[product] - Local_Cocoa_Technical_Onboarding_Guide.pdf",
-]): DriveInventory {
+function inventory(fileNames: readonly string[] = FILE_NAMES): DriveInventory {
   return {
-    run_id: "4d872758-1f71-4ed8-b141-a2d193ceea91",
+    run_id: RUN_ID,
     complete: true,
     baseline_matches: true,
     root: {
@@ -48,7 +51,7 @@ function inventory(fileNames: string[] = [
     ],
     files: fileNames.map((name, index) => ({
       ref: `f${String(index + 1).padStart(3, "0")}`,
-      identity_digest: "d".repeat(64),
+      identity_digest: String(index + 1).repeat(64),
       name,
       type: "file",
       parent_ref: "root",
@@ -65,94 +68,126 @@ function inventory(fileNames: string[] = [
   };
 }
 
-function assertProposalError(fileName: string, code: string): void {
-  assert.throws(
-    () => buildOrganizeFolderProposal(inventory([
-      fileName,
-      "[research] - Anthropic Agentic Engineering.pdf",
-      "[product] - Local_Cocoa_PDF_Chunking_Technical_Guide.pdf",
-      "[product] - Local_Cocoa_Technical_Onboarding_Guide.pdf",
-    ]), "4d872758-1f71-4ed8-b141-a2d193ceea91"),
-    (error) => error instanceof ProposalBuildError && error.code === code,
-  );
+function decisions(): ContentDecision[] {
+  return FILE_NAMES.map((fileName, index) => ({
+    file_name: fileName,
+    destination: index < 2 ? "Research" : "Product",
+    rationale: index < 2 ? "Research evidence." : "Product documentation evidence.",
+  }));
 }
 
-test("builds the exact deterministic four-file proposal", () => {
-  const proposal = buildOrganizeFolderProposal(
-    inventory(),
-    "4d872758-1f71-4ed8-b141-a2d193ceea91",
-  );
+test("builds the exact content-based four-file proposal", () => {
+  const proposal = buildOrganizeFolderProposal(inventory(), RUN_ID, decisions());
 
-  assert.equal(proposal.proposal_id, "4d872758-1f71-4ed8-b141-a2d193ceea91");
+  assert.equal(proposal.proposal_id, RUN_ID);
   assert.deepEqual(
-    proposal.moves.map((move) => [move.file_ref, move.destination_ref]),
+    proposal.moves.map((move) => [
+      move.file_name,
+      move.destination_name,
+      move.rationale,
+    ]),
     [
-      ["f003", "d001"],
-      ["f004", "d001"],
-      ["f001", "d002"],
-      ["f002", "d002"],
+      ["document-03.pdf", "Product", "Product documentation evidence."],
+      ["document-04.pdf", "Product", "Product documentation evidence."],
+      ["document-01.pdf", "Research", "Research evidence."],
+      ["document-02.pdf", "Research", "Research evidence."],
     ],
   );
+  assert.deepEqual(proposal.needs_review, []);
 });
 
-test("rejects missing, unknown, conflicting, and ambiguous prefixes", () => {
-  assertProposalError("Unclassified.pdf", "MISSING_PREFIX");
-  assertProposalError("[legal] - Unknown.pdf", "UNKNOWN_PREFIX");
-  assertProposalError(
-    "[product] - [research] - Conflicting.pdf",
-    "CONFLICTING_PREFIX",
+test("builds a non-approvable report when one file needs review", () => {
+  const input = decisions();
+  input[0] = {
+    file_name: FILE_NAMES[0],
+    destination: "Needs review",
+    rationale: "The document evidence is ambiguous.",
+  };
+
+  const proposal = buildOrganizeFolderProposal(inventory(), RUN_ID, input);
+
+  assert.equal(proposal.moves.length, 3);
+  assert.deepEqual(proposal.needs_review, [
+    {
+      file_name: FILE_NAMES[0],
+      rationale: "The document evidence is ambiguous.",
+    },
+  ]);
+});
+
+test("rejects missing, unknown, and duplicate content decisions", () => {
+  assert.throws(
+    () => buildOrganizeFolderProposal(inventory(), RUN_ID, decisions().slice(1)),
+    (error) =>
+      error instanceof ProposalBuildError && error.code === "MISSING_DECISION",
   );
-  assertProposalError("notes [research].pdf", "AMBIGUOUS_PREFIX");
+  assert.throws(
+    () =>
+      buildOrganizeFolderProposal(inventory(), RUN_ID, [
+        ...decisions(),
+        {
+          file_name: "unknown.pdf",
+          destination: "Research",
+          rationale: "Unknown input.",
+        },
+      ]),
+    (error) =>
+      error instanceof ProposalBuildError && error.code === "UNKNOWN_DECISION",
+  );
+  assert.throws(
+    () =>
+      buildOrganizeFolderProposal(inventory(), RUN_ID, [
+        ...decisions(),
+        decisions()[0]!,
+      ]),
+    (error) =>
+      error instanceof ProposalBuildError && error.code === "DUPLICATE_DECISION",
+  );
 });
 
 test("rejects duplicate files and an unverified inventory", () => {
   const duplicate = inventory();
   duplicate.files[1] = { ...duplicate.files[0]! };
   assert.throws(
-    () => buildOrganizeFolderProposal(
-      duplicate,
-      "4d872758-1f71-4ed8-b141-a2d193ceea91",
-    ),
-    (error) => error instanceof ProposalBuildError && error.code === "DUPLICATE_FILE",
+    () => buildOrganizeFolderProposal(duplicate, RUN_ID, decisions()),
+    (error) =>
+      error instanceof ProposalBuildError && error.code === "DUPLICATE_FILE",
   );
 
   const unverified = inventory();
   unverified.baseline_matches = false;
   assert.throws(
-    () => buildOrganizeFolderProposal(
-      unverified,
-      "4d872758-1f71-4ed8-b141-a2d193ceea91",
-    ),
+    () => buildOrganizeFolderProposal(unverified, RUN_ID, decisions()),
     (error) =>
       error instanceof ProposalBuildError && error.code === "INVENTORY_NOT_READY",
   );
 });
 
-test("rejects an unexpected folder or a nonempty destination", () => {
+test("rejects an unexpected folder, nonempty destination, or wrong split", () => {
   const unexpectedFolder = inventory();
   unexpectedFolder.issues.push("Found one unexpected root folder.");
   assert.throws(
-    () =>
-      buildOrganizeFolderProposal(
-        unexpectedFolder,
-        "4d872758-1f71-4ed8-b141-a2d193ceea91",
-      ),
+    () => buildOrganizeFolderProposal(unexpectedFolder, RUN_ID, decisions()),
     (error) =>
-      error instanceof ProposalBuildError &&
-      error.code === "INVENTORY_NOT_READY",
+      error instanceof ProposalBuildError && error.code === "INVENTORY_NOT_READY",
   );
 
   const nonemptyDestination = inventory();
   nonemptyDestination.destinations[0]!.child_count = 1;
   assert.throws(
-    () =>
-      buildOrganizeFolderProposal(
-        nonemptyDestination,
-        "4d872758-1f71-4ed8-b141-a2d193ceea91",
-      ),
+    () => buildOrganizeFolderProposal(nonemptyDestination, RUN_ID, decisions()),
     (error) =>
-      error instanceof ProposalBuildError &&
-      error.code === "INVENTORY_NOT_READY",
+      error instanceof ProposalBuildError && error.code === "INVENTORY_NOT_READY",
+  );
+
+  const wrongSplit = decisions().map((decision) => ({
+    ...decision,
+    destination: "Research" as const,
+  }));
+  assert.throws(
+    () => buildOrganizeFolderProposal(inventory(), RUN_ID, wrongSplit),
+    (error) =>
+      error instanceof ProposalBuildError && error.code === "UNEXPECTED_PROPOSAL",
   );
 });
 
@@ -162,18 +197,16 @@ test("rejects an inventory from another workflow run", () => {
       buildOrganizeFolderProposal(
         inventory(),
         "5f982758-1f71-4ed8-b141-a2d193ceea92",
+        decisions(),
       ),
     (error) =>
-      error instanceof ProposalBuildError &&
-      error.code === "INVENTORY_NOT_READY",
+      error instanceof ProposalBuildError && error.code === "INVENTORY_NOT_READY",
   );
 });
 
 test("binds encrypted proposal contents to the workflow run", () => {
   assert.equal(
-    organizeFolderProposalAssociatedData(
-      "4d872758-1f71-4ed8-b141-a2d193ceea91",
-    ),
-    "organize-folder-run:4d872758-1f71-4ed8-b141-a2d193ceea91:proposal:v1",
+    organizeFolderProposalAssociatedData(RUN_ID),
+    `organize-folder-run:${RUN_ID}:proposal:v1`,
   );
 });

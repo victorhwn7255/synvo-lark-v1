@@ -20,6 +20,7 @@ class FakeQueue implements DeliveryQueue {
     return true;
   }
   async claimNext(): Promise<DeliveryJob | null> { return null; }
+  async extendLease(): Promise<boolean> { return true; }
   async storePayload(): Promise<boolean> { return true; }
   async complete(): Promise<boolean> { return true; }
   async retry(): Promise<boolean> { return true; }
@@ -159,7 +160,7 @@ test("turns expected attachment failures into a safe update", async () => {
   });
   await workflow.process(attachmentJob(), "om_existing", async () => true);
   const final = messenger.updates.at(-1)?.text ?? "";
-  assert.match(final, /Lark could not provide/u);
+  assert.match(final, /couldn’t retrieve this attachment from Lark/u);
   assert.equal(final.includes(privateDetail), false);
 });
 
@@ -174,7 +175,7 @@ test("reports a missing Lark message-read permission as an administrator action"
   });
   await workflow.process(attachmentJob(), "om_existing", async () => true);
   const final = messenger.updates.at(-1)?.text ?? "";
-  assert.match(final, /approved Lark message-read permission/u);
+  assert.match(final, /permission to read this attachment/u);
   assert.equal(final.includes("private provider permission body"), false);
 });
 

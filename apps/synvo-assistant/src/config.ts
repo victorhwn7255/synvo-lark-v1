@@ -8,6 +8,8 @@ export type AppConfig = {
   oauthTokenEncryptionKey: string;
   authorizedOpenId?: string;
   authorizedTenantKey?: string;
+  authorizedFirstName?: string;
+  larkLoadingImageKey?: string;
   synvoMcpAuthToken?: string;
   organizeFolderRootToken: string;
   organizeFolderWriteEnabled: boolean;
@@ -157,6 +159,17 @@ function readLlmApiKey(environment: NodeJS.ProcessEnv): string {
   return apiKey;
 }
 
+function readOptionalFirstName(value: string | undefined): string | undefined {
+  const firstName = value?.trim();
+  if (!firstName) {
+    return undefined;
+  }
+  if (!/^[\p{L}\p{M}][\p{L}\p{M}'’ -]{0,49}$/u.test(firstName)) {
+    throw new Error("LARK_AUTHORIZED_FIRST_NAME must be a valid first name");
+  }
+  return firstName;
+}
+
 // Defends Synvo tools against callers using a guessable MCP bearer credential.
 function readOptionalMcpAuthToken(value: string | undefined): string | undefined {
   const token = value?.trim();
@@ -203,9 +216,19 @@ export function loadConfig(
   const authorizedOpenId = environment.LARK_AUTHORIZED_OPEN_ID?.trim() || undefined;
   const authorizedTenantKey =
     environment.LARK_AUTHORIZED_TENANT_KEY?.trim() || undefined;
+  const authorizedFirstName = readOptionalFirstName(
+    environment.LARK_AUTHORIZED_FIRST_NAME,
+  );
+  const larkLoadingImageKey =
+    environment.LARK_LOADING_IMAGE_KEY?.trim() || undefined;
   if (Boolean(authorizedOpenId) !== Boolean(authorizedTenantKey)) {
     throw new Error(
       "LARK_AUTHORIZED_OPEN_ID and LARK_AUTHORIZED_TENANT_KEY must be configured together",
+    );
+  }
+  if (authorizedFirstName && (!authorizedOpenId || !authorizedTenantKey)) {
+    throw new Error(
+      "LARK_AUTHORIZED_FIRST_NAME requires the authorized pilot identity",
     );
   }
   const synvoMcpAuthToken = readOptionalMcpAuthToken(
@@ -231,6 +254,8 @@ export function loadConfig(
     oauthTokenEncryptionKey,
     authorizedOpenId,
     authorizedTenantKey,
+    authorizedFirstName,
+    larkLoadingImageKey,
     synvoMcpAuthToken,
     organizeFolderRootToken,
     organizeFolderWriteEnabled,

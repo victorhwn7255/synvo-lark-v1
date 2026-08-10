@@ -49,8 +49,8 @@ export type StoreInventoryResultInput =
       runId: string;
       resultCiphertext: string;
       state: "FAILED_NO_CHANGE";
-      errorCode: string;
-      proposalCiphertext: null;
+      errorCode: string | null;
+      proposalCiphertext: string | null;
       proposalStatus: null;
     };
 
