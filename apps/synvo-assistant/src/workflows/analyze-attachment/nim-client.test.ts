@@ -282,6 +282,20 @@ test("returns one strict natural-language intent without tools", async () => {
   assert.equal("tools" in body, false);
   assert.equal(body.temperature, 0);
   assert.match(JSON.stringify(body), /You have no tools/u);
+  assert.match(JSON.stringify(body), /current_workspace/u);
+});
+
+test("accepts the bounded current-workspace intent", async () => {
+  const client = new NvidiaNimClient({
+    ...baseOptions,
+    fetchImplementation: (async () =>
+      completion(JSON.stringify({ intent: "current_workspace" }))) as typeof fetch,
+  });
+
+  assert.deepEqual(
+    await client.classifyIntent({ text: "Remind me which workspace this is" }),
+    { intent: "current_workspace" },
+  );
 });
 
 for (const [name, content, finishReason] of [

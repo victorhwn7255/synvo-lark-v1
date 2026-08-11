@@ -4,7 +4,13 @@ import test from "node:test";
 import { understandNaturalLanguage } from "./intent.js";
 
 function classifier(
-  intent: "greeting" | "help" | "organize_folder" | "analyze_drive_file" | "unknown",
+  intent:
+    | "greeting"
+    | "help"
+    | "current_workspace"
+    | "organize_folder"
+    | "analyze_drive_file"
+    | "unknown",
   calls: string[] = [],
 ) {
   return {
@@ -115,6 +121,24 @@ test("uses NVIDIA only for an unmatched bounded request", async () => {
   assert.equal(result.intent, "help");
   assert.deepEqual(calls, ["Could you make some sense of this for me?"]);
 });
+
+for (const text of [
+  "Which folder are we working at?",
+  "Where are we doing our work right now?",
+  "Remind me which workspace this is",
+  "I forgot our current working directory",
+]) {
+  test(`uses semantic classification for a workspace question: ${text}`, async () => {
+    const calls: string[] = [];
+    const result = await understandNaturalLanguage(
+      { text },
+      classifier("current_workspace", calls),
+    );
+
+    assert.equal(result.intent, "current_workspace");
+    assert.deepEqual(calls, [text]);
+  });
+}
 
 test("keeps an unsupported request unknown", async () => {
   const result = await understandNaturalLanguage(

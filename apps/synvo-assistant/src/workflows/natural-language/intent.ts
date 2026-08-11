@@ -7,6 +7,7 @@ export const naturalLanguageIntentSchema = z
     intent: z.enum([
       "greeting",
       "help",
+      "current_workspace",
       "organize_folder",
       "analyze_drive_file",
       "unknown",

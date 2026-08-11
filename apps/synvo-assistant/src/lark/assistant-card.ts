@@ -1,5 +1,15 @@
 import type { InteractiveCard } from "@larksuiteoapi/node-sdk";
 
+import { sanitizeDisplayValue } from "../workflows/organize-folder/inventory-message.js";
+
+const MAX_OTHER_WORKSPACES_DISPLAYED = 8;
+
+export type WorkspaceCardContext = {
+  activeWorkspaceName: string;
+  otherFolderNames: string[];
+  workspaceUrl: URL;
+};
+
 function cardConfig(): InteractiveCard["config"] {
   return {
     enable_forward: false,
@@ -133,7 +143,50 @@ export function buildFolderLinkRequiredCard(): InteractiveCard {
   };
 }
 
-export function buildAssistantOnlineCard(firstName?: string): InteractiveCard {
+function workspaceElements(
+  workspace: WorkspaceCardContext,
+): NonNullable<InteractiveCard["elements"]> {
+  const otherNames = workspace.otherFolderNames
+    .slice(0, MAX_OTHER_WORKSPACES_DISPLAYED)
+    .map((name) => sanitizeDisplayValue(name, "[unnamed folder]"));
+  const hiddenCount = workspace.otherFolderNames.length - otherNames.length;
+  const others =
+    otherNames.length === 0
+      ? "No other top-level folders found."
+      : `${otherNames.join(" · ")}${hiddenCount ? ` · and ${hiddenCount} more` : ""}`;
+
+  return [
+    {
+      tag: "div",
+      text: {
+        tag: "lark_md",
+        content: [
+          "**Current workspace**",
+          `We’re currently working in 📁 My Folders / **${sanitizeDisplayValue(workspace.activeWorkspaceName, "[unnamed workspace]")}**.`,
+          "",
+          "**Other folders in My Folders**",
+          others,
+        ].join("\n"),
+      },
+    },
+    {
+      tag: "action",
+      actions: [
+        {
+          tag: "button",
+          type: "primary",
+          text: { tag: "plain_text", content: "Open workspace" },
+          url: workspace.workspaceUrl.toString(),
+        },
+      ],
+    },
+  ];
+}
+
+export function buildAssistantOnlineCard(
+  firstName?: string,
+  workspace?: WorkspaceCardContext,
+): InteractiveCard {
   const greeting = firstName
     ? `Welcome to Synvo AI, ${firstName} 👋`
     : "Welcome to Synvo AI 👋";
@@ -155,6 +208,7 @@ export function buildAssistantOnlineCard(firstName?: string): InteractiveCard {
           ].join("\n"),
         },
       },
+      ...(workspace ? [{ tag: "hr" as const }, ...workspaceElements(workspace)] : []),
       { tag: "hr" },
       {
         tag: "div",
@@ -178,6 +232,17 @@ export function buildAssistantOnlineCard(firstName?: string): InteractiveCard {
       },
     ],
   };
+}
+
+export function buildCurrentWorkspaceCard(
+  workspace?: WorkspaceCardContext,
+): InteractiveCard {
+  return buildNoticeCard(
+    workspace
+      ? `We’re currently working in My Folders / ${sanitizeDisplayValue(workspace.activeWorkspaceName, "[unnamed workspace]")}.`
+      : "Your Lark Drive context isn’t available right now. Please try again shortly. No workflow was started and no files were changed.",
+    workspace ? "Your current workspace" : "I couldn’t verify the current workspace",
+  );
 }
 
 export function buildAuthorizationCard(message: string): InteractiveCard | null {
@@ -350,12 +415,15 @@ export function buildAnalysisCard(
   };
 }
 
-export function buildNoticeCard(message: string): InteractiveCard {
+export function buildNoticeCard(
+  message: string,
+  title = "A quick heads-up",
+): InteractiveCard {
   return {
     config: cardConfig(),
     header: {
       template: "orange",
-      title: { tag: "plain_text", content: "A quick heads-up" },
+      title: { tag: "plain_text", content: title },
     },
     elements: [
       {

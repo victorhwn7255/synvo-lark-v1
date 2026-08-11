@@ -25,6 +25,7 @@ import {
   buildAssistantOnlineCard,
   buildAuthorizationCard,
   buildCardCallbackResponse,
+  buildCurrentWorkspaceCard,
   buildFolderLinkRequiredCard,
   buildNoticeCard,
 } from "./lark/assistant-card.js";
@@ -50,6 +51,7 @@ import { LarkOAuthService } from "./workflows/organize-folder/authorization.js";
 import { ContentAwareFolderPlanner } from "./workflows/organize-folder/content-planner.js";
 import { PostgresOrganizeFolderRepository } from "./workflows/organize-folder/repository.js";
 import { OrganizeFolderWorkflow } from "./workflows/organize-folder/workflow.js";
+import { loadWorkspaceContext } from "./workflows/workspace-context/context.js";
 
 function readTextContent(content: string | undefined): string | null {
   if (!content) {
@@ -160,6 +162,25 @@ async function main(): Promise<void> {
     `/drive/folder/${config.organizeFolderRootToken}?from=space`,
     "https://larksuite.com",
   );
+  const loadWorkspaceCardContext = async () => {
+    if (!pilotIdentity) {
+      return undefined;
+    }
+    try {
+      const context = await loadWorkspaceContext({
+        requesterOpenId: pilotIdentity.openId,
+        tenantKey: pilotIdentity.tenantKey,
+        activeRootToken: config.organizeFolderRootToken,
+        tokenBroker,
+        driveReader,
+      });
+      return context
+        ? { ...context, workspaceUrl: organizeFolderRootUrl }
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  };
 
   const createCard = async (
     chatId: string,
@@ -510,13 +531,24 @@ async function main(): Promise<void> {
       if (understood.intent === "greeting") {
         await createCard(
           chatId,
-          buildAssistantOnlineCard(config.authorizedFirstName),
+          buildAssistantOnlineCard(
+            config.authorizedFirstName,
+            await loadWorkspaceCardContext(),
+          ),
           messageId,
         );
         return;
       }
       if (understood.intent === "help") {
         await createCard(chatId, buildAssistantHelpCard(), messageId);
+        return;
+      }
+      if (understood.intent === "current_workspace") {
+        await createCard(
+          chatId,
+          buildCurrentWorkspaceCard(await loadWorkspaceCardContext()),
+          messageId,
+        );
         return;
       }
       if (understood.intent === "organize_folder") {

@@ -5,11 +5,14 @@ import type {
   DriveFetch,
   DriveListPage,
   DriveReader,
+  MySpaceRootListPage,
+  MySpaceRootReader,
   NativeDriveMetadata,
 } from "./read-client.js";
 import {
   LarkDriveReader,
   listFolderCompletely,
+  listMySpaceRootCompletely,
 } from "./read-client.js";
 import { DriveToolError } from "./errors.js";
 
@@ -36,6 +39,28 @@ class PageReader implements DriveReader {
 
   async getMetadata(): Promise<NativeDriveMetadata> {
     throw new Error("Unexpected metadata request");
+  }
+}
+
+class MySpacePageReader implements MySpaceRootReader {
+  readonly pages: MySpaceRootListPage[];
+  readonly pageTokens: Array<string | undefined> = [];
+  calls = 0;
+
+  constructor(pages: MySpaceRootListPage[]) {
+    this.pages = pages;
+  }
+
+  async listMySpaceRootPage(input: {
+    pageToken?: string;
+  }): Promise<MySpaceRootListPage> {
+    this.pageTokens.push(input.pageToken);
+    const page = this.pages[this.calls];
+    this.calls += 1;
+    if (!page) {
+      throw new Error("Unexpected My Space page request");
+    }
+    return page;
   }
 }
 
@@ -149,6 +174,81 @@ test("rejects duplicate native item tokens across Drive pages", async () => {
   );
 });
 
+test("lists the bounded My Folders root with the shared pagination policy", async () => {
+  const reader = new MySpacePageReader([
+    {
+      items: [{ token: "one", name: "One", type: "folder" }],
+      hasMore: true,
+      nextPageToken: "cursor-2",
+    },
+    {
+      items: [{ token: "two", name: "Two", type: "folder" }],
+      hasMore: false,
+    },
+  ]);
+
+  const items = await listMySpaceRootCompletely(reader, {
+    accessToken: "access",
+  });
+
+  assert.deepEqual(items.map((item) => item.token), ["one", "two"]);
+  assert.deepEqual(reader.pageTokens, [undefined, "cursor-2"]);
+});
+
+test("rejects repeated cursors and duplicate tokens in My Folders", async (t) => {
+  await t.test("repeated cursor", async () => {
+    const reader = new MySpacePageReader([
+      { items: [], hasMore: true, nextPageToken: "repeat" },
+      { items: [], hasMore: true, nextPageToken: "repeat" },
+    ]);
+    await assert.rejects(
+      listMySpaceRootCompletely(reader, { accessToken: "access" }),
+      (error: unknown) =>
+        error instanceof DriveToolError &&
+        error.safeError.code === "INCOMPLETE_SCAN",
+    );
+  });
+
+  await t.test("duplicate token", async () => {
+    const reader = new MySpacePageReader([
+      {
+        items: [{ token: "duplicate", name: "One", type: "folder" }],
+        hasMore: true,
+        nextPageToken: "next",
+      },
+      {
+        items: [{ token: "duplicate", name: "Two", type: "folder" }],
+        hasMore: false,
+      },
+    ]);
+    await assert.rejects(
+      listMySpaceRootCompletely(reader, { accessToken: "access" }),
+      (error: unknown) =>
+        error instanceof DriveToolError &&
+        error.safeError.code === "INCOMPLETE_SCAN",
+    );
+  });
+
+  await t.test("item limit", async () => {
+    const reader = new MySpacePageReader([
+      {
+        items: [{ token: "one", name: "One", type: "folder" }],
+        hasMore: true,
+        nextPageToken: "next",
+      },
+    ]);
+    await assert.rejects(
+      listMySpaceRootCompletely(reader, {
+        accessToken: "access",
+        maxItems: 1,
+      }),
+      (error: unknown) =>
+        error instanceof DriveToolError &&
+        error.safeError.code === "LIMIT_EXCEEDED",
+    );
+  });
+});
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -192,6 +292,133 @@ test("uses the documented read-only Drive endpoint and validates its shape", asy
   assert.equal(url.searchParams.get("folder_token"), "root-token");
   assert.equal(requestedAuthorization, "Bearer private-access-token");
   assert.equal(page.items[0]?.parentToken, "root-token");
+});
+
+test("lists My Folders without a folder token and accepts a missing parent token", async () => {
+  let requestedUrl = "";
+  let requestedAuthorization = "";
+  const reader = new LarkDriveReader({
+    fetcher: async (input, init) => {
+      requestedUrl = String(input);
+      requestedAuthorization =
+        new Headers(init?.headers).get("Authorization") ?? "";
+      return jsonResponse({
+        code: 0,
+        data: {
+          files: [
+            {
+              token: "folder-token",
+              name: "Test_Synvo_AI_Assistant",
+              type: "folder",
+            },
+          ],
+          has_more: false,
+        },
+      });
+    },
+  });
+
+  const page = await reader.listMySpaceRootPage({
+    accessToken: "private-access-token",
+    pageSize: 50,
+  });
+
+  const url = new URL(requestedUrl);
+  assert.equal(url.pathname, "/open-apis/drive/v1/files");
+  assert.equal(url.searchParams.has("folder_token"), false);
+  assert.equal(requestedAuthorization, "Bearer private-access-token");
+  assert.deepEqual(page.items, [
+    {
+      token: "folder-token",
+      name: "Test_Synvo_AI_Assistant",
+      type: "folder",
+    },
+  ]);
+});
+
+test("normalizes My Folders provider failures without exposing provider data", async (t) => {
+  for (const [status, expectedCode] of [
+    [401, "UNAUTHORIZED"],
+    [403, "UNAUTHORIZED"],
+    [404, "LARK_PERMANENT"],
+    [429, "LARK_RETRYABLE"],
+    [500, "LARK_RETRYABLE"],
+  ] as const) {
+    await t.test(String(status), async () => {
+      const reader = new LarkDriveReader({
+        fetcher: async () =>
+          jsonResponse(
+            { code: 12345, msg: "private-provider-response-body" },
+            status,
+          ),
+      });
+      await assert.rejects(
+        reader.listMySpaceRootPage({
+          accessToken: "private-access-token",
+          pageSize: 50,
+        }),
+        (error: unknown) => {
+          if (!(error instanceof DriveToolError)) {
+            return false;
+          }
+          const exposed = JSON.stringify(error.safeError);
+          return (
+            error.safeError.code === expectedCode &&
+            !exposed.includes("private-provider-response-body") &&
+            !exposed.includes("private-access-token")
+          );
+        },
+      );
+    });
+  }
+});
+
+test("rejects malformed My Folders responses at the provider boundary", async () => {
+  const reader = new LarkDriveReader({
+    fetcher: async () =>
+      jsonResponse({
+        code: 0,
+        data: {
+          files: [
+            {
+              token: "folder",
+              name: "Folder",
+              type: "folder",
+              parent_token: "",
+            },
+          ],
+          has_more: false,
+        },
+      }),
+  });
+
+  await assert.rejects(
+    reader.listMySpaceRootPage({ accessToken: "access", pageSize: 50 }),
+    (error: unknown) =>
+      error instanceof DriveToolError &&
+      error.safeError.code === "MALFORMED_RESPONSE",
+  );
+});
+
+test("normalizes a timed-out My Folders request without exposing its token", async () => {
+  const reader = new LarkDriveReader({
+    fetcher: async () => {
+      const error = new Error("private-access-token");
+      error.name = "TimeoutError";
+      throw error;
+    },
+  });
+
+  await assert.rejects(
+    reader.listMySpaceRootPage({
+      accessToken: "private-access-token",
+      pageSize: 50,
+    }),
+    (error: unknown) =>
+      error instanceof DriveToolError &&
+      error.safeError.code === "LARK_RETRYABLE" &&
+      !error.message.includes("private-access-token"),
+  );
 });
 
 test("rejects malformed provider listings at the Drive boundary", async (t) => {

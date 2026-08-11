@@ -9,19 +9,35 @@ const nonemptyStringSchema = z.string().min(1);
 const responseEnvelopeSchema = z.object({
   code: z.number().int(),
 });
-const nativeListItemSchema = z.object({
+const nativeListItemFields = {
   token: nonemptyStringSchema,
   name: nonemptyStringSchema,
   type: nonemptyStringSchema,
-  parent_token: nonemptyStringSchema,
   created_time: nonemptyStringSchema.optional(),
   modified_time: nonemptyStringSchema.optional(),
   owner_id: nonemptyStringSchema.optional(),
+};
+const nativeListItemSchema = z.object({
+  ...nativeListItemFields,
+  parent_token: nonemptyStringSchema,
 });
 const listResponseSchema = z.object({
   code: z.literal(0),
   data: z.object({
     files: z.array(nativeListItemSchema),
+    has_more: z.boolean(),
+    next_page_token: nonemptyStringSchema.optional(),
+  }),
+});
+const mySpaceRootListResponseSchema = z.object({
+  code: z.literal(0),
+  data: z.object({
+    files: z.array(
+      z.object({
+        ...nativeListItemFields,
+        parent_token: nonemptyStringSchema.optional(),
+      }),
+    ),
     has_more: z.boolean(),
     next_page_token: nonemptyStringSchema.optional(),
   }),
@@ -68,15 +84,20 @@ export type NativeDriveMetadata = {
   modifiedTime: string;
 };
 
-type DriveListPageItems = {
-  items: NativeDriveItem[];
+export type MySpaceRootItem = {
+  token: string;
+  name: string;
+  type: string;
 };
 
-export type DriveListPage = DriveListPageItems &
+type PaginatedDrivePage<Item> = { items: Item[] } &
   (
     | { hasMore: true; nextPageToken: string }
     | { hasMore: false; nextPageToken?: never }
   );
+
+export type DriveListPage = PaginatedDrivePage<NativeDriveItem>;
+export type MySpaceRootListPage = PaginatedDrivePage<MySpaceRootItem>;
 
 export interface DriveReader {
   listFolderPage(input: {
@@ -89,6 +110,14 @@ export interface DriveReader {
     accessToken: string;
     document: { token: string; type: string };
   }): Promise<NativeDriveMetadata>;
+}
+
+export interface MySpaceRootReader {
+  listMySpaceRootPage(input: {
+    accessToken: string;
+    pageSize: number;
+    pageToken?: string;
+  }): Promise<MySpaceRootListPage>;
 }
 
 export type DriveFetch = (
@@ -115,7 +144,31 @@ function assertUniqueTokens(
   }
 }
 
-export class LarkDriveReader implements DriveReader {
+function validateListPage(
+  itemCount: number,
+  pageSize: number,
+  hasMore: boolean,
+  nextPageToken: string | undefined,
+): void {
+  if (hasMore !== (nextPageToken !== undefined)) {
+    malformedResponse("Lark returned inconsistent Drive pagination data.");
+  }
+  if (itemCount > pageSize) {
+    malformedResponse("Lark returned more Drive items than requested.");
+  }
+}
+
+function buildListPage<Item>(
+  items: Item[],
+  hasMore: boolean,
+  nextPageToken: string | undefined,
+): PaginatedDrivePage<Item> {
+  return hasMore
+    ? { items, hasMore: true, nextPageToken: nextPageToken! }
+    : { items, hasMore: false };
+}
+
+export class LarkDriveReader implements DriveReader, MySpaceRootReader {
   readonly #fetcher: DriveFetch;
   readonly #apiOrigin: string;
   readonly #requestTimeoutMs: number;
@@ -179,28 +232,7 @@ export class LarkDriveReader implements DriveReader {
     pageSize: number;
     pageToken?: string;
   }): Promise<DriveListPage> {
-    if (!Number.isInteger(input.pageSize) || input.pageSize < 1 || input.pageSize > 200) {
-      throw driveToolError(
-        "LIMIT_EXCEEDED",
-        "The Drive page size is outside the supported read-only limit.",
-      );
-    }
-
-    const url = new URL("/open-apis/drive/v1/files", this.#apiOrigin);
-    url.searchParams.set("folder_token", input.folderToken);
-    url.searchParams.set("page_size", String(input.pageSize));
-    url.searchParams.set("user_id_type", "open_id");
-    if (input.pageToken) {
-      url.searchParams.set("page_token", input.pageToken);
-    }
-
-    const body = await this.#requestJson(url, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${input.accessToken}`,
-      },
-    });
+    const body = await this.#requestListPage(input);
     const parsed = listResponseSchema.safeParse(body);
     if (!parsed.success) {
       malformedResponse("Lark returned a malformed Drive listing.");
@@ -208,12 +240,7 @@ export class LarkDriveReader implements DriveReader {
 
     const { files, has_more: hasMore, next_page_token: nextPageToken } =
       parsed.data.data;
-    if (hasMore !== (nextPageToken !== undefined)) {
-      malformedResponse("Lark returned inconsistent Drive pagination data.");
-    }
-    if (files.length > input.pageSize) {
-      malformedResponse("Lark returned more Drive items than requested.");
-    }
+    validateListPage(files.length, input.pageSize, hasMore, nextPageToken);
     assertUniqueTokens(
       files.map((item) => item.token),
       "Lark returned duplicate Drive item identifiers.",
@@ -222,18 +249,80 @@ export class LarkDriveReader implements DriveReader {
       malformedResponse("Lark returned a Drive item outside the requested folder.");
     }
 
-    const items = files.map((item) => ({
-      token: item.token,
-      name: item.name,
-      type: item.type,
-      parentToken: item.parent_token,
-      createdTime: item.created_time,
-      modifiedTime: item.modified_time,
-      ownerId: item.owner_id,
-    }));
-    return hasMore
-      ? { items, hasMore: true, nextPageToken: nextPageToken! }
-      : { items, hasMore: false };
+    return buildListPage(
+      files.map((item) => ({
+        token: item.token,
+        name: item.name,
+        type: item.type,
+        parentToken: item.parent_token,
+        createdTime: item.created_time,
+        modifiedTime: item.modified_time,
+        ownerId: item.owner_id,
+      })),
+      hasMore,
+      nextPageToken,
+    );
+  }
+
+  async listMySpaceRootPage(input: {
+    accessToken: string;
+    pageSize: number;
+    pageToken?: string;
+  }): Promise<MySpaceRootListPage> {
+    const body = await this.#requestListPage(input);
+    const parsed = mySpaceRootListResponseSchema.safeParse(body);
+    if (!parsed.success) {
+      malformedResponse("Lark returned a malformed My Space listing.");
+    }
+
+    const { files, has_more: hasMore, next_page_token: nextPageToken } =
+      parsed.data.data;
+    validateListPage(files.length, input.pageSize, hasMore, nextPageToken);
+    assertUniqueTokens(
+      files.map((item) => item.token),
+      "Lark returned duplicate Drive item identifiers.",
+    );
+    return buildListPage(
+      files.map((item) => ({
+        token: item.token,
+        name: item.name,
+        type: item.type,
+      })),
+      hasMore,
+      nextPageToken,
+    );
+  }
+
+  async #requestListPage(input: {
+    accessToken: string;
+    folderToken?: string;
+    pageSize: number;
+    pageToken?: string;
+  }): Promise<unknown> {
+    if (!Number.isInteger(input.pageSize) || input.pageSize < 1 || input.pageSize > 200) {
+      throw driveToolError(
+        "LIMIT_EXCEEDED",
+        "The Drive page size is outside the supported read-only limit.",
+      );
+    }
+
+    const url = new URL("/open-apis/drive/v1/files", this.#apiOrigin);
+    if (input.folderToken !== undefined) {
+      url.searchParams.set("folder_token", input.folderToken);
+    }
+    url.searchParams.set("page_size", String(input.pageSize));
+    url.searchParams.set("user_id_type", "open_id");
+    if (input.pageToken) {
+      url.searchParams.set("page_token", input.pageToken);
+    }
+
+    return this.#requestJson(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${input.accessToken}`,
+      },
+    });
   }
 
   async getMetadata(input: {
@@ -292,17 +381,14 @@ export class LarkDriveReader implements DriveReader {
   }
 }
 
-export async function listFolderCompletely(
-  reader: DriveReader,
-  input: {
-    accessToken: string;
-    folderToken: string;
-    maxPages?: number;
-    maxItems?: number;
-  },
-): Promise<NativeDriveItem[]> {
-  const maxPages = input.maxPages ?? 10;
-  const maxItems = input.maxItems ?? 200;
+async function listCompletely<Item extends { token: string }>(
+  listPage: (
+    pageSize: number,
+    pageToken: string | undefined,
+  ) => Promise<PaginatedDrivePage<Item>>,
+  maxPages = 10,
+  maxItems = 200,
+): Promise<Item[]> {
   if (
     !Number.isInteger(maxPages) ||
     maxPages <= 0 ||
@@ -317,7 +403,7 @@ export async function listFolderCompletely(
 
   const requestedPageTokens = new Set<string>();
   const seenItemTokens = new Set<string>();
-  const items: NativeDriveItem[] = [];
+  const items: Item[] = [];
   let pageToken: string | undefined;
 
   for (let page = 0; page < maxPages; page += 1) {
@@ -326,12 +412,7 @@ export async function listFolderCompletely(
     }
 
     const pageSize = Math.min(200, maxItems - items.length);
-    const result = await reader.listFolderPage({
-      accessToken: input.accessToken,
-      folderToken: input.folderToken,
-      pageSize,
-      pageToken,
-    });
+    const result = await listPage(pageSize, pageToken);
     if (
       result.nextPageToken !== undefined &&
       requestedPageTokens.has(result.nextPageToken)
@@ -356,7 +437,7 @@ export async function listFolderCompletely(
     if (items.length === maxItems) {
       throw driveToolError(
         "LIMIT_EXCEEDED",
-        "The pilot folder exceeds the read-only inventory limit.",
+        "The Drive directory exceeds the read-only inventory limit.",
       );
     }
     pageToken = result.nextPageToken;
@@ -364,6 +445,48 @@ export async function listFolderCompletely(
 
   throw driveToolError(
     "LIMIT_EXCEEDED",
-    "The pilot folder exceeds the Drive pagination limit.",
+    "The Drive directory exceeds the pagination limit.",
+  );
+}
+
+export function listFolderCompletely(
+  reader: DriveReader,
+  input: {
+    accessToken: string;
+    folderToken: string;
+    maxPages?: number;
+    maxItems?: number;
+  },
+): Promise<NativeDriveItem[]> {
+  return listCompletely(
+    (pageSize, pageToken) =>
+      reader.listFolderPage({
+        accessToken: input.accessToken,
+        folderToken: input.folderToken,
+        pageSize,
+        pageToken,
+      }),
+    input.maxPages,
+    input.maxItems,
+  );
+}
+
+export function listMySpaceRootCompletely(
+  reader: MySpaceRootReader,
+  input: {
+    accessToken: string;
+    maxPages?: number;
+    maxItems?: number;
+  },
+): Promise<MySpaceRootItem[]> {
+  return listCompletely(
+    (pageSize, pageToken) =>
+      reader.listMySpaceRootPage({
+        accessToken: input.accessToken,
+        pageSize,
+        pageToken,
+      }),
+    input.maxPages,
+    input.maxItems,
   );
 }

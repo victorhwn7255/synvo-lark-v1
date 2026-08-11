@@ -8,7 +8,9 @@ The current Victor-only pilot closes three employee workflows:
 - **Analyze an attached PDF:** bind the exact Lark message resource, download and extract it within fixed limits, analyze it through NVIDIA NIM without tools, and update one durable progress message with the result.
 - **Analyze a Drive PDF:** verify one owned PDF directly inside the allowlisted root, download it through the user's OAuth grant, and reuse the bounded extraction, NVIDIA analysis, and durable progress path.
 
-Natural-language routing handles obvious supported requests locally and sends only bounded sanitized unmatched text to NVIDIA for strict five-intent classification. The backend—not the model—selects an existing workflow. A link-free folder request requires a **Start folder analysis** confirmation for the approved pilot root, while a named non-pilot folder requires its exact Lark link.
+Natural-language routing handles obvious supported requests locally and sends only bounded sanitized unmatched text to NVIDIA for strict six-intent classification, including semantic current-workspace questions. The backend—not the model—selects an existing workflow or verified response. A link-free folder request requires a **Start folder analysis** confirmation for the approved pilot root, while a named non-pilot folder requires its exact Lark link.
+
+Phase 12 workspace context is implemented and awaiting live Lark acceptance. On a greeting, the assistant reads only Victor's top-level **My Folders** directory through the existing OAuth grant, matches the configured root by exact token, and shows the verified active workspace plus other folder names in the welcome card. NVIDIA may classify a sanitized utterance as a current-workspace question; the backend then retrieves and renders verified Lark context. Workspace names, links, and tokens are never sent to NVIDIA. Other folders remain informational and do not expand the organizer allowlist.
 
 The Lark experience uses interactive cards for authorization, progress, proposals, decisions, verified execution, and undo. Approve, Reject, Authorize, Undo, and Start folder analysis are buttons. Employees can say `Hello`, ask `What can you help me with?`, request folder organization naturally with or without the approved link, or ask to analyze a Drive PDF. The original slash commands remain hidden compatibility fallbacks.
 
@@ -18,6 +20,10 @@ For operations and regression testing, the deterministic fallbacks remain `/ping
 
 ```text
 Lark App Bot -> local parsing + bounded intent classification
+                                             |
+                                             +-> request-local workspace context
+                                             |   -> top-level My Folders only
+                                             |   -> exact configured-root match
                                              |
                                              +-> message handling and OAuth --+-> organize-folder workflow
                                              |   -> authenticated local MCP client
@@ -61,6 +67,7 @@ apps/synvo-assistant/src/
 ├── workflows/analyze-drive-file/ allowlisted Drive PDF analysis
 ├── workflows/natural-language/  bounded intent policy and sanitization
 ├── workflows/organize-folder/  authorization, persistence, policy, workflow
+├── workflows/workspace-context/ bounded My Folders discovery and local questions
 ├── config.ts                   application configuration
 ├── index.ts                    composition and lifecycle
 └── doctor.ts                   concise local readiness check
@@ -97,7 +104,7 @@ LLM_API_KEY=replace_locally_only
 
 The provider client calls `nvidia/nemotron-3-super-120b-a12b`. Keep the real API key in ignored `.env` locally and in secret management when hosted. A future multimodal workflow must add its model only when that workflow exists.
 
-For natural-language routing, obvious requests never call NVIDIA. An unmatched direct message is capped at 600 characters; Lark links, mentions, native identifiers, and control characters are removed locally before the remaining short utterance is classified. NVIDIA receives no tools or conversation history and can return only `greeting`, `help`, `organize_folder`, `analyze_drive_file`, or `unknown`. Invalid or unavailable classification starts no workflow.
+For natural-language routing, obvious requests never call NVIDIA. An unmatched direct message is capped at 600 characters; Lark links, mentions, native identifiers, and control characters are removed locally before the remaining short utterance is classified. NVIDIA receives no tools, workspace metadata, or conversation history and can return only `greeting`, `help`, `current_workspace`, `organize_folder`, `analyze_drive_file`, or `unknown`. Invalid or unavailable classification starts no workflow.
 
 To enable the local MCP endpoint, generate a separate service credential and add it to the ignored `.env`:
 
@@ -129,7 +136,7 @@ npm run doctor
 
 Detailed completed acceptance procedures are archived instead of being maintained as active setup instructions. See `tasks/archive/organize-folder-implementation-plan.md`, `tasks/archive/analyze-attachment-acceptance.md`, `tasks/archive/analyze-drive-file-implementation-plan.md`, `tasks/archive/content-aware-execution-implementation-plan.md`, and `tasks/archive/natural-language-interaction-implementation-plan.md`.
 
-There is no active implementation plan. Workspace-context planning is next and must preserve the existing bounded workflow, permission, and write-approval boundaries.
+Phase 12 is the active implementation plan in `tasks/workspace-context-implementation-plan.md`. Its automated implementation must remain active until the live Lark acceptance checklist passes.
 
 ## Safety
 

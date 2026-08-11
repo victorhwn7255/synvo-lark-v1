@@ -8,6 +8,7 @@ import {
   buildAssistantOnlineCard,
   buildAuthorizationCard,
   buildCardCallbackResponse,
+  buildCurrentWorkspaceCard,
   buildFolderLinkRequiredCard,
 } from "./assistant-card.js";
 
@@ -19,6 +20,56 @@ test("welcomes the authorized employee by first name", () => {
   assert.match(serialized, /Organize a Folder/u);
   assert.doesNotMatch(serialized, /Understand a PDF|Explore a Drive file/u);
   assert.match(serialized, /always ask before moving or changing files/u);
+});
+
+test("welcome card shows verified My Folders context and one workspace URL", () => {
+  const card = buildAssistantOnlineCard("Victor", {
+    activeWorkspaceName: "Test_Synvo_AI_Assistant",
+    otherFolderNames: ["test_directory_2", "test_directory_3"],
+    workspaceUrl: new URL(
+      "https://larksuite.com/drive/folder/private-root-token?from=space",
+    ),
+  });
+  const serialized = JSON.stringify(card);
+
+  assert.match(serialized, /Current workspace/u);
+  assert.match(serialized, /My Folders \/ \*\*Test_Synvo_AI_Assistant/u);
+  assert.match(serialized, /test_directory_2 · test_directory_3/u);
+  assert.match(serialized, /Open workspace/u);
+  assert.equal(serialized.match(/private-root-token/gu)?.length, 1);
+  assert.doesNotMatch(serialized, /"value"[^}]*private-root-token/u);
+});
+
+test("workspace cards sanitize provider names and degrade safely", () => {
+  const workspace = {
+    activeWorkspaceName: '<at user_id="all">Everyone</at>',
+    otherFolderNames: ["https://private.example/folder"],
+    workspaceUrl: new URL(
+      "https://larksuite.com/drive/folder/root-token?from=space",
+    ),
+  };
+  const welcome = JSON.stringify(buildAssistantOnlineCard("Victor", workspace));
+  const current = JSON.stringify(buildCurrentWorkspaceCard(workspace));
+  const unavailable = JSON.stringify(buildCurrentWorkspaceCard());
+
+  assert.doesNotMatch(welcome, /<\/?at\b/iu);
+  assert.doesNotMatch(welcome, /private\.example/iu);
+  assert.match(current, /currently working in/u);
+  assert.match(unavailable, /couldn’t verify the current workspace/u);
+  assert.match(unavailable, /No workflow was started/u);
+});
+
+test("welcome card bounds the number of visible folder names", () => {
+  const serialized = JSON.stringify(
+    buildAssistantOnlineCard("Victor", {
+      activeWorkspaceName: "Pilot",
+      otherFolderNames: Array.from({ length: 10 }, (_, index) => `folder-${index}`),
+      workspaceUrl: new URL("https://larksuite.com/drive/folder/root-token"),
+    }),
+  );
+
+  assert.match(serialized, /folder-7 · and 2 more/u);
+  assert.doesNotMatch(serialized, /folder-8|folder-9/u);
 });
 
 test("help card shows only the two current employee-facing functions", () => {

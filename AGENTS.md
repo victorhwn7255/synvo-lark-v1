@@ -16,7 +16,9 @@ Three closed loops are implemented for Victor's restricted pilot:
 
 The optional authenticated `/mcp` endpoint exposes the proven read-only folder inventory and allowlisted Drive-PDF analysis capabilities. The analysis tool accepts the same allowlisted folder URL plus one exact filename returned by inventory; missing and duplicate names are rejected. The content-aware organizer reuses these tools through one authenticated local MCP client; it does not add an autonomous agent framework or let NVIDIA choose tools.
 
-The message adapter handles obvious supported intents locally, sends only bounded sanitized unmatched text to NVIDIA for one strict five-intent result, and maps that result through an explicit backend switch to existing cards and workflows. A link-free organize request requires a button confirmation for the configured pilot root. A named non-pilot folder requires its exact Lark link. The model receives no tools and cannot select arguments, approve work, or reach a write path. Lark Wiki remains a later target when its access and workflow are approved.
+The message adapter handles obvious supported intents locally, sends only bounded sanitized unmatched text to NVIDIA for one strict six-intent result, and maps that result through an explicit backend switch to existing cards, verified context responses, and workflows. A link-free organize request requires a button confirmation for the configured pilot root. A named non-pilot folder requires its exact Lark link. The model receives no tools and cannot select arguments, approve work, or reach a write path. Lark Wiki remains a later target when its access and workflow are approved.
+
+Phase 12 workspace context is implemented and awaiting live Lark acceptance. It lists only Victor's top-level My Folders directory through the existing OAuth grant, matches the active workspace by exact configured token, and keeps other folder names informational. NVIDIA can identify a semantic `current_workspace` request from sanitized text, but only the backend fetches and renders verified Lark context; no workspace metadata is sent to the model. It adds no persistence, recursive scan, workspace switching, MCP tool, or write capability.
 
 ## Architecture
 
@@ -24,6 +26,7 @@ Use one modular Synvo Assistant Node.js application and PostgreSQL:
 
 ```text
 Lark App Bot -> local parser and bounded intent classifier
+             -> request-local top-level My Folders context
              -> message/OAuth handlers --+-> organize-folder workflow
                                         |   -> authenticated local MCP client
                                         |      -> read-only inventory
@@ -108,7 +111,8 @@ If a change would introduce a new service, package, table, state machine, regist
 - Keep content-aware organization tool order deterministic: inventory once, analyze the four accepted PDFs, then classify once. NVIDIA must not select or invoke tools.
 - Enforce the attachment file, page, extracted-text, output, timeout, and retry limits from `workflows/analyze-attachment/policy.ts` before calling NVIDIA.
 - Never send Lark tokens, resource identifiers, links, user identifiers, raw attachment bytes, or unnecessary metadata to NVIDIA.
-- For natural-language routing, remove links and native identifiers locally, cap the unmatched text before NVIDIA, validate one five-intent response at the provider boundary, and let only the backend choose an existing workflow.
+- Match workspace context by the configured folder token, keep discovered folder metadata request-local, and never treat another top-level folder as authorized by name.
+- For natural-language routing, remove links and native identifiers locally, cap the unmatched text before NVIDIA, validate one six-intent response at the provider boundary, and let only the backend choose an existing workflow or verified context response.
 - Use only disposable, non-sensitive documents with the hosted NVIDIA trial endpoint until Synvo approves processing real internal documents through that provider.
 - Bind OAuth state to the initiating message, user, tenant, redirect URI, scopes, and PKCE verifier.
 - Encrypt access and refresh tokens at rest and rotate refresh tokens atomically.
@@ -150,6 +154,7 @@ For every Drive write:
 - `apps/synvo-assistant/src/workflows/analyze-attachment/`: direct-PDF event policy, local extraction, NVIDIA NIM analysis, and progress-message orchestration.
 - `apps/synvo-assistant/src/workflows/analyze-drive-file/`: allowlisted Drive-PDF policy and reuse of the existing extraction, analysis, and progress path.
 - `apps/synvo-assistant/src/workflows/natural-language/`: deterministic intent policy, bounded sanitization, and the strict natural-language intent contract only.
+- `apps/synvo-assistant/src/workflows/workspace-context/`: bounded top-level My Folders discovery and exact active-root matching; semantic intent recognition remains in the existing natural-language boundary.
 - `apps/synvo-assistant/src/delivery/`: durable outbound jobs and retry behavior.
 - `apps/synvo-assistant/src/db/` and `database/migrations/`: database lifecycle and immutable schema history.
 - `apps/synvo-assistant/src/doctor.ts`: concise readiness checks; do not duplicate workflow logic.

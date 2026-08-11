@@ -51,7 +51,7 @@ function neutralizeAutolinks(value: string): string {
   );
 }
 
-function sanitizeDisplayValue(value: string, fallback: string): string {
+export function sanitizeDisplayValue(value: string, fallback: string): string {
   const collapsed = value
     .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")
     .replace(/\s+/gu, " ")
