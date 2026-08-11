@@ -69,6 +69,7 @@ const config: AppConfig = {
   organizeFolderRootToken: "fldcnRoot123",
   organizeFolderWriteEnabled: false,
   llmApiKey: "nvapi-test-key-that-is-long-enough",
+  voyageApiKey: "voyage-test-key-with-safe-length",
 };
 
 class StubGrantStore implements OAuthGrantStore {

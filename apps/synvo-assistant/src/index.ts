@@ -19,10 +19,16 @@ import { PostgresDeliveryQueue } from "./delivery/repository.js";
 import { DeliveryWorker } from "./delivery/worker.js";
 import { LarkAttachmentClient } from "./lark/attachment.js";
 import {
+  isRecentLarkMessage,
+  PostgresInboundMessageStore,
+} from "./lark/inbound-message.js";
+import {
   buildAnalysisCard,
+  buildAssistantAcknowledgementCard,
   buildAssistantClarificationCard,
   buildAssistantHelpCard,
   buildAssistantOnlineCard,
+  buildAssistantWorkingCard,
   buildAuthorizationCard,
   buildCardCallbackResponse,
   buildCurrentWorkspaceCard,
@@ -38,6 +44,15 @@ import {
   buildOrganizeFolderResultCard,
   parseOrganizeFolderCardAction,
 } from "./lark/organize-folder-card.js";
+import {
+  buildKnowledgeConsentCard,
+  buildKnowledgeNotNowCard,
+  buildKnowledgeProgressCard,
+  buildKnowledgeRefreshProposalCard,
+  buildKnowledgeRemovalConfirmationCard,
+  buildKnowledgeRemovedCard,
+  parseKnowledgeCardAction,
+} from "./lark/knowledge-card.js";
 import { SynvoMcpClient } from "./mcp/client.js";
 import { createSynvoMcpEndpoint } from "./mcp/server.js";
 import { startAssistantWebServer } from "./web/server.js";
@@ -46,12 +61,17 @@ import { NvidiaNimClient } from "./workflows/analyze-attachment/nim-client.js";
 import { ANALYZE_ATTACHMENT_NIM_TIMEOUT_MS } from "./workflows/analyze-attachment/policy.js";
 import { AnalyzeAttachmentWorkflow } from "./workflows/analyze-attachment/workflow.js";
 import { AnalyzeDriveFileWorkflow } from "./workflows/analyze-drive-file/workflow.js";
+import { KnowledgeRepository } from "./workflows/knowledge/repository.js";
+import { VoyageEmbeddingClient } from "./workflows/knowledge/voyage-client.js";
+import { KnowledgeWorkflow } from "./workflows/knowledge/workflow.js";
 import { understandNaturalLanguage } from "./workflows/natural-language/intent.js";
 import { LarkOAuthService } from "./workflows/organize-folder/authorization.js";
 import { ContentAwareFolderPlanner } from "./workflows/organize-folder/content-planner.js";
 import { PostgresOrganizeFolderRepository } from "./workflows/organize-folder/repository.js";
 import { OrganizeFolderWorkflow } from "./workflows/organize-folder/workflow.js";
 import { loadWorkspaceContext } from "./workflows/workspace-context/context.js";
+
+const NATURAL_LANGUAGE_FEEDBACK_DELAY_MS = 750;
 
 function readTextContent(content: string | undefined): string | null {
   if (!content) {
@@ -76,6 +96,7 @@ function readTextContent(content: string | undefined): string | null {
 }
 
 async function main(): Promise<void> {
+  const startedAt = new Date();
   const config = loadConfig();
 
   const larkConnection = {
@@ -123,6 +144,7 @@ async function main(): Promise<void> {
   });
   const driveReader = new LarkDriveReader();
   const deliveryQueue = new PostgresDeliveryQueue(pool);
+  const inboundMessages = new PostgresInboundMessageStore(pool);
   const nimClient = new NvidiaNimClient({
     apiKey: config.llmApiKey,
     timeoutMs: ANALYZE_ATTACHMENT_NIM_TIMEOUT_MS,
@@ -246,30 +268,33 @@ async function main(): Promise<void> {
       messageId,
       buildAnalysisCard(text, config.larkLoadingImageKey),
     );
+  const attachmentClient = pilotIdentity
+    ? new LarkAttachmentClient({
+        getMessage: (messageId, tenantKey) =>
+          apiClient.im.v1.message.get(
+            {
+              params: { user_id_type: "open_id" },
+              path: { message_id: messageId },
+            },
+            Lark.withTenantKey(tenantKey),
+          ),
+        getMessageResource: (messageId, fileKey, tenantKey) =>
+          apiClient.im.v1.messageResource.get(
+            {
+              params: { type: "file" },
+              path: { message_id: messageId, file_key: fileKey },
+            },
+            Lark.withTenantKey(tenantKey),
+          ),
+      })
+    : undefined;
   const attachmentWorkflow =
-    pilotIdentity
+    pilotIdentity && attachmentClient
       ? new AnalyzeAttachmentWorkflow({
           queue: deliveryQueue,
           requesterOpenId: pilotIdentity.openId,
           tenantKey: pilotIdentity.tenantKey,
-          attachmentClient: new LarkAttachmentClient({
-            getMessage: (messageId, tenantKey) =>
-              apiClient.im.v1.message.get(
-                {
-                  params: { user_id_type: "open_id" },
-                  path: { message_id: messageId },
-                },
-                Lark.withTenantKey(tenantKey),
-              ),
-            getMessageResource: (messageId, fileKey, tenantKey) =>
-              apiClient.im.v1.messageResource.get(
-                {
-                  params: { type: "file" },
-                  path: { message_id: messageId, file_key: fileKey },
-                },
-                Lark.withTenantKey(tenantKey),
-              ),
-          }),
+          attachmentClient,
           nimClient,
           messenger: { create: createAnalysisCard, update: updateAnalysisCard },
         })
@@ -288,6 +313,44 @@ async function main(): Promise<void> {
         tenantKey: pilotIdentity.tenantKey,
       })
     : undefined;
+  const knowledgeWorkflow =
+    pilotIdentity && attachmentClient && driveFileWorkflow
+      ? new KnowledgeWorkflow({
+          queue: deliveryQueue,
+          cipher,
+          repository: new KnowledgeRepository(pool),
+          embedder: new VoyageEmbeddingClient({ apiKey: config.voyageApiKey }),
+          attachmentReader: attachmentClient,
+          driveReader: driveFileWorkflow,
+          answerer: nimClient,
+          messenger: {
+            create: (chatId, progress, idempotencyKey) =>
+              createCard(
+                chatId,
+                buildKnowledgeProgressCard(
+                  progress,
+                  config.larkLoadingImageKey,
+                ),
+                idempotencyKey,
+              ),
+            update: (messageId, progress) =>
+              updateCard(
+                messageId,
+                buildKnowledgeProgressCard(
+                  progress,
+                  config.larkLoadingImageKey,
+                ),
+              ),
+          },
+          scope: {
+            tenantKey: pilotIdentity.tenantKey,
+            userOpenId: pilotIdentity.openId,
+            workspaceFolderToken: config.organizeFolderRootToken,
+          },
+          verifyWorkspace: async () =>
+            Boolean(await loadWorkspaceCardContext()),
+        })
+      : undefined;
   const startDriveFileAnalysis = async (
     request: Parameters<AnalyzeDriveFileWorkflow["start"]>[0],
   ): Promise<void> => {
@@ -303,11 +366,7 @@ async function main(): Promise<void> {
     }
     const result = await driveFileWorkflow.start(request);
     if (result.kind !== "queued") {
-      await createCard(
-        request.chatId,
-        buildNoticeCard(result.replyText),
-        request.messageId,
-      );
+      await createCard(request.chatId, buildNoticeCard(result.replyText), request.messageId);
     }
   };
   const startFolderAnalysis = async (
@@ -315,21 +374,18 @@ async function main(): Promise<void> {
   ): Promise<void> => {
     const result = await workflow.start(request);
     if (result.kind === "rejected") {
-      await createCard(
-        request.chatId,
-        buildNoticeCard(result.replyText),
-        request.messageId,
-      );
+      await createCard(request.chatId, buildNoticeCard(result.replyText), request.messageId);
     }
   };
   const mcpEndpoint =
-    config.synvoMcpAuthToken && pilotIdentity && driveFileWorkflow
+    config.synvoMcpAuthToken && pilotIdentity && driveFileWorkflow && knowledgeWorkflow
       ? createSynvoMcpEndpoint({
           authToken: config.synvoMcpAuthToken,
           requesterOpenId: pilotIdentity.openId,
           tenantKey: pilotIdentity.tenantKey,
           inventoryReader: workflow,
           driveFileAnalyzer: driveFileWorkflow,
+          knowledgeSearcher: knowledgeWorkflow,
         })
       : undefined;
   const deliveryWorker = new DeliveryWorker({
@@ -361,6 +417,15 @@ async function main(): Promise<void> {
     handleAnalyzeDriveFile: driveFileWorkflow
       ? (job, payload, storePayload) =>
           driveFileWorkflow.process(job, payload, storePayload)
+      : undefined,
+    handleKnowledge: knowledgeWorkflow
+      ? (job, payload, storePayload, finalAttempt) =>
+          knowledgeWorkflow.process(
+            job,
+            payload,
+            storePayload,
+            finalAttempt,
+          )
       : undefined,
     handleOrganizeFolderScan: async (
       job,
@@ -411,8 +476,30 @@ async function main(): Promise<void> {
       const chatId = message?.chat_id;
       const requesterOpenId = sender?.sender_id?.open_id;
       const tenantKey = sender?.tenant_key ?? event.tenant_key;
+      if (
+        sender?.sender_type !== "user" ||
+        message?.chat_type !== "p2p" ||
+        (message?.message_type !== "file" && message?.message_type !== "text") ||
+        !messageId ||
+        !chatId ||
+        !requesterOpenId ||
+        !tenantKey ||
+        !pilotIdentity ||
+        requesterOpenId !== pilotIdentity.openId ||
+        tenantKey !== pilotIdentity.tenantKey
+      ) {
+        return;
+      }
+      if (!isRecentLarkMessage(message.create_time, startedAt)) {
+        console.info("[lark] ignored stale direct message after reconnect");
+        return;
+      }
+      if (!(await inboundMessages.claim(tenantKey, messageId))) {
+        console.info("[lark] ignored replayed direct message");
+        return;
+      }
       if (message?.message_type === "file") {
-        if (!attachmentWorkflow || !pilotIdentity) {
+        if (!attachmentWorkflow || !knowledgeWorkflow) {
           return;
         }
         const accepted = acceptAttachmentEvent(
@@ -424,30 +511,36 @@ async function main(): Promise<void> {
             chatId,
             requesterOpenId,
             tenantKey,
+            content: message.content,
           },
           pilotIdentity,
         );
-        if (accepted && (await attachmentWorkflow.enqueue(accepted))) {
-          console.info("[lark] queued direct PDF analysis");
+        const workspace = accepted ? await loadWorkspaceCardContext() : undefined;
+        if (accepted && workspace) {
+          await createCard(
+            accepted.chatId,
+            buildKnowledgeConsentCard({
+              filename: accepted.filename,
+              sourceMessageId: accepted.messageId,
+              workspaceName: workspace.activeWorkspaceName,
+            }),
+            accepted.messageId,
+          );
+          console.info("[lark] requested PDF knowledge consent");
+        } else if (accepted) {
+          await createCard(
+            accepted.chatId,
+            buildNoticeCard(
+              "I received the PDF, but I couldn’t verify the active workspace. Please reconnect Lark Drive and send the file again.",
+              "Workspace verification is required",
+            ),
+            accepted.messageId,
+          );
         }
         return;
       }
-      if (
-        sender?.sender_type !== "user" ||
-        message?.chat_type !== "p2p" ||
-        message?.message_type !== "text"
-      ) {
-        return;
-      }
       const text = readTextContent(message.content);
-      if (!messageId || !chatId || !requesterOpenId || !tenantKey || text === null) {
-        return;
-      }
-      if (
-        !pilotIdentity ||
-        requesterOpenId !== pilotIdentity.openId ||
-        tenantKey !== pilotIdentity.tenantKey
-      ) {
+      if (text === null) {
         return;
       }
       console.info("[lark] received direct text message");
@@ -519,6 +612,17 @@ async function main(): Promise<void> {
         return;
       }
 
+      let classificationFinished = false;
+      let workingCardPromise: Promise<string> | undefined;
+      const feedbackTimer = setTimeout(() => {
+        if (!classificationFinished) {
+          workingCardPromise = createCard(
+            chatId,
+            buildAssistantWorkingCard(config.larkLoadingImageKey),
+            `${messageId}:understanding`,
+          );
+        }
+      }, NATURAL_LANGUAGE_FEEDBACK_DELAY_MS);
       const understood = await understandNaturalLanguage(
         {
           text,
@@ -528,42 +632,88 @@ async function main(): Promise<void> {
         },
         nimClient,
       );
+      classificationFinished = true;
+      clearTimeout(feedbackTimer);
+      const workingCardId = await workingCardPromise;
+      const resolveCard = async (card: Lark.InteractiveCard): Promise<string> => {
+        if (workingCardId) {
+          await updateCard(workingCardId, card);
+          return workingCardId;
+        }
+        return createCard(chatId, card, messageId);
+      };
+      const finishWorkingCard = async (
+        card: Lark.InteractiveCard,
+      ): Promise<void> => {
+        if (workingCardId) {
+          await updateCard(workingCardId, card);
+        }
+      };
       if (understood.intent === "greeting") {
-        await createCard(
-          chatId,
+        await resolveCard(
           buildAssistantOnlineCard(
             config.authorizedFirstName,
             await loadWorkspaceCardContext(),
           ),
-          messageId,
         );
+        return;
+      }
+      if (understood.intent === "acknowledgement") {
+        await resolveCard(buildAssistantAcknowledgementCard());
         return;
       }
       if (understood.intent === "help") {
-        await createCard(chatId, buildAssistantHelpCard(), messageId);
+        await resolveCard(buildAssistantHelpCard());
         return;
       }
       if (understood.intent === "current_workspace") {
-        await createCard(
-          chatId,
+        await resolveCard(
           buildCurrentWorkspaceCard(await loadWorkspaceCardContext()),
-          messageId,
         );
+        return;
+      }
+      if (understood.intent === "ask_workspace") {
+        const workspace = await loadWorkspaceCardContext();
+        if (!knowledgeWorkflow || !workspace) {
+          await resolveCard(
+            buildNoticeCard(
+              "I can’t verify the active workspace knowledge right now. Please reconnect Lark Drive and try again.",
+            ),
+          );
+          return;
+        }
+        const progressMessageId = await resolveCard(
+          buildKnowledgeProgressCard(
+            {
+              stage: "answering",
+              message: "Finding the most relevant evidence and preparing a cited answer",
+            },
+            config.larkLoadingImageKey,
+          ),
+        );
+        await knowledgeWorkflow.enqueueQuestion({
+          messageId,
+          chatId,
+          question: understood.sanitizedText,
+          progressMessageId,
+        });
         return;
       }
       if (understood.intent === "organize_folder") {
         if (
           understood.links.length === 0 &&
-          understood.canConfirmApprovedRoot
+          understood.folder_reference === "active_workspace"
         ) {
-          await createCard(
-            chatId,
-            buildOrganizeFolderConfirmationCard(),
-            messageId,
-          );
+          await resolveCard(buildOrganizeFolderConfirmationCard());
           return;
         }
         if (understood.links.length === 1 && understood.links[0]) {
+          await finishWorkingCard(
+            buildNoticeCard(
+              "I found the folder link and I’m starting the analysis now.",
+              "Folder analysis requested",
+            ),
+          );
           await startFolderAnalysis({
             messageId,
             chatId,
@@ -574,11 +724,7 @@ async function main(): Promise<void> {
           return;
         }
         if (understood.links.length === 0) {
-          await createCard(
-            chatId,
-            buildFolderLinkRequiredCard(),
-            messageId,
-          );
+          await resolveCard(buildFolderLinkRequiredCard());
           return;
         }
       }
@@ -587,6 +733,12 @@ async function main(): Promise<void> {
         understood.links.length === 1 &&
         understood.links[0]
       ) {
+        await finishWorkingCard(
+          buildNoticeCard(
+            "I found the file link and I’m starting the analysis now.",
+            "File analysis requested",
+          ),
+        );
         await startDriveFileAnalysis({
           messageId,
           chatId,
@@ -596,11 +748,7 @@ async function main(): Promise<void> {
         });
         return;
       }
-      await createCard(
-        chatId,
-        buildAssistantClarificationCard(),
-        messageId,
-      );
+      await resolveCard(buildAssistantClarificationCard());
     },
     "card.action.trigger": async (rawEvent: Lark.RawCardActionEvent) => {
       const event = Lark.normalizeCardAction(rawEvent);
@@ -611,6 +759,174 @@ async function main(): Promise<void> {
         event.action.tag !== "button"
       ) {
         return;
+      }
+      const knowledgeAction = parseKnowledgeCardAction(event.action.value);
+      if (knowledgeAction) {
+        if (!knowledgeWorkflow || !attachmentWorkflow) {
+          return buildCardCallbackResponse(
+            buildNoticeCard("Workspace knowledge is not configured yet."),
+            { type: "error", content: "Knowledge is unavailable." },
+          );
+        }
+        if (knowledgeAction.type === "attachment_not_now") {
+          return buildCardCallbackResponse(buildKnowledgeNotNowCard(), {
+            type: "info",
+            content: "Nothing was added.",
+          });
+        }
+        if (knowledgeAction.type === "attachment_analyze") {
+          const queued = await attachmentWorkflow.enqueue({
+            messageId: knowledgeAction.sourceMessageId,
+            chatId: event.chatId,
+          });
+          return buildCardCallbackResponse(
+            queued
+              ? buildNoticeCard(
+                  "I’ll analyze this PDF once. No knowledge chunks will be stored.",
+                  "One-time analysis started",
+                )
+              : buildNoticeCard("I’m already analyzing this PDF."),
+            {
+              type: queued ? "success" : "info",
+              content: queued ? "Analysis started." : "Already started.",
+            },
+          );
+        }
+        if (knowledgeAction.type === "attachment_add") {
+          const queued = await knowledgeWorkflow.enqueueAttachment({
+            sourceMessageId: knowledgeAction.sourceMessageId,
+            cardMessageId: event.messageId,
+            chatId: event.chatId,
+          });
+          return buildCardCallbackResponse(
+            buildKnowledgeProgressCard(
+              {
+                stage: "ingesting",
+                message: queued
+                  ? "Reading the approved PDF → creating searchable chunks → updating the vault"
+                  : "This PDF is already being added to workspace knowledge.",
+              },
+              config.larkLoadingImageKey,
+            ),
+            {
+              type: queued ? "success" : "info",
+              content: queued ? "Knowledge ingestion started." : "Already started.",
+            },
+          );
+        }
+        if (knowledgeAction.type === "refresh_propose") {
+          try {
+            const proposal = await knowledgeWorkflow.proposeRefresh();
+            return buildCardCallbackResponse(
+              buildKnowledgeRefreshProposalCard(proposal),
+              {
+                type: proposal.hasChanges ? "info" : "success",
+                content: proposal.hasChanges
+                  ? "Review the knowledge update."
+                  : "Workspace knowledge is already current.",
+              },
+            );
+          } catch {
+            return buildCardCallbackResponse(
+              buildNoticeCard("I couldn’t compare the Drive folder safely. Please try again."),
+              { type: "error", content: "Refresh check failed." },
+            );
+          }
+        }
+        if (knowledgeAction.type === "refresh_confirm") {
+          try {
+            const result = await knowledgeWorkflow.enqueueRefresh({
+              messageId: event.messageId,
+              chatId: event.chatId,
+              snapshot: knowledgeAction.snapshot,
+            });
+            return buildCardCallbackResponse(
+              buildKnowledgeProgressCard(
+                {
+                  stage: "refreshing",
+                  message: result.queued
+                    ? "Reading the approved PDFs → refreshing searchable knowledge"
+                    : "This knowledge update is already running.",
+                  jobId: result.queued ? result.jobId : undefined,
+                  completedFiles: result.queued ? 0 : undefined,
+                  totalFiles: result.queued ? result.totalFiles : undefined,
+                },
+                config.larkLoadingImageKey,
+              ),
+              {
+                type: result.queued ? "success" : "info",
+                content: result.queued ? "Knowledge update started." : "Already started.",
+              },
+            );
+          } catch {
+            return buildCardCallbackResponse(
+              buildNoticeCard("That refresh approval expired. Please review a new workspace update."),
+              { type: "warning", content: "Approval expired." },
+            );
+          }
+        }
+        if (knowledgeAction.type === "refresh_stop") {
+          const result = await knowledgeWorkflow.requestRefreshStop({
+            jobId: knowledgeAction.jobId,
+            chatId: event.chatId,
+            requesterOpenId: event.operator.openId,
+            tenantKey: pilotIdentity.tenantKey,
+          });
+          if (result === "unauthorized") {
+            return buildCardCallbackResponse(
+              buildNoticeCard("I couldn’t verify who requested that stop."),
+              { type: "error", content: "Stop request was not authorized." },
+            );
+          }
+          if (result === "requested") {
+            return buildCardCallbackResponse(
+              buildKnowledgeProgressCard(
+                {
+                  stage: "stopping",
+                  message: "I’m finishing the current provider request, then I’ll stop before starting anything else.",
+                  jobId: knowledgeAction.jobId,
+                },
+                config.larkLoadingImageKey,
+              ),
+              { type: "info", content: "Stopping this knowledge update." },
+            );
+          }
+          if (result === "stopped") {
+            return buildCardCallbackResponse(
+              buildKnowledgeProgressCard({
+                stage: "stopped",
+                message: "The update stopped before processing began. Select **Resume update** to review and continue it.",
+                jobId: knowledgeAction.jobId,
+              }),
+              { type: "success", content: "Knowledge update stopped." },
+            );
+          }
+          return buildCardCallbackResponse(
+            buildNoticeCard("This knowledge update has already finished or stopped."),
+            { type: "info", content: "Nothing else needs to stop." },
+          );
+        }
+        if (knowledgeAction.type === "remove_request") {
+          return buildCardCallbackResponse(
+            buildKnowledgeRemovalConfirmationCard({
+              sourceReference: knowledgeAction.sourceReference,
+              sourceName: knowledgeAction.sourceName,
+            }),
+            { type: "warning", content: "Please confirm removal." },
+          );
+        }
+        try {
+          await knowledgeWorkflow.removeSource(knowledgeAction.sourceReference);
+          return buildCardCallbackResponse(
+            buildKnowledgeRemovedCard(knowledgeAction.sourceName),
+            { type: "success", content: "Removed from knowledge." },
+          );
+        } catch {
+          return buildCardCallbackResponse(
+            buildNoticeCard("I couldn’t remove that knowledge source safely."),
+            { type: "error", content: "Removal failed." },
+          );
+        }
       }
       const action = parseOrganizeFolderCardAction(event.action.value);
       if (!action) {

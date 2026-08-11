@@ -34,6 +34,8 @@ class FakeQueue implements DeliveryQueue {
   async complete(): Promise<boolean> { return true; }
   async retry(): Promise<boolean> { return true; }
   async fail(): Promise<boolean> { return true; }
+  async requestCancellation() { return "terminal" as const; }
+  async isCancellationRequested() { return false; }
 }
 
 function fixture(options: {
@@ -43,6 +45,7 @@ function fixture(options: {
   token?: string;
   parentToken?: string;
   items?: NativeDriveItem[];
+  itemResponses?: NativeDriveItem[][];
   downloadError?: unknown;
   tokenError?: unknown;
   listError?: unknown;
@@ -60,7 +63,7 @@ function fixture(options: {
         throw options.listError;
       }
       return {
-        items: options.items ?? [{
+        items: options.itemResponses?.[lists - 1] ?? options.items ?? [{
             token: options.token ?? "boxcnPdf123",
             name: options.name ?? "pilot.pdf",
             type: options.type ?? "file",
@@ -106,7 +109,12 @@ function fixture(options: {
     rootToken: "fldcnRoot123",
     requesterOpenId: "ou_victor",
     tenantKey: "tenant_synvo",
-    extractPdf: async () => ({ text: "Extracted", pageCount: 2, truncated: false }),
+    extractPdf: async () => ({
+      text: "Extracted",
+      pageCount: 2,
+      truncated: false,
+      pages: [{ pageNumber: 1, text: "Extracted" }],
+    }),
   });
   return {
     workflow,
@@ -213,6 +221,71 @@ test("returns the same bounded analysis to a direct read-only consumer", async (
   );
   assert.equal(testFixture.downloads(), 1);
   assert.deepEqual(testFixture.updates, []);
+});
+
+test("lists only owned direct-root ordinary PDFs with a provider version", async () => {
+  const eligible: NativeDriveItem = {
+    token: "boxcnEligible",
+    name: "Eligible.pdf",
+    type: "file",
+    parentToken: "fldcnRoot123",
+    ownerId: "ou_victor",
+    modifiedTime: "1723334400",
+  };
+  const testFixture = fixture({
+    items: [
+      eligible,
+      { ...eligible, token: "boxcnDocx", name: "Guide.docx", type: "docx" },
+      { ...eligible, token: "boxcnNested", parentToken: "fldcnNested" },
+      { ...eligible, token: "boxcnOther", ownerId: "ou_other" },
+      { ...eligible, token: "boxcnNoVersion", modifiedTime: undefined },
+    ],
+  });
+
+  assert.deepEqual(
+    await testFixture.workflow.listKnowledgeFiles({
+      requesterOpenId: "ou_victor",
+      tenantKey: "tenant_synvo",
+    }),
+    [{ token: "boxcnEligible", name: "Eligible.pdf", version: "1723334400" }],
+  );
+});
+
+test("revalidates a Drive PDF before and after the bounded download", async () => {
+  const file: NativeDriveItem = {
+    token: "boxcnPdf123",
+    name: "pilot.pdf",
+    type: "file",
+    parentToken: "fldcnRoot123",
+    ownerId: "ou_victor",
+    modifiedTime: "1723334400",
+  };
+  const stable = fixture({ items: [file] });
+  const result = await stable.workflow.readKnowledgeFile({
+    requesterOpenId: "ou_victor",
+    tenantKey: "tenant_synvo",
+    fileToken: file.token,
+    expectedVersion: file.modifiedTime!,
+  });
+  assert.equal(result.name, "pilot.pdf");
+  assert.equal(result.version, "1723334400");
+  assert.equal(result.bytes.toString(), "%PDF-test");
+  assert.equal(stable.lists(), 2);
+  assert.equal(stable.downloads(), 1);
+
+  const changed = fixture({
+    itemResponses: [[file], [{ ...file, modifiedTime: "1723334401" }]],
+  });
+  await assert.rejects(
+    changed.workflow.readKnowledgeFile({
+      requesterOpenId: "ou_victor",
+      tenantKey: "tenant_synvo",
+      fileToken: file.token,
+      expectedVersion: file.modifiedTime!,
+    }),
+    /changed|available|no longer matches/u,
+  );
+  assert.equal(changed.downloads(), 1);
 });
 
 test("rejects an unauthorized direct analysis consumer before Drive access", async () => {

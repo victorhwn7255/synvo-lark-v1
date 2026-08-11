@@ -11,9 +11,11 @@ import {
 } from "../workflows/analyze-drive-file/workflow.js";
 import { formatDriveFolderInventoryResult } from "../workflows/organize-folder/inventory-message.js";
 import type { OrganizeFolderWorkflow } from "../workflows/organize-folder/workflow.js";
+import type { KnowledgeWorkflow } from "../workflows/knowledge/workflow.js";
 
 type InventoryReader = Pick<OrganizeFolderWorkflow, "readInventory">;
 type DriveFileAnalyzer = Pick<AnalyzeDriveFileWorkflow, "analyzeListedFile">;
+type KnowledgeSearcher = Pick<KnowledgeWorkflow, "searchWorkspace">;
 
 type SynvoMcpOptions = {
   authToken: string;
@@ -21,6 +23,7 @@ type SynvoMcpOptions = {
   tenantKey: string;
   inventoryReader: InventoryReader;
   driveFileAnalyzer: DriveFileAnalyzer;
+  knowledgeSearcher: KnowledgeSearcher;
 };
 
 export type SynvoMcpEndpoint = {
@@ -117,6 +120,34 @@ function createSynvoMcpServer(
         ],
         structuredContent: result,
         isError: !result.ok,
+      };
+    },
+  );
+
+  server.registerTool(
+    "search_workspace_knowledge",
+    {
+      title: "Search the active Synvo workspace knowledge",
+      description:
+        "Answer one natural-language question from the authenticated pilot user's indexed active-workspace PDFs. Returns a bounded answer with file and page citations, or an explicit insufficient-evidence result. The tool cannot modify Lark Drive or the knowledge vault.",
+      inputSchema: z
+        .object({
+          question: z.string().min(1).max(1_000),
+        })
+        .strict(),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ question }) => {
+      const result = await options.knowledgeSearcher.searchWorkspace(question);
+      return {
+        content: [{ type: "text", text: result.answer }],
+        structuredContent: result,
+        isError: false,
       };
     },
   );

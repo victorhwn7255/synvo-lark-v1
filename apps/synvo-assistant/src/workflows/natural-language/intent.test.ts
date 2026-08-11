@@ -6,27 +6,38 @@ import { understandNaturalLanguage } from "./intent.js";
 function classifier(
   intent:
     | "greeting"
+    | "acknowledgement"
     | "help"
     | "current_workspace"
+    | "ask_workspace"
     | "organize_folder"
     | "analyze_drive_file"
     | "unknown",
   calls: string[] = [],
+  folderReference:
+    | "active_workspace"
+    | "named_or_other_folder"
+    | "none" = "none",
 ) {
   return {
     async classifyIntent(input: { text: string }) {
       calls.push(input.text);
-      return { intent } as const;
+      return { intent, folder_reference: folderReference } as const;
     },
   };
 }
 
-for (const text of ["Hello", "Good morning!", "Are you online?"]) {
-  test(`handles the greeting locally: ${text}`, async () => {
+for (const text of [
+  "Hello",
+  "hey there",
+  "Hey, good morning!",
+  "Greetings everyone",
+]) {
+  test(`handles an unambiguous social greeting locally: ${text}`, async () => {
     const calls: string[] = [];
     const result = await understandNaturalLanguage(
       { text },
-      classifier("unknown", calls),
+      classifier("ask_workspace", calls),
     );
 
     assert.equal(result.intent, "greeting");
@@ -34,24 +45,36 @@ for (const text of ["Hello", "Good morning!", "Are you online?"]) {
   });
 }
 
+test("uses semantic classification for a greeting outside the local safe case", async () => {
+  const calls: string[] = [];
+  const result = await understandNaturalLanguage(
+    { text: "Are you online?" },
+    classifier("greeting", calls),
+  );
+
+  assert.equal(result.intent, "greeting");
+  assert.deepEqual(calls, ["Are you online?"]);
+});
+
 test("gives an actionable organize request precedence over its greeting", async () => {
   const calls: string[] = [];
   const result = await understandNaturalLanguage(
     { text: "Hello, could you organize my messy folder?" },
-    classifier("greeting", calls),
+    classifier("organize_folder", calls, "active_workspace"),
   );
 
   assert.equal(result.intent, "organize_folder");
-  assert.deepEqual(calls, []);
+  assert.equal(result.folder_reference, "active_workspace");
+  assert.deepEqual(calls, ["Hello, could you organize my messy folder?"]);
 });
 
-test("handles help and common actionable requests without NVIDIA", async () => {
+test("routes help and common actionable requests semantically", async () => {
   const calls: string[] = [];
   assert.equal(
     (
       await understandNaturalLanguage(
         { text: "What can you help me with?" },
-        classifier("unknown", calls),
+        classifier("help", calls),
       )
     ).intent,
     "help",
@@ -60,12 +83,15 @@ test("handles help and common actionable requests without NVIDIA", async () => {
     (
       await understandNaturalLanguage(
         { text: "Please summarize this PDF" },
-        classifier("unknown", calls),
+        classifier("analyze_drive_file", calls),
       )
     ).intent,
     "analyze_drive_file",
   );
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, [
+    "What can you help me with?",
+    "Please summarize this PDF",
+  ]);
 });
 
 for (const text of [
@@ -74,10 +100,29 @@ for (const text of [
   "Please clean up my folder",
 ]) {
   test(`recognizes a natural folder request: ${text}`, async () => {
-    assert.equal(
-      (await understandNaturalLanguage({ text }, classifier("unknown"))).intent,
-      "organize_folder",
+    const result = await understandNaturalLanguage(
+      { text },
+      classifier("organize_folder", [], "active_workspace"),
     );
+    assert.equal(result.intent, "organize_folder");
+    assert.equal(result.folder_reference, "active_workspace");
+  });
+}
+
+for (const text of [
+  "What do our files say about PDF chunking?",
+  "Compare the recommendations in the workspace documents",
+  "According to our knowledge, how should retrieval work?",
+  "How soon after an expense must I submit my claim?",
+  "Which receipts do I need for reimbursement?",
+]) {
+  test(`recognizes a semantic workspace knowledge question: ${text}`, async () => {
+    const result = await understandNaturalLanguage(
+      { text },
+      classifier("ask_workspace"),
+    );
+    assert.equal(result.intent, "ask_workspace");
+    assert.equal(result.sanitizedText, text);
   });
 }
 
@@ -88,7 +133,12 @@ for (const text of [
 ]) {
   test(`recognizes a natural Drive-file request: ${text}`, async () => {
     assert.equal(
-      (await understandNaturalLanguage({ text }, classifier("unknown"))).intent,
+      (
+        await understandNaturalLanguage(
+          { text },
+          classifier("analyze_drive_file"),
+        )
+      ).intent,
       "analyze_drive_file",
     );
   });
@@ -103,7 +153,7 @@ test("removes links, mentions, controls, and Lark identifiers before NVIDIA", as
       text: `@_user_1 Could you handle this? ${folderLink}, om_privateNativeId XtyXfTy1vli5YYd3dIclpdMDg1f\u0000`,
       mentionKeys: ["@_user_1"],
     },
-    classifier("organize_folder", calls),
+    classifier("organize_folder", calls, "active_workspace"),
   );
 
   assert.equal(result.intent, "organize_folder");
@@ -121,6 +171,19 @@ test("uses NVIDIA only for an unmatched bounded request", async () => {
   assert.equal(result.intent, "help");
   assert.deepEqual(calls, ["Could you make some sense of this for me?"]);
 });
+
+for (const text of ["Thanks!", "Okay, got it", "That sounds good"]) {
+  test(`understands a friendly acknowledgement: ${text}`, async () => {
+    const calls: string[] = [];
+    const result = await understandNaturalLanguage(
+      { text },
+      classifier("acknowledgement", calls),
+    );
+
+    assert.equal(result.intent, "acknowledgement");
+    assert.deepEqual(calls, [text]);
+  });
+}
 
 for (const text of [
   "Which folder are we working at?",
@@ -162,24 +225,25 @@ test("fails safely when NVIDIA is unavailable", async () => {
 
   assert.deepEqual(result, {
     intent: "unknown",
+    folder_reference: "none",
     links: [],
-    canConfirmApprovedRoot: false,
+    sanitizedText: "Could you make some sense of this for me?",
   });
 });
 
-test("requires a link for a named folder instead of assuming the pilot root", async () => {
+test("uses the bounded semantic folder reference instead of phrase matching", async () => {
   const named = await understandNaturalLanguage(
     { text: "Please organize the Finance folder" },
-    classifier("organize_folder"),
+    classifier("organize_folder", [], "named_or_other_folder"),
   );
   const generic = await understandNaturalLanguage(
-    { text: "My folder is messy. Could you organize it?" },
-    classifier("organize_folder"),
+    { text: "Please straighten out the workspace we are using" },
+    classifier("organize_folder", [], "active_workspace"),
   );
 
   assert.equal(named.intent, "organize_folder");
-  assert.equal(named.canConfirmApprovedRoot, false);
-  assert.equal(generic.canConfirmApprovedRoot, true);
+  assert.equal(named.folder_reference, "named_or_other_folder");
+  assert.equal(generic.folder_reference, "active_workspace");
 });
 
 test("does not call NVIDIA for an overlong request", async () => {

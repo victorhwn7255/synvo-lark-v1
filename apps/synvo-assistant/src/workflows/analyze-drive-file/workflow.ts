@@ -73,6 +73,16 @@ export type AnalyzeDriveFileResult =
       error: { message: string; retryable: boolean };
     };
 
+export type KnowledgeDriveFile = {
+  token: string;
+  name: string;
+  version: string;
+};
+
+export type KnowledgeDrivePdf = KnowledgeDriveFile & {
+  bytes: Buffer;
+};
+
 function parseJobContext(value: string): JobContext {
   try {
     return JSON.parse(value) as JobContext;
@@ -133,6 +143,7 @@ export function formatAnalyzeDriveFileResult(
       text: "",
       pageCount: result.analysis.page_count,
       truncated: result.analysis.input_truncated,
+      pages: [],
     },
     {
       text: result.analysis.text,
@@ -289,6 +300,62 @@ export class AnalyzeDriveFileWorkflow {
     }
   }
 
+  async listKnowledgeFiles(input: {
+    requesterOpenId: string;
+    tenantKey: string;
+  }): Promise<KnowledgeDriveFile[]> {
+    this.#requirePilotIdentity(input.requesterOpenId, input.tenantKey);
+    const items = await this.#listRoot();
+    return items
+      .filter(
+        (item) =>
+          item.parentToken === this.#rootToken &&
+          item.ownerId === this.#requesterOpenId &&
+          item.type === "file" &&
+          /\.pdf$/iu.test(item.name) &&
+          typeof item.modifiedTime === "string",
+      )
+      .map((item) => ({
+        token: item.token,
+        name: item.name,
+        version: item.modifiedTime!,
+      }))
+      .sort((left, right) =>
+        left.name.localeCompare(right.name) || left.token.localeCompare(right.token),
+      );
+  }
+
+  async readKnowledgeFile(input: {
+    requesterOpenId: string;
+    tenantKey: string;
+    fileToken: string;
+    expectedVersion: string;
+  }): Promise<KnowledgeDrivePdf> {
+    this.#requirePilotIdentity(input.requesterOpenId, input.tenantKey);
+    const before = await this.#findKnowledgeFile(
+      input.fileToken,
+      input.expectedVersion,
+    );
+    const bytes = await this.#withAccessToken((accessToken) =>
+      this.#downloader.download({
+        accessToken,
+        fileToken: before.token,
+        maxBytes: ANALYZE_ATTACHMENT_MAX_BYTES,
+      }),
+    );
+    const after = await this.#findKnowledgeFile(
+      input.fileToken,
+      input.expectedVersion,
+    );
+    if (after.name !== before.name) {
+      throw driveToolError(
+        "INCOMPLETE_SCAN",
+        "The Drive PDF changed while it was being read.",
+      );
+    }
+    return { ...after, bytes };
+  }
+
   async process(
     job: DeliveryJob,
     plaintextContext: string | null,
@@ -357,6 +424,35 @@ export class AnalyzeDriveFileWorkflow {
         maxItems: organizeFolderPilotPolicy.maxRootItems,
       }),
     );
+  }
+
+  #requirePilotIdentity(requesterOpenId: string, tenantKey: string): void {
+    if (
+      requesterOpenId !== this.#requesterOpenId ||
+      tenantKey !== this.#tenantKey
+    ) {
+      throw driveToolError(
+        "UNAUTHORIZED",
+        "Drive knowledge is not available for this account.",
+      );
+    }
+  }
+
+  async #findKnowledgeFile(
+    fileToken: string,
+    expectedVersion: string,
+  ): Promise<KnowledgeDriveFile> {
+    const file = (await this.listKnowledgeFiles({
+      requesterOpenId: this.#requesterOpenId,
+      tenantKey: this.#tenantKey,
+    })).find((candidate) => candidate.token === fileToken);
+    if (!file || file.version !== expectedVersion) {
+      throw driveToolError(
+        "INCOMPLETE_SCAN",
+        "The Drive PDF no longer matches the approved knowledge snapshot.",
+      );
+    }
+    return file;
   }
 
   async #analyzeResolvedFile(

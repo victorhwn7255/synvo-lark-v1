@@ -6,7 +6,8 @@ export type DeliveryJobKind =
   | "ORGANIZE_FOLDER_EXECUTE"
   | "ORGANIZE_FOLDER_UNDO"
   | "ANALYZE_ATTACHMENT"
-  | "ANALYZE_DRIVE_FILE";
+  | "ANALYZE_DRIVE_FILE"
+  | "KNOWLEDGE";
 
 export type DeliveryJob = {
   id: string;
@@ -28,6 +29,8 @@ export type InsertDeliveryJobInput = {
   payloadCiphertext?: string;
   expiresAt?: Date;
 };
+
+export type CancelDeliveryJobResult = "requested" | "stopped" | "terminal";
 
 type DeliveryJobRow = {
   id: string;
@@ -89,6 +92,11 @@ export interface DeliveryQueue {
   complete(job: DeliveryJob): Promise<boolean>;
   retry(job: DeliveryJob, availableAt: Date, errorCode: string): Promise<boolean>;
   fail(job: DeliveryJob, errorCode: string): Promise<boolean>;
+  requestCancellation(input: {
+    jobId: string;
+    chatId: string;
+  }): Promise<CancelDeliveryJobResult>;
+  isCancellationRequested(job: DeliveryJob): Promise<boolean>;
 }
 
 export class PostgresDeliveryQueue implements DeliveryQueue {
@@ -243,5 +251,61 @@ export class PostgresDeliveryQueue implements DeliveryQueue {
       [job.id, job.attemptCount, errorCode],
     );
     return (result.rowCount ?? 0) === 1;
+  }
+
+  async requestCancellation(input: {
+    jobId: string;
+    chatId: string;
+  }): Promise<CancelDeliveryJobResult> {
+    const result = await this.#pool.query<{ previous_state: string }>(
+      `WITH target AS (
+          SELECT id, state
+            FROM lark_delivery_jobs
+           WHERE id = $1
+             AND chat_id = $2
+             AND kind = 'KNOWLEDGE'
+             AND dedupe_key LIKE 'knowledge:refresh:%'
+             AND state IN ('PENDING', 'PROCESSING')
+           FOR UPDATE
+       )
+       UPDATE lark_delivery_jobs AS job
+          SET cancel_requested_at = COALESCE(job.cancel_requested_at, now()),
+              state = CASE
+                WHEN target.state = 'PENDING' THEN 'FAILED'
+                ELSE job.state
+              END,
+              payload_ciphertext = CASE
+                WHEN target.state = 'PENDING' THEN NULL
+                ELSE job.payload_ciphertext
+              END,
+              lease_expires_at = CASE
+                WHEN target.state = 'PENDING' THEN NULL
+                ELSE job.lease_expires_at
+              END,
+              last_error_code = 'KNOWLEDGE_UPDATE_STOPPED',
+              updated_at = now()
+         FROM target
+        WHERE job.id = target.id
+      RETURNING target.state AS previous_state`,
+      [input.jobId, input.chatId],
+    );
+    const previousState = result.rows[0]?.previous_state;
+    if (previousState === "PENDING") {
+      return "stopped";
+    }
+    return previousState === "PROCESSING" ? "requested" : "terminal";
+  }
+
+  async isCancellationRequested(job: DeliveryJob): Promise<boolean> {
+    const result = await this.#pool.query<{ requested: boolean }>(
+      `SELECT cancel_requested_at IS NOT NULL AS requested
+         FROM lark_delivery_jobs
+        WHERE id = $1
+          AND chat_id = $2
+          AND kind = 'KNOWLEDGE'
+          AND dedupe_key LIKE 'knowledge:refresh:%'`,
+      [job.id, job.chatId],
+    );
+    return result.rows[0]?.requested === true;
   }
 }

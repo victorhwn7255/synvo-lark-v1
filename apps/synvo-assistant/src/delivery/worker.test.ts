@@ -30,6 +30,8 @@ class FakeQueue implements DeliveryQueue {
     this.failedCodes.push(code);
     return true;
   }
+  async requestCancellation() { return "terminal" as const; }
+  async isCancellationRequested() { return false; }
 }
 
 function scanJob(attemptCount = 1, payloadCiphertext: string | null = null): DeliveryJob {
@@ -271,6 +273,50 @@ test("uses the same worker for Drive file analysis and preserves encrypted conte
   assert.equal(observedPayload, context);
   assert.ok(queue.storedPayload);
   assert.equal(queue.storedPayload.includes("updated context"), false);
+  assert.equal(queue.completed, 1);
+});
+
+test("extends the lease and preserves encrypted context for a knowledge job", async () => {
+  const queue = new FakeQueue();
+  const cipher = new TokenCipher(Buffer.alloc(32, 3));
+  const job = {
+    ...scanJob(),
+    dedupeKey: "knowledge:question:om_source",
+    runId: null,
+    kind: "KNOWLEDGE" as const,
+  };
+  const context = JSON.stringify({
+    operation: "question",
+    question: "What does the workspace say?",
+    progressMessageId: null,
+  });
+  queue.jobs.push({
+    ...job,
+    payloadCiphertext: encryptDeliveryMessage(cipher, job.id, context),
+  });
+  const now = new Date("2026-08-11T00:00:00.000Z");
+  let observedPayload: string | null = null;
+  const worker = new DeliveryWorker({
+    queue,
+    cipher,
+    prepareMessage: async () => "unused",
+    prepareExhaustedMessage: async () => "unused",
+    sendText: async () => {},
+    now: () => now,
+    handleKnowledge: async (_job, payload, storePayload) => {
+      observedPayload = payload;
+      assert.equal(await storePayload("updated knowledge context"), true);
+    },
+  });
+
+  await worker.processOne();
+
+  assert.equal(observedPayload, context);
+  assert.deepEqual(queue.extendedLeases, [
+    new Date("2026-08-11T00:15:00.000Z"),
+  ]);
+  assert.ok(queue.storedPayload);
+  assert.equal(queue.storedPayload.includes("updated knowledge context"), false);
   assert.equal(queue.completed, 1);
 });
 

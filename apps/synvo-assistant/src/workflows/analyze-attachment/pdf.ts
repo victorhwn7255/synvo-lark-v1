@@ -20,6 +20,7 @@ export type ExtractedPdf = {
   text: string;
   pageCount: number;
   truncated: boolean;
+  pages: Array<{ pageNumber: number; text: string }>;
 };
 
 export function withPdfTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -60,6 +61,40 @@ export function boundExtractedPdfText(value: string): {
       .slice(0, ANALYZE_ATTACHMENT_MAX_TEXT_CODE_POINTS)
       .join(""),
     truncated: codePoints.length > ANALYZE_ATTACHMENT_MAX_TEXT_CODE_POINTS,
+  };
+}
+
+function boundExtractedPdfPages(
+  pages: Array<{ num: number; text: string }>,
+): Pick<ExtractedPdf, "text" | "truncated" | "pages"> {
+  let remaining = ANALYZE_ATTACHMENT_MAX_TEXT_CODE_POINTS;
+  let truncated = false;
+  const boundedPages: ExtractedPdf["pages"] = [];
+
+  for (const page of pages) {
+    const normalized = normalizeText(page.text);
+    const codePoints = Array.from(normalized);
+    const bounded = codePoints.slice(0, remaining).join("");
+    boundedPages.push({ pageNumber: page.num, text: bounded });
+    remaining -= Array.from(bounded).length;
+    if (codePoints.length > Array.from(bounded).length) {
+      truncated = true;
+    }
+    if (remaining === 0) {
+      truncated ||= pages
+        .slice(boundedPages.length)
+        .some((candidate) => normalizeText(candidate.text).length > 0);
+      break;
+    }
+  }
+
+  return {
+    pages: boundedPages,
+    text: boundedPages
+      .map((page) => page.text)
+      .filter(Boolean)
+      .join("\n\n"),
+    truncated,
   };
 }
 
@@ -108,7 +143,7 @@ export async function extractPdfText(bytes: Buffer): Promise<ExtractedPdf> {
       parser.getText({ pageJoiner: "\n\n" }),
       ANALYZE_ATTACHMENT_PDF_TIMEOUT_MS,
     );
-    const boundedText = boundExtractedPdfText(result.text);
+    const boundedText = boundExtractedPdfPages(result.pages);
     if (!boundedText.text) {
       throw new PdfInputError(
         "NO_TEXT",
@@ -120,6 +155,7 @@ export async function extractPdfText(bytes: Buffer): Promise<ExtractedPdf> {
       text: boundedText.text,
       pageCount: info.total,
       truncated: boundedText.truncated,
+      pages: boundedText.pages,
     };
   } catch (error) {
     throw normalizePdfInputError(error);

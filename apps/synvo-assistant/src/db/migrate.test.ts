@@ -18,7 +18,9 @@ const completeTables = [
   "lark_oauth_grants",
   "lark_oauth_sessions",
   "lark_delivery_jobs",
+  "lark_inbound_messages",
   "organize_folder_runs",
+  "workspace_chunks",
   "schema_migrations",
 ] as const;
 

@@ -91,7 +91,9 @@ const requiredTables = [
   "lark_oauth_grants",
   "lark_oauth_sessions",
   "lark_delivery_jobs",
+  "lark_inbound_messages",
   "organize_folder_runs",
+  "workspace_chunks",
   "schema_migrations",
 ] as const;
 
@@ -113,7 +115,9 @@ export async function isDatabaseSchemaReady(
         to_regclass('public.lark_oauth_grants')::text,
         to_regclass('public.lark_oauth_sessions')::text,
         to_regclass('public.lark_delivery_jobs')::text,
+        to_regclass('public.lark_inbound_messages')::text,
         to_regclass('public.organize_folder_runs')::text,
+        to_regclass('public.workspace_chunks')::text,
         to_regclass('public.schema_migrations')::text
      ]) AS table_name`,
   );

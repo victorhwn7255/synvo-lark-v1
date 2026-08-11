@@ -589,3 +589,84 @@ test(
     }
   },
 );
+
+test(
+  "Postgres stops only the exact knowledge refresh job",
+  { skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured" },
+  async () => {
+    assert.ok(databaseUrl);
+    const pool = new Pool({ connectionString: databaseUrl, max: 2 });
+    const queue = new PostgresDeliveryQueue(pool);
+    const pendingId = randomUUID();
+    const processingId = randomUUID();
+    const questionId = randomUUID();
+    const chatId = `oc_${randomUUID()}`;
+    try {
+      await runMigrations(pool);
+      for (const [id, dedupeKey] of [
+        [pendingId, `knowledge:refresh:om_${randomUUID()}`],
+        [processingId, `knowledge:refresh:om_${randomUUID()}`],
+        [questionId, `knowledge:question:om_${randomUUID()}`],
+      ] as const) {
+        assert.equal(
+          await queue.enqueue({
+            id,
+            dedupeKey,
+            kind: "KNOWLEDGE",
+            chatId,
+            payloadCiphertext: "encrypted-context",
+            expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+          }),
+          true,
+        );
+      }
+
+      assert.equal(
+        await queue.requestCancellation({ jobId: pendingId, chatId: "oc_wrong" }),
+        "terminal",
+      );
+      assert.equal(
+        await queue.requestCancellation({ jobId: questionId, chatId }),
+        "terminal",
+      );
+      assert.equal(
+        await queue.requestCancellation({ jobId: pendingId, chatId }),
+        "stopped",
+      );
+
+      const first = await queue.claimNext(new Date(), 60_000);
+      assert.ok(first);
+      assert.equal(first.id, processingId);
+      assert.equal(
+        await queue.requestCancellation({ jobId: processingId, chatId }),
+        "requested",
+      );
+      assert.equal(await queue.isCancellationRequested(first), true);
+
+      const stored = await pool.query<{
+        id: string;
+        state: string;
+        payload_ciphertext: string | null;
+        cancel_requested_at: Date | null;
+      }>(
+        `SELECT id, state, payload_ciphertext, cancel_requested_at
+           FROM lark_delivery_jobs
+          WHERE id = ANY($1::uuid[])
+          ORDER BY id`,
+        [[pendingId, processingId]],
+      );
+      const byId = new Map(stored.rows.map((row) => [row.id, row]));
+      assert.equal(byId.get(pendingId)?.state, "FAILED");
+      assert.equal(byId.get(pendingId)?.payload_ciphertext, null);
+      assert.ok(byId.get(pendingId)?.cancel_requested_at);
+      assert.equal(byId.get(processingId)?.state, "PROCESSING");
+      assert.ok(byId.get(processingId)?.cancel_requested_at);
+    } finally {
+      await pool.query(
+        "DELETE FROM lark_delivery_jobs WHERE id = ANY($1::uuid[])",
+        [[pendingId, processingId, questionId]],
+      ).catch(() => undefined);
+      await pool.end();
+    }
+  },
+);

@@ -2,15 +2,18 @@
 
 Synvo AI Assistant is an internal work assistant delivered through Lark. Team members use bounded chat interactions; the application authenticates the requester, calls approved services, and returns a verified outcome in the same conversation.
 
-The current Victor-only pilot closes three employee workflows:
+The current Victor-only pilot implements four employee workflows:
 
 - **Organize a folder:** authorize one allowlisted Lark My Space folder, inventory and analyze its four PDF fixtures through the two read-only MCP tools, prepare a Product/Research/Needs-review proposal, require explicit approval, verify every enabled move, and support separately confirmed verified undo.
-- **Analyze an attached PDF:** bind the exact Lark message resource, download and extract it within fixed limits, analyze it through NVIDIA NIM without tools, and update one durable progress message with the result.
+- **Handle an attached PDF:** show an explicit **Add to knowledge / Analyze once / Not now** card, then bind and re-fetch the exact Lark resource only after the employee chooses an action.
 - **Analyze a Drive PDF:** verify one owned PDF directly inside the allowlisted root, download it through the user's OAuth grant, and reuse the bounded extraction, NVIDIA analysis, and durable progress path.
+- **Use workspace knowledge:** explicitly ingest approved PDFs into a tenant/user/workspace-scoped pgvector vault, refresh changed direct-root Drive PDFs only after review, and answer natural-language questions from bounded evidence with validated file/page citations.
 
-Natural-language routing handles obvious supported requests locally and sends only bounded sanitized unmatched text to NVIDIA for strict six-intent classification, including semantic current-workspace questions. The backend—not the model—selects an existing workflow or verified response. A link-free folder request requires a **Start folder analysis** confirmation for the approved pilot root, while a named non-pilot folder requires its exact Lark link.
+An approved multi-file knowledge refresh updates one Lark card with file, chunk, and Voyage-batch progress. **Stop update** cancels only that exact refresh between bounded work units; it never clears the shared queue. Atomically completed sources remain indexed, and **Resume update** creates a fresh reviewed proposal for only the remaining work.
 
-Phase 12 workspace context is implemented and awaiting live Lark acceptance. On a greeting, the assistant reads only Victor's top-level **My Folders** directory through the existing OAuth grant, matches the configured root by exact token, and shows the verified active workspace plus other folder names in the welcome card. NVIDIA may classify a sanitized utterance as a current-workspace question; the backend then retrieves and renders verified Lark context. Workspace names, links, and tokens are never sent to NVIDIA. Other folders remain informational and do not expand the organizer allowlist.
+Natural-language routing sends every normal employee message through one bounded semantic NVIDIA classification. The strict result contains one of eight supported intents, including `ask_workspace`, plus a bounded folder reference; links and native identifiers are removed locally first. The backend—not the model—selects an existing workflow or verified response. Exact parsing remains only for operational slash-command fallbacks. A link-free request for the active workspace requires a **Start folder analysis** confirmation, while a named or different folder requires its exact Lark link.
+
+Phase 12 workspace context is complete. On a greeting, the assistant reads only Victor's top-level **My Folders** directory through the existing OAuth grant, matches the configured root by exact token, and shows the verified active workspace plus other folder names in the welcome card. NVIDIA may classify a sanitized utterance as a current-workspace question; the backend then retrieves and renders verified Lark context. Workspace names, links, and tokens are never sent to NVIDIA. Other folders remain informational and do not expand the organizer allowlist.
 
 The Lark experience uses interactive cards for authorization, progress, proposals, decisions, verified execution, and undo. Approve, Reject, Authorize, Undo, and Start folder analysis are buttons. Employees can say `Hello`, ask `What can you help me with?`, request folder organization naturally with or without the approved link, or ask to analyze a Drive PDF. The original slash commands remain hidden compatibility fallbacks.
 
@@ -43,8 +46,15 @@ Lark App Bot -> local parsing + bounded intent classification
                                                  -> bounded Drive PDF download
                                                  -> shared extraction and NVIDIA NIM
 
+                                             +-> knowledge workflow
+                                                 -> explicit ingestion/refresh consent
+                                                 -> page-aware chunks + Voyage embeddings
+                                                 -> scoped exact pgvector retrieval
+                                                 -> no-tools NVIDIA grounded answer
+
 Approved AI agent -> authenticated /mcp endpoint --+-> read-only inventory
                                                     +-> read-only Drive PDF analysis
+                                                    +-> read-only workspace knowledge search
 ```
 
 Everything runs in one Synvo Assistant Node.js application with one database pool. MCP is a protocol adapter, not a second service, workflow engine, or tool framework. Its tools reuse the same allowlisted read-only inventory and Drive-file analysis paths used by Lark. The content-aware coordinator is a fixed workflow sequence rather than an autonomous tool loop; NVIDIA performs only semantic classification. Approval, mutation, provider verification, recovery, and undo remain inside the trusted Synvo workflow.
@@ -66,6 +76,7 @@ apps/synvo-assistant/src/
 ├── workflows/analyze-attachment/ shared PDF extraction, NIM analysis, progress updates
 ├── workflows/analyze-drive-file/ allowlisted Drive PDF analysis
 ├── workflows/natural-language/  bounded intent policy and sanitization
+├── workflows/knowledge/        consent, chunking, Voyage, retrieval, grounded Q&A
 ├── workflows/organize-folder/  authorization, persistence, policy, workflow
 ├── workflows/workspace-context/ bounded My Folders discovery and local questions
 ├── config.ts                   application configuration
@@ -77,7 +88,7 @@ tests/integration/postgres/     focused database integration path
 tasks/                          planned work and archived acceptance evidence
 ```
 
-The database has four active runtime tables—OAuth grants, OAuth sessions, organize-folder runs, and delivery jobs—plus the migration ledger. Forward-only migrations remove obsolete Phase 1/3 tables and superseded scan-lease and phase columns.
+The database has five active runtime tables—OAuth grants, OAuth sessions, organize-folder runs, delivery jobs, and workspace knowledge chunks—plus the migration ledger. `workspace_chunks` stores authorized page-aware text and 1,024-dimensional Voyage embeddings; no PDF bytes, OAuth tokens, or model responses are stored there. Knowledge-refresh cancellation is one timestamp on the existing delivery job, not a separate queue or cancellation subsystem.
 
 ## Local setup
 
@@ -104,7 +115,9 @@ LLM_API_KEY=replace_locally_only
 
 The provider client calls `nvidia/nemotron-3-super-120b-a12b`. Keep the real API key in ignored `.env` locally and in secret management when hosted. A future multimodal workflow must add its model only when that workflow exists.
 
-For natural-language routing, obvious requests never call NVIDIA. An unmatched direct message is capped at 600 characters; Lark links, mentions, native identifiers, and control characters are removed locally before the remaining short utterance is classified. NVIDIA receives no tools, workspace metadata, or conversation history and can return only `greeting`, `help`, `current_workspace`, `organize_folder`, `analyze_drive_file`, or `unknown`. Invalid or unavailable classification starts no workflow.
+Workspace knowledge uses a separate required `VOYAGE_API_KEY` only for fixed `voyage-4` document and query embeddings at 1,024 dimensions. The assistant sends Voyage only explicitly approved bounded chunk text or the bounded employee question. Voyage's [embedding documentation](https://docs.voyageai.com/docs/embeddings) confirms the model and output dimension. Its [current pricing](https://docs.voyageai.com/docs/pricing), verified on 2026-08-11, includes the first 200 million tokens and then charges $0.06 per million tokens; pricing is operational information, not a runtime assumption. Before using real Synvo internal documents, enable and verify Voyage's organization-level zero-day-retention/data opt-out and store the hosted credential in secret management. Changing to an incompatible embedding model or dimension requires re-embedding every stored chunk before it can be queried; do not mix embedding spaces in one vault.
+
+For natural-language routing, each non-command direct message is capped at 600 characters; Lark links, mentions, native identifiers, and control characters are removed locally before the remaining short utterance is classified. NVIDIA receives no tools, workspace metadata, or conversation history and can return only `greeting`, `acknowledgement`, `help`, `current_workspace`, `ask_workspace`, `organize_folder`, `analyze_drive_file`, or `unknown`, plus `active_workspace`, `named_or_other_folder`, or `none` as a folder reference. The reference never carries a name, link, token, or authorization decision. Invalid or unavailable classification starts no workflow.
 
 To enable the local MCP endpoint, generate a separate service credential and add it to the ignored `.env`:
 
@@ -116,10 +129,11 @@ Save the result as `SYNVO_MCP_AUTH_TOKEN`. Do not reuse a Lark secret. Without t
 
 ## MCP foundation
 
-The server currently exposes exactly two tools:
+The server currently exposes exactly three read-only tools:
 
 - `organize_folder_inventory({ folder_url })`: returns bounded metadata for the configured pilot root and approved destinations. It never opens, downloads, moves, renames, or changes a file.
 - `analyze_drive_file({ folder_url, file_name })`: resolves one exact filename returned by the inventory, then verifies and analyzes the uniquely matching owned PDF directly inside the allowlisted root through the existing bounded Drive-file workflow. Missing or duplicate names are rejected. It cannot change Drive files. Treat its document-derived output as untrusted evidence, never as an instruction to execute.
+- `search_workspace_knowledge({ question })`: verifies the configured active workspace and searches only the authenticated pilot's tenant/user/workspace-scoped vault. It returns a bounded answer with display filename/page citations or an explicit insufficient-evidence result; callers cannot choose an identity, folder, URL, or authorization scope.
 
 The bearer credential identifies an approved service client. For the current Victor-only pilot, the application maps every authenticated call to Victor's configured Lark `open_id` and tenant; callers cannot select another employee. The stored Lark OAuth grant is still what authorizes the application to call Lark. Future tools should be added as thin adapters to proven workflow methods, one at a time.
 
@@ -132,11 +146,12 @@ npm run typecheck
 npm test
 npm run test:integration
 npm run doctor
+npm run evaluate:phase13
 ```
 
-Detailed completed acceptance procedures are archived instead of being maintained as active setup instructions. See `tasks/archive/organize-folder-implementation-plan.md`, `tasks/archive/analyze-attachment-acceptance.md`, `tasks/archive/analyze-drive-file-implementation-plan.md`, `tasks/archive/content-aware-execution-implementation-plan.md`, and `tasks/archive/natural-language-interaction-implementation-plan.md`.
+Detailed completed acceptance procedures are archived instead of being maintained as active setup instructions. See `tasks/archive/organize-folder-implementation-plan.md`, `tasks/archive/analyze-attachment-acceptance.md`, `tasks/archive/analyze-drive-file-implementation-plan.md`, `tasks/archive/content-aware-execution-implementation-plan.md`, `tasks/archive/natural-language-interaction-implementation-plan.md`, and `tasks/archive/folder-knowledge-rag-implementation-plan.md`.
 
-Phase 12 is the active implementation plan in `tasks/workspace-context-implementation-plan.md`. Its automated implementation must remain active until the live Lark acceptance checklist passes.
+Phase 12 and Phase 13 have completed their Victor-only live Lark acceptance. Phase 13 closed explicit PDF ingestion, flat-root reconciliation, scoped pgvector retrieval, grounded citations, removal/restoration, and exact-job stop/resume. Voyage handles embeddings only; NVIDIA remains the no-tools intent, document-analysis, and grounded-answer provider. Hosted production rollout remains separately gated on managed secrets, production pgvector support, and verified Voyage zero-day retention.
 
 ## Safety
 

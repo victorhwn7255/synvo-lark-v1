@@ -74,6 +74,44 @@ export function buildAssistantHelpCard(): InteractiveCard {
   };
 }
 
+export function buildAssistantAcknowledgementCard(): InteractiveCard {
+  return buildNoticeCard(
+    "You’re welcome — I’m here whenever you’re ready.",
+    "Anytime 👋",
+  );
+}
+
+export function buildAssistantWorkingCard(
+  loadingImageKey?: string,
+): InteractiveCard {
+  return {
+    config: cardConfig(),
+    header: {
+      template: "blue",
+      title: { tag: "plain_text", content: "Working on your request…" },
+    },
+    elements: [
+      {
+        tag: "div",
+        text: {
+          tag: "plain_text",
+          content: "I’m understanding what you need and choosing the right next step.",
+        },
+        extra: loaderExtra(loadingImageKey),
+      },
+      {
+        tag: "note",
+        elements: [
+          {
+            tag: "plain_text",
+            content: "I’ll update this card as soon as I’m ready.",
+          },
+        ],
+      },
+    ],
+  };
+}
+
 export function buildAssistantClarificationCard(): InteractiveCard {
   return {
     config: cardConfig(),
@@ -160,13 +198,7 @@ function workspaceElements(
       tag: "div",
       text: {
         tag: "lark_md",
-        content: [
-          "**Current workspace**",
-          `We’re currently working in 📁 My Folders / **${sanitizeDisplayValue(workspace.activeWorkspaceName, "[unnamed workspace]")}**.`,
-          "",
-          "**Other folders in My Folders**",
-          others,
-        ].join("\n"),
+        content: `**Current workspace:** 📁 My Folders / **${sanitizeDisplayValue(workspace.activeWorkspaceName, "[unnamed workspace]")}**.`,
       },
     },
     {
@@ -177,6 +209,21 @@ function workspaceElements(
           type: "primary",
           text: { tag: "plain_text", content: "Open workspace" },
           url: workspace.workspaceUrl.toString(),
+        },
+        {
+          tag: "button",
+          type: "primary",
+          text: { tag: "plain_text", content: "Refresh workspace knowledge" },
+          value: { knowledge_action: "refresh_propose" },
+        },
+      ],
+    },
+    {
+      tag: "note",
+      elements: [
+        {
+          tag: "lark_md",
+          content: `Other folders in My Folders\n${others}`,
         },
       ],
     },
@@ -190,6 +237,9 @@ export function buildAssistantOnlineCard(
   const greeting = firstName
     ? `Welcome to Synvo AI, ${firstName} 👋`
     : "Welcome to Synvo AI 👋";
+  const [workspaceSummary, workspaceActions, otherFolders] = workspace
+    ? workspaceElements(workspace)
+    : [];
   return {
     config: cardConfig(),
     header: {
@@ -201,35 +251,35 @@ export function buildAssistantOnlineCard(
         tag: "div",
         text: {
           tag: "lark_md",
-          content: [
-            "**Your AI work assistant is connected and ready.**",
-            "",
-            "Here are a few things I can do for you:",
-          ].join("\n"),
+          content: "**Your AI work assistant is connected and ready.**",
         },
       },
-      ...(workspace ? [{ tag: "hr" as const }, ...workspaceElements(workspace)] : []),
+      ...(workspaceSummary && workspaceActions
+        ? [{ tag: "hr" as const }, workspaceSummary, workspaceActions]
+        : []),
       { tag: "hr" },
       {
         tag: "div",
         text: {
           tag: "lark_md",
           content: [
+            "Here are a few things I can do for you:",
             "📄 **Analyze a File**",
             "🗂️ **Organize a Folder**",
-          ].join("\n\n"),
+          ].join("\n"),
         },
       },
       {
         tag: "note",
         elements: [
           {
-            tag: "plain_text",
+            tag: "lark_md",
             content:
-              "You stay in control — I’ll always ask before moving or changing files.",
+              "**On the roadmap:** Nested-folder and multi-format knowledge · Lark Docs and Wiki · Engineering workflows",
           },
         ],
       },
+      ...(otherFolders ? [{ tag: "hr" as const }, otherFolders] : []),
     ],
   };
 }
@@ -341,7 +391,7 @@ const ANALYSIS_PROGRESS = new Map<string, { title: string; detail: string }>([
     "Analyzing the extracted text…",
     {
       title: "Finding the key insights…",
-      detail: "Synvo AI is summarizing the document and preparing a useful response.",
+      detail: "Just a minute, I am working hard to analyze the document and preparing a useful response.",
     },
   ],
 ]);

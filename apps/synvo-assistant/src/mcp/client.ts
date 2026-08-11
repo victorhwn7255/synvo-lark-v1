@@ -10,6 +10,7 @@ import type { DriveFolderInventoryResult } from "../workflows/organize-folder/co
 const EXPECTED_TOOLS = [
   "analyze_drive_file",
   "organize_folder_inventory",
+  "search_workspace_knowledge",
 ] as const;
 const MCP_INVENTORY_TIMEOUT_MS = 60_000;
 const MCP_ANALYSIS_TIMEOUT_MS = 4 * 60_000;
@@ -79,6 +80,16 @@ const analysisResultSchema = z.discriminatedUnion("ok", [
     error: z.object(safeErrorFields).strict(),
   }).strict(),
 ]);
+const knowledgeAnswerSchema = z.object({
+  supported: z.boolean(),
+  answer: z.string(),
+  citations: z.array(
+    z.object({
+      sourceName: z.string(),
+      pageNumber: z.number().int().positive(),
+    }).strict(),
+  ),
+}).strict();
 
 export class SynvoMcpClientError extends Error {
   constructor(message: string) {
@@ -166,6 +177,20 @@ export class SynvoMcpClient {
       analysisResultSchema,
       result.structuredContent,
     ) as AnalyzeDriveFileResult;
+  }
+
+  async searchKnowledge(question: string) {
+    const result = await this.#callTool(
+      {
+        name: "search_workspace_knowledge",
+        arguments: { question },
+      },
+      MCP_ANALYSIS_TIMEOUT_MS,
+    );
+    return this.#parseResult(
+      knowledgeAnswerSchema,
+      result.structuredContent,
+    );
   }
 
   #requiredClient(): Client {

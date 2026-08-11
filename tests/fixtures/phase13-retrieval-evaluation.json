@@ -1,0 +1,305 @@
+{
+  "version": 1,
+  "purpose": "Human-labeled retrieval and citation baseline for the disposable Phase 13 PDF corpus.",
+  "corpusRoot": "docs/pdf",
+  "notes": [
+    "Expected pages were verified against the generated PDFs, not inferred from the Markdown sources.",
+    "The fixture contains no credentials, Lark identifiers, private production data, or provider output.",
+    "Use the same chunking policy and top-K for every embedding-model comparison."
+  ],
+  "cases": [
+    {
+      "id": "company-pillars",
+      "question": "What are the three pillars of Synvo AI's Contextualization Engine?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "Synvo-AI-company-overview.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "Contextual Intelligence",
+        "On-Device Execution",
+        "Persistent Memory"
+      ]
+    },
+    {
+      "id": "local-cocoa-stack",
+      "question": "Which technologies make up the Local Cocoa application stack?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "Synvo-AI-company-overview.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "Electron, React, and TypeScript frontend",
+        "FastAPI backend",
+        "llama.cpp",
+        "Qdrant"
+      ]
+    },
+    {
+      "id": "company-partners-paraphrase",
+      "question": "Which external programs and organizations publicly support or partner with Synvo?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "Synvo-AI-company-overview.pdf", "page": 2 }
+      ],
+      "expectedAnswerFacts": [
+        "FV Asia",
+        "Capitalis",
+        "HP Garage",
+        "NVIDIA Inception Program",
+        "AWS Activate",
+        "MMLab at NTU",
+        "NTUitive"
+      ]
+    },
+    {
+      "id": "prd-library-goal",
+      "question": "What library size and first-token latency does Cocoa Assistant 2.0 target?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "cocoa-product-requirements.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "up to 50,000 documents",
+        "under 2 seconds"
+      ]
+    },
+    {
+      "id": "prd-weak-evidence",
+      "question": "How should Cocoa Assistant respond when retrieved evidence is weak?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "cocoa-product-requirements.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "say it does not know rather than guess",
+        "cite the source document and page"
+      ]
+    },
+    {
+      "id": "team-space-access",
+      "question": "Where is a team space hosted and how is access controlled?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "cocoa-product-requirements.pdf", "page": 2 }
+      ],
+      "expectedAnswerFacts": [
+        "one designated machine inside the customer's network",
+        "customer's existing directory groups"
+      ]
+    },
+    {
+      "id": "project-amber-reason",
+      "question": "Why is Cocoa Engine v2 currently marked amber?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "project-status-cocoa-engine-v2.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "incremental indexing is two weeks behind",
+        "corruption edge case during power-loss testing"
+      ]
+    },
+    {
+      "id": "project-throughput",
+      "question": "How fast did the new indexing pipeline run on the reference laptop?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "project-status-cocoa-engine-v2.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "280 pages per minute",
+        "ahead of the 250 target"
+      ]
+    },
+    {
+      "id": "project-beta-decision",
+      "question": "What does the project team recommend doing about the Cocoa Engine v2 beta date?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "project-status-cocoa-engine-v2.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "move the beta date from August 18 to September 1",
+        "power-loss recovery is a trust feature"
+      ]
+    },
+    {
+      "id": "onboarding-day-one",
+      "question": "What security-related tasks must a new employee complete on day one?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "employee-onboarding-guide.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "complete disk-encryption setup",
+        "read the security basics",
+        "complete data handling and phishing awareness training"
+      ]
+    },
+    {
+      "id": "onboarding-product-help",
+      "question": "Who should a new joiner ask first about a product question?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "employee-onboarding-guide.pdf", "page": 2 }
+      ],
+      "expectedAnswerFacts": [
+        "their buddy first",
+        "then the product channel"
+      ]
+    },
+    {
+      "id": "security-external-ai",
+      "question": "May customer documents be uploaded to an external AI service?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "it-security-baseline.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "No",
+        "customer documents are never copied to external AI services"
+      ]
+    },
+    {
+      "id": "security-secrets",
+      "question": "Where must company secrets and API keys be stored?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "it-security-baseline.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "secrets manager",
+        "never in chat, code, tickets, or documents"
+      ]
+    },
+    {
+      "id": "security-incident-writeup",
+      "question": "How quickly should the blameless incident write-up be completed?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "it-security-baseline.pdf", "page": 2 }
+      ],
+      "expectedAnswerFacts": [
+        "within five working days"
+      ]
+    },
+    {
+      "id": "expense-mid-threshold",
+      "question": "What approval is required before spending SGD 750?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "expense-reimbursement-policy.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "manager approval required before spending"
+      ]
+    },
+    {
+      "id": "expense-travel-limits",
+      "question": "What are the hotel limits for business travel?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "expense-reimbursement-policy.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "SGD 250 per night in the region",
+        "SGD 350 elsewhere"
+      ]
+    },
+    {
+      "id": "finance-runway",
+      "question": "What was Synvo's Q2 cash position and estimated runway at the reported burn rate?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "finance-q2-2026-summary.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "SGD 3.1 million",
+        "approximately 33 months"
+      ]
+    },
+    {
+      "id": "roadmap-deferred-modalities",
+      "question": "Which content types were deliberately deferred until the document experience improves?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "product-roadmap-2026H2.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "audio and video ingestion"
+      ]
+    },
+    {
+      "id": "marketing-budget",
+      "question": "What is the Cocoa Assistant 2.0 launch budget and how much is capped for paid spend?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "marketing-launch-brief-cocoa-2.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "SGD 38,000 total",
+        "SGD 12,000 paid-spend cap"
+      ]
+    },
+    {
+      "id": "marketing-legal-risk",
+      "question": "Which launch asset has the highest legal risk and when does review begin?",
+      "answerability": "answerable",
+      "expectedEvidence": [
+        { "file": "marketing-launch-brief-cocoa-2.pdf", "page": 2 }
+      ],
+      "expectedAnswerFacts": [
+        "comparison page",
+        "three weeks before launch"
+      ]
+    },
+    {
+      "id": "cross-doc-cloud-costs",
+      "question": "Why did cloud and evaluation costs exceed plan, and what action is proposed?",
+      "answerability": "answerable",
+      "minimumEvidenceMatches": 2,
+      "expectedEvidence": [
+        { "file": "project-status-cocoa-engine-v2.pdf", "page": 1 },
+        { "file": "finance-q2-2026-summary.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "additional or extended soak testing",
+        "move evaluation workloads to reserved instances",
+        "expected saving of SGD 4,000 per month"
+      ]
+    },
+    {
+      "id": "cross-doc-trusted-actions",
+      "question": "How do the product materials protect users from unsupported answers and unauthorized file actions?",
+      "answerability": "answerable",
+      "minimumEvidenceMatches": 2,
+      "expectedEvidence": [
+        { "file": "cocoa-product-requirements.pdf", "page": 1 },
+        { "file": "product-roadmap-2026H2.pdf", "page": 1 },
+        { "file": "marketing-launch-brief-cocoa-2.pdf", "page": 1 },
+        { "file": "competitive-landscape-review.pdf", "page": 1 }
+      ],
+      "expectedAnswerFacts": [
+        "answers cite source pages",
+        "weak evidence produces an honest limitation",
+        "file actions require approval",
+        "actions are auditable or reversible"
+      ]
+    },
+    {
+      "id": "unsupported-current-ceo",
+      "question": "Who is Synvo AI's current chief executive officer?",
+      "answerability": "insufficient_evidence",
+      "expectedEvidence": [],
+      "expectedAnswerFacts": []
+    },
+    {
+      "id": "unsupported-2027-revenue",
+      "question": "What is Synvo's approved revenue target for calendar year 2027?",
+      "answerability": "insufficient_evidence",
+      "expectedEvidence": [],
+      "expectedAnswerFacts": []
+    }
+  ]
+}

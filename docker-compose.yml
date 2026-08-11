@@ -1,6 +1,8 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # PostgreSQL 16 plus the pgvector extension required by Phase 13.
+    # Pin the extension version so local migrations are reproducible.
+    image: pgvector/pgvector:0.8.2-pg16-bookworm
     environment:
       POSTGRES_DB: synvo_assistant
       POSTGRES_USER: synvo_assistant

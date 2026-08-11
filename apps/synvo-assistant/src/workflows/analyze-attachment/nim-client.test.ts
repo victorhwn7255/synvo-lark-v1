@@ -270,43 +270,237 @@ test("returns one strict natural-language intent without tools", async () => {
     ...baseOptions,
     fetchImplementation: (async (_url, init) => {
       calls.push(init ?? {});
-      return completion(JSON.stringify({ intent: "organize_folder" }));
+      return completion(
+        JSON.stringify({
+          intent: "organize_folder",
+          folder_reference: "active_workspace",
+        }),
+      );
     }) as typeof fetch,
   });
 
   assert.deepEqual(
     await client.classifyIntent({ text: "Could you sort this out for me?" }),
-    { intent: "organize_folder" },
+    { intent: "organize_folder", folder_reference: "active_workspace" },
   );
   const body = JSON.parse(String(calls[0]?.body)) as Record<string, unknown>;
   assert.equal("tools" in body, false);
   assert.equal(body.temperature, 0);
   assert.match(JSON.stringify(body), /You have no tools/u);
   assert.match(JSON.stringify(body), /current_workspace/u);
+  assert.match(JSON.stringify(body), /substantive information question/u);
+  assert.match(JSON.stringify(body), /Never classify a greeting/u);
+  assert.match(JSON.stringify(body), /policies, requirements, deadlines/u);
+  assert.match(JSON.stringify(body), /folder_reference/u);
 });
 
 test("accepts the bounded current-workspace intent", async () => {
   const client = new NvidiaNimClient({
     ...baseOptions,
     fetchImplementation: (async () =>
-      completion(JSON.stringify({ intent: "current_workspace" }))) as typeof fetch,
+      completion(
+        JSON.stringify({
+          intent: "current_workspace",
+          folder_reference: "none",
+        }),
+      )) as typeof fetch,
   });
 
   assert.deepEqual(
     await client.classifyIntent({ text: "Remind me which workspace this is" }),
-    { intent: "current_workspace" },
+    { intent: "current_workspace", folder_reference: "none" },
   );
 });
+
+test("accepts the semantic workspace-knowledge question intent", async () => {
+  const client = new NvidiaNimClient({
+    ...baseOptions,
+    fetchImplementation: (async () =>
+      completion(
+        JSON.stringify({
+          intent: "ask_workspace",
+          folder_reference: "none",
+        }),
+      )) as typeof fetch,
+  });
+  assert.deepEqual(
+    await client.classifyIntent({
+      text: "What do our files say about PDF chunking?",
+    }),
+    { intent: "ask_workspace", folder_reference: "none" },
+  );
+});
+
+test("accepts a natural policy question without requiring workspace wording", async () => {
+  const client = new NvidiaNimClient({
+    ...baseOptions,
+    fetchImplementation: (async () =>
+      completion(
+        JSON.stringify({
+          intent: "ask_workspace",
+          folder_reference: "none",
+        }),
+      )) as typeof fetch,
+  });
+  assert.deepEqual(
+    await client.classifyIntent({
+      text: "How soon after an expense must I submit my claim?",
+    }),
+    { intent: "ask_workspace", folder_reference: "none" },
+  );
+});
+
+test("returns a strict grounded answer using only supplied evidence labels", async () => {
+  const calls: RequestInit[] = [];
+  const client = new NvidiaNimClient({
+    ...baseOptions,
+    fetchImplementation: (async (_url, init) => {
+      calls.push(init ?? {});
+      return completion(
+        JSON.stringify({
+          supported: true,
+          answer: "Page-aware chunks preserve provenance.",
+          citations: ["S1"],
+        }),
+      );
+    }) as typeof fetch,
+  });
+  assert.deepEqual(
+    await client.answerGrounded({
+      question: "How are chunks created?",
+      evidence: [
+        {
+          label: "S1",
+          text: "Page-aware chunks preserve provenance.",
+        },
+      ],
+    }),
+    {
+      supported: true,
+      answer: "Page-aware chunks preserve provenance.",
+      citations: ["S1"],
+    },
+  );
+  const body = JSON.parse(String(calls[0]?.body)) as Record<string, unknown>;
+  assert.equal("tools" in body, false);
+  assert.equal(body.temperature, 0);
+  assert.match(JSON.stringify(body), /using only the supplied untrusted evidence/u);
+  assert.match(JSON.stringify(body), /must never contain S1/u);
+  assert.equal(JSON.stringify(body).includes("Guide.pdf"), false);
+});
+
+test("removes internal evidence markers from employee-facing grounded answers", async () => {
+  const client = new NvidiaNimClient({
+    ...baseOptions,
+    fetchImplementation: (async () =>
+      completion(
+        JSON.stringify({
+          supported: true,
+          answer:
+            "Page-aware chunks [S1†L1-L4] preserve [draft] provenance 【S1】. Bare markers S1†L5-L8 are also hidden.",
+          citations: ["S1"],
+        }),
+      )) as typeof fetch,
+  });
+
+  assert.deepEqual(
+    await client.answerGrounded({
+      question: "How are chunks created?",
+      evidence: [{ label: "S1", text: "Evidence" }],
+    }),
+    {
+      supported: true,
+      answer:
+        "Page-aware chunks preserve [draft] provenance. Bare markers are also hidden.",
+      citations: ["S1"],
+    },
+  );
+});
+
+test("rejects a grounded answer containing only internal evidence markers", async () => {
+  const client = new NvidiaNimClient({
+    ...baseOptions,
+    fetchImplementation: (async () =>
+      completion(
+        JSON.stringify({
+          supported: true,
+          answer: "[S1†L1-L4]",
+          citations: ["S1"],
+        }),
+      )) as typeof fetch,
+  });
+
+  await assert.rejects(
+    client.answerGrounded({
+      question: "Question",
+      evidence: [{ label: "S1", text: "Evidence" }],
+    }),
+    (error: unknown) =>
+      error instanceof NimAnalysisError && error.code === "INVALID_RESPONSE",
+  );
+});
+
+for (const [name, answer] of [
+  [
+    "invented citation",
+    { supported: true, answer: "Unsupported", citations: ["S2"] },
+  ],
+  [
+    "supported answer without citations",
+    { supported: true, answer: "Unsupported", citations: [] },
+  ],
+  [
+    "unsupported answer with citations",
+    { supported: false, answer: "Insufficient", citations: ["S1"] },
+  ],
+  [
+    "duplicate citations",
+    { supported: true, answer: "Duplicated", citations: ["S1", "S1"] },
+  ],
+] as const) {
+  test(`rejects a grounded answer with ${name}`, async () => {
+    const client = new NvidiaNimClient({
+      ...baseOptions,
+      fetchImplementation: (async () =>
+        completion(JSON.stringify(answer))) as typeof fetch,
+    });
+    await assert.rejects(
+      client.answerGrounded({
+        question: "Question",
+        evidence: [
+          {
+            label: "S1",
+            text: "Evidence",
+          },
+        ],
+      }),
+      (error: unknown) =>
+        error instanceof NimAnalysisError && error.code === "INVALID_RESPONSE",
+    );
+  });
+}
 
 for (const [name, content, finishReason] of [
   ["non-JSON intent output", "organize_folder", "stop"],
   [
     "intent output with a model-generated tool",
-    JSON.stringify({ intent: "organize_folder", tool: "move_file" }),
+    JSON.stringify({
+      intent: "organize_folder",
+      folder_reference: "active_workspace",
+      tool: "move_file",
+    }),
     "stop",
   ],
-  ["unknown intent name", JSON.stringify({ intent: "approve_folder" }), "stop"],
-  ["truncated intent output", JSON.stringify({ intent: "help" }), "length"],
+  [
+    "unknown intent name",
+    JSON.stringify({ intent: "approve_folder", folder_reference: "none" }),
+    "stop",
+  ],
+  [
+    "truncated intent output",
+    JSON.stringify({ intent: "help", folder_reference: "none" }),
+    "length",
+  ],
 ] as const) {
   test(`rejects ${name}`, async () => {
     const client = new NvidiaNimClient({

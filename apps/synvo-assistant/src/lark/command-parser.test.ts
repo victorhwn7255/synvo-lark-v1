@@ -18,16 +18,6 @@ test("parses one organize-folder link", () => {
         "https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123",
     },
   );
-  assert.deepEqual(
-    parseCommand(
-      "organize this folder https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123",
-    ),
-    {
-      type: "organize-folder",
-      folderLink:
-        "https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123",
-    },
-  );
 });
 
 test("rejects missing or extra organize-folder arguments", () => {
@@ -46,12 +36,20 @@ test("parses one analyze-file link", () => {
       fileLink: "https://synvo-ai.larksuite.com/file/boxcnPdf123",
     },
   );
+});
+
+test("leaves ordinary employee language for semantic routing", () => {
   assert.deepEqual(
-    parseCommand("analyze this file https://synvo-ai.larksuite.com/file/boxcnPdf123"),
-    {
-      type: "analyze-file",
-      fileLink: "https://synvo-ai.larksuite.com/file/boxcnPdf123",
-    },
+    parseCommand(
+      "organize this folder https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123",
+    ),
+    { type: "unknown" },
+  );
+  assert.deepEqual(
+    parseCommand(
+      "analyze this file https://synvo-ai.larksuite.com/file/boxcnPdf123",
+    ),
+    { type: "unknown" },
   );
 });
 

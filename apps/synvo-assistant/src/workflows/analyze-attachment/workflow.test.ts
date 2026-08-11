@@ -25,6 +25,8 @@ class FakeQueue implements DeliveryQueue {
   async complete(): Promise<boolean> { return true; }
   async retry(): Promise<boolean> { return true; }
   async fail(): Promise<boolean> { return true; }
+  async requestCancellation() { return "terminal" as const; }
+  async isCancellationRequested() { return false; }
 }
 
 class FakeMessenger implements AttachmentProgressMessenger {
@@ -59,7 +61,12 @@ function createWorkflow(options: {
   messenger?: FakeMessenger;
   downloadPdf?: () => Promise<{ filename: string; bytes: Buffer }>;
   analyze?: (input: { filename: string; text: string }) => Promise<{ text: string; truncated: boolean }>;
-  extractPdf?: () => Promise<{ text: string; pageCount: number; truncated: boolean }>;
+  extractPdf?: () => Promise<{
+    text: string;
+    pageCount: number;
+    truncated: boolean;
+    pages: Array<{ pageNumber: number; text: string }>;
+  }>;
 } = {}) {
   const queue = options.queue ?? new FakeQueue();
   const messenger = options.messenger ?? new FakeMessenger();
@@ -82,6 +89,7 @@ function createWorkflow(options: {
         text: "bounded extracted text",
         pageCount: 3,
         truncated: false,
+        pages: [{ pageNumber: 1, text: "bounded extracted text" }],
       })),
       nimClient: {
         analyze: options.analyze ?? (async () => ({
@@ -142,7 +150,12 @@ test("restart recovery reuses the stored progress message", async () => {
 
 test("reports extraction and model truncation as limitations", async () => {
   const { workflow, messenger } = createWorkflow({
-    extractPdf: async () => ({ text: "text", pageCount: 2, truncated: true }),
+    extractPdf: async () => ({
+      text: "text",
+      pageCount: 2,
+      truncated: true,
+      pages: [{ pageNumber: 1, text: "text" }],
+    }),
     analyze: async () => ({ text: "result", truncated: true }),
   });
   await workflow.process(attachmentJob(), "om_existing", async () => true);

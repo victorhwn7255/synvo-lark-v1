@@ -50,6 +50,8 @@ test("extracts text and page count from a valid PDF", async () => {
   assert.match(result.text, /Hello Synvo/u);
   assert.match(result.text, /Second page/u);
   assert.equal(result.truncated, false);
+  assert.deepEqual(result.pages.map((page) => page.pageNumber), [1, 2]);
+  assert.match(result.pages[1]?.text ?? "", /Second page/u);
 });
 
 test("rejects invalid and empty PDFs safely", async () => {

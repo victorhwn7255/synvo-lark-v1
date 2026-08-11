@@ -54,6 +54,11 @@ const analysisResult: AnalyzeDriveFileResult = {
     output_truncated: false,
   },
 };
+const knowledgeResult = {
+  supported: true,
+  answer: "The workspace uses bounded retrieval.",
+  citations: [{ sourceName: "document-01.pdf", pageNumber: 2 }],
+};
 
 async function withServer(
   run: (url: URL) => Promise<void>,
@@ -70,6 +75,9 @@ async function withServer(
     },
     driveFileAnalyzer: {
       async analyzeListedFile() { return analysisResult; },
+    },
+    knowledgeSearcher: {
+      async searchWorkspace() { return knowledgeResult; },
     },
   });
   const server = createServer((request, response) => {
@@ -88,7 +96,7 @@ async function withServer(
   }
 }
 
-test("calls the two exact read-only tools through the production MCP client", async () => {
+test("calls the three exact read-only tools through the production MCP client", async () => {
   await withServer(async (url) => {
     const client = new SynvoMcpClient({ url, authToken });
     try {
@@ -97,6 +105,10 @@ test("calls the two exact read-only tools through the production MCP client", as
       assert.deepEqual(
         await client.analyze(folderUrl, "document-01.pdf"),
         analysisResult,
+      );
+      assert.deepEqual(
+        await client.searchKnowledge("How does retrieval work?"),
+        knowledgeResult,
       );
     } finally {
       await client.close();

@@ -2,15 +2,49 @@ import { z } from "zod";
 
 const MAX_INTENT_INPUT_CODE_POINTS = 600;
 
+const GREETING_WORDS = new Set([
+  "afternoon",
+  "assistant",
+  "evening",
+  "everyone",
+  "good",
+  "greetings",
+  "hello",
+  "hey",
+  "hi",
+  "howdy",
+  "morning",
+  "synvo",
+  "team",
+  "there",
+]);
+const GREETING_SIGNALS = new Set([
+  "afternoon",
+  "evening",
+  "greetings",
+  "hello",
+  "hey",
+  "hi",
+  "howdy",
+  "morning",
+]);
+
 export const naturalLanguageIntentSchema = z
   .object({
     intent: z.enum([
       "greeting",
+      "acknowledgement",
       "help",
       "current_workspace",
+      "ask_workspace",
       "organize_folder",
       "analyze_drive_file",
       "unknown",
+    ]),
+    folder_reference: z.enum([
+      "active_workspace",
+      "named_or_other_folder",
+      "none",
     ]),
   })
   .strict();
@@ -21,7 +55,7 @@ export type NaturalLanguageIntent = z.infer<
 
 export type NaturalLanguageUnderstanding = NaturalLanguageIntent & {
   links: string[];
-  canConfirmApprovedRoot: boolean;
+  sanitizedText: string;
 };
 
 type IntentClassifier = {
@@ -36,64 +70,6 @@ const OPAQUE_IDENTIFIER =
   /\b(?=[A-Za-z0-9_-]{20,}\b)(?=[A-Za-z0-9_-]*[A-Z])(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]+\b/gu;
 const UUID =
   /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/giu;
-
-function deterministicIntent(text: string): NaturalLanguageIntent | null {
-  const normalized = text
-    .toLocaleLowerCase("en")
-    .replace(/[^\p{L}\p{N}\s']/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-
-  const asksToOrganize =
-    /\b(?:organize|organise|tidy|sort|clean up)\b/u.test(normalized) &&
-    /\b(?:folder|files?)\b/u.test(normalized);
-  const describesMessyFolder =
-    /\b(?:folder|files?)\b/u.test(normalized) &&
-    /\b(?:messy|cluttered|disorganized|disorganised)\b/u.test(normalized);
-  if (asksToOrganize || describesMessyFolder) {
-    return { intent: "organize_folder" };
-  }
-
-  if (
-    /\b(?:analyze|analyse|summarize|summarise|review|understand|explain)\b/u.test(
-      normalized,
-    ) &&
-    /\b(?:file|document|pdf)\b/u.test(normalized)
-  ) {
-    return { intent: "analyze_drive_file" };
-  }
-
-  if (
-    /^(?:hi|hello|hey|good morning|good afternoon|good evening|are you online|anyone there|how are you)$/u.test(
-      normalized,
-    )
-  ) {
-    return { intent: "greeting" };
-  }
-
-  if (
-    /^(?:help|what can you do|what can you help me with|how can you help|show me what you can do)$/u.test(
-      normalized,
-    )
-  ) {
-    return { intent: "help" };
-  }
-
-  return null;
-}
-
-function refersToGenericPilotFolder(text: string): boolean {
-  const normalized = text.toLocaleLowerCase("en").replace(/\s+/gu, " ");
-  return (
-    /\b(?:my|this|the|a|approved|pilot|test|messy|cluttered|disorganized|disorganised) folder\b/u.test(
-      normalized,
-    ) ||
-    /\b(?:organize|organise|tidy|sort|clean up) (?:my )?folder\b/u.test(
-      normalized,
-    ) ||
-    /\bfolder (?:is|looks|has|needs)\b/u.test(normalized)
-  );
-}
 
 function prepareForClassification(
   text: string,
@@ -128,6 +104,16 @@ function prepareForClassification(
   return { text: sanitized, links };
 }
 
+function isClearSocialGreeting(text: string): boolean {
+  const words = text.toLocaleLowerCase().match(/\p{L}+/gu) ?? [];
+  return (
+    words.length > 0 &&
+    words.length <= 5 &&
+    words.some((word) => GREETING_SIGNALS.has(word)) &&
+    words.every((word) => GREETING_WORDS.has(word))
+  );
+}
+
 export async function understandNaturalLanguage(
   input: { text: string; mentionKeys?: string[] },
   classifier: IntentClassifier,
@@ -139,25 +125,27 @@ export async function understandNaturalLanguage(
   if (!prepared) {
     return {
       intent: "unknown",
+      folder_reference: "none",
       links: [],
-      canConfirmApprovedRoot: false,
+      sanitizedText: "",
     };
   }
 
-  const canConfirmApprovedRoot = refersToGenericPilotFolder(prepared.text);
-  const local = deterministicIntent(prepared.text);
-  if (local) {
-    return {
-      ...local,
-      links: prepared.links,
-      canConfirmApprovedRoot,
-    };
-  }
   if (!prepared.text) {
     return {
       intent: "unknown",
+      folder_reference: "none",
       links: prepared.links,
-      canConfirmApprovedRoot,
+      sanitizedText: "",
+    };
+  }
+
+  if (isClearSocialGreeting(prepared.text)) {
+    return {
+      intent: "greeting",
+      folder_reference: "none",
+      links: prepared.links,
+      sanitizedText: prepared.text,
     };
   }
 
@@ -166,13 +154,14 @@ export async function understandNaturalLanguage(
     return {
       ...classified,
       links: prepared.links,
-      canConfirmApprovedRoot,
+      sanitizedText: prepared.text,
     };
   } catch {
     return {
       intent: "unknown",
+      folder_reference: "none",
       links: prepared.links,
-      canConfirmApprovedRoot,
+      sanitizedText: prepared.text,
     };
   }
 }

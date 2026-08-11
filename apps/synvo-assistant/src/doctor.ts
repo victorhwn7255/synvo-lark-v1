@@ -62,6 +62,7 @@ async function main(): Promise<void> {
       write_enabled: config.organizeFolderWriteEnabled,
       pilot_identity_configured: identityConfigured,
       mcp_enabled: Boolean(config.synvoMcpAuthToken),
+      voyage_embedding_configured: Boolean(config.voyageApiKey),
       organize_folder_grant_usable: grantUsable,
       latest_run_targets_allowlisted_root: latestRunTargetsRoot,
       latest_run_terminal: latestRunTerminal,

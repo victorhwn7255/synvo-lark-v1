@@ -11,6 +11,7 @@ const validEnvironment = {
   OAUTH_TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 4).toString("base64url"),
   ORGANIZE_FOLDER_ROOT_TOKEN: "fldcnRoot123",
   LLM_API_KEY: "nvidia-test-key-with-safe-length",
+  VOYAGE_API_KEY: "voyage-test-key-with-safe-length",
 };
 
 test("loads production-aligned assistant configuration", () => {
@@ -30,7 +31,26 @@ test("loads production-aligned assistant configuration", () => {
     organizeFolderRootToken: "fldcnRoot123",
     organizeFolderWriteEnabled: false,
     llmApiKey: "nvidia-test-key-with-safe-length",
+    voyageApiKey: "voyage-test-key-with-safe-length",
   });
+});
+
+test("loads the Voyage embedding credential", () => {
+  const config = loadConfig({
+    ...validEnvironment,
+    VOYAGE_API_KEY: "voyage-test-key-with-safe-length",
+  });
+
+  assert.equal(config.voyageApiKey, "voyage-test-key-with-safe-length");
+});
+
+test("rejects missing, placeholder, and malformed Voyage credentials", () => {
+  for (const apiKey of ["", "replace_with_voyage_api_key", "too-short", "bad key with spaces"]) {
+    assert.throws(
+      () => loadConfig({ ...validEnvironment, VOYAGE_API_KEY: apiKey }),
+      /VOYAGE_API_KEY/,
+    );
+  }
 });
 
 test("loads explicit pilot identity and write switch configuration", () => {

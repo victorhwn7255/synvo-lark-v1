@@ -3,9 +3,11 @@ import test from "node:test";
 
 import {
   buildAnalysisCard,
+  buildAssistantAcknowledgementCard,
   buildAssistantClarificationCard,
   buildAssistantHelpCard,
   buildAssistantOnlineCard,
+  buildAssistantWorkingCard,
   buildAuthorizationCard,
   buildCardCallbackResponse,
   buildCurrentWorkspaceCard,
@@ -18,8 +20,11 @@ test("welcomes the authorized employee by first name", () => {
   assert.match(serialized, /Here are a few things I can do for you/u);
   assert.match(serialized, /Analyze a File/u);
   assert.match(serialized, /Organize a Folder/u);
+  assert.match(serialized, /Nested-folder and multi-format knowledge/u);
+  assert.match(serialized, /Lark Docs and Wiki/u);
+  assert.match(serialized, /Engineering workflows/u);
   assert.doesNotMatch(serialized, /Understand a PDF|Explore a Drive file/u);
-  assert.match(serialized, /always ask before moving or changing files/u);
+  assert.doesNotMatch(serialized, /always ask before moving or changing files/u);
 });
 
 test("welcome card shows verified My Folders context and one workspace URL", () => {
@@ -36,6 +41,16 @@ test("welcome card shows verified My Folders context and one workspace URL", () 
   assert.match(serialized, /My Folders \/ \*\*Test_Synvo_AI_Assistant/u);
   assert.match(serialized, /test_directory_2 · test_directory_3/u);
   assert.match(serialized, /Open workspace/u);
+  assert.equal(serialized.match(/"type":"primary"/gu)?.length, 2);
+  assert.ok(
+    serialized.indexOf("Current workspace") <
+      serialized.indexOf("Here are a few things I can do for you"),
+  );
+  assert.ok(
+    serialized.indexOf("Here are a few things I can do for you") <
+      serialized.indexOf("Other folders in My Folders"),
+  );
+  assert.equal(card.elements?.at(-1)?.tag, "note");
   assert.equal(serialized.match(/private-root-token/gu)?.length, 1);
   assert.doesNotMatch(serialized, /"value"[^}]*private-root-token/u);
 });
@@ -80,6 +95,20 @@ test("help card shows only the two current employee-facing functions", () => {
   assert.doesNotMatch(serialized, /Check connection|check_connection/u);
   assert.doesNotMatch(serialized, /Analyze a PDF|Analyze a Drive file/u);
   assert.doesNotMatch(serialized, /\/organize-folder/u);
+});
+
+test("responds naturally to a friendly acknowledgement", () => {
+  const serialized = JSON.stringify(buildAssistantAcknowledgementCard());
+  assert.match(serialized, /Anytime/u);
+  assert.match(serialized, /You’re welcome/u);
+});
+
+test("shows one bounded working card while semantic routing is slow", () => {
+  const serialized = JSON.stringify(buildAssistantWorkingCard("img_loader"));
+  assert.match(serialized, /Working on your request/u);
+  assert.match(serialized, /understanding what you need/u);
+  assert.match(serialized, /img_loader/u);
+  assert.match(serialized, /update this card/u);
 });
 
 test("clarification is friendly and confirms that no workflow started", () => {

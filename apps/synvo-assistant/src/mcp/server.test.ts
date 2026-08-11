@@ -81,6 +81,11 @@ const analysisResult: AnalyzeDriveFileResult = {
     output_truncated: false,
   },
 };
+const knowledgeResult = {
+  supported: true,
+  answer: "The workspace uses bounded retrieval.",
+  citations: [{ sourceName: "pilot.pdf", pageNumber: 2 }],
+};
 
 async function withEndpoint(
   endpoint: SynvoMcpEndpoint,
@@ -117,6 +122,11 @@ test("rejects an MCP request without the configured bearer credential", async ()
         throw new Error("must not be called");
       },
     },
+    knowledgeSearcher: {
+      async searchWorkspace() {
+        throw new Error("must not be called");
+      },
+    },
   });
 
   await withEndpoint(endpoint, async (origin) => {
@@ -131,9 +141,10 @@ test("rejects an MCP request without the configured bearer credential", async ()
   });
 });
 
-test("lists and calls both read-only Synvo tools over Streamable HTTP", async () => {
+test("lists and calls all read-only Synvo tools over Streamable HTTP", async () => {
   const inventoryCalls: unknown[] = [];
   const analysisCalls: unknown[] = [];
+  const knowledgeCalls: unknown[] = [];
   const endpoint = createSynvoMcpEndpoint({
     authToken,
     requesterOpenId: "ou_victor",
@@ -148,6 +159,12 @@ test("lists and calls both read-only Synvo tools over Streamable HTTP", async ()
       async analyzeListedFile(request) {
         analysisCalls.push(request);
         return analysisResult;
+      },
+    },
+    knowledgeSearcher: {
+      async searchWorkspace(question) {
+        knowledgeCalls.push(question);
+        return knowledgeResult;
       },
     },
   });
@@ -171,7 +188,11 @@ test("lists and calls both read-only Synvo tools over Streamable HTTP", async ()
       const listed = await client.listTools();
       assert.deepEqual(
         listed.tools.map((tool) => tool.name),
-        ["organize_folder_inventory", "analyze_drive_file"],
+        [
+          "organize_folder_inventory",
+          "analyze_drive_file",
+          "search_workspace_knowledge",
+        ],
       );
       for (const tool of listed.tools) {
         assert.equal(tool.annotations?.readOnlyHint, true);
@@ -230,6 +251,24 @@ test("lists and calls both read-only Synvo tools over Streamable HTTP", async ()
       });
       assert.equal(analysisIdentityOverride.isError, true);
       assert.equal(analysisCalls.length, 1);
+
+      const knowledge = await client.callTool({
+        name: "search_workspace_knowledge",
+        arguments: { question: "How does retrieval work?" },
+      });
+      assert.equal(knowledge.isError, false);
+      assert.deepEqual(knowledge.structuredContent, knowledgeResult);
+      assert.deepEqual(knowledgeCalls, ["How does retrieval work?"]);
+
+      const invalidKnowledge = await client.callTool({
+        name: "search_workspace_knowledge",
+        arguments: {
+          question: "How does retrieval work?",
+          workspace_folder_token: "fldcnOther",
+        },
+      });
+      assert.equal(invalidKnowledge.isError, true);
+      assert.equal(knowledgeCalls.length, 1);
 
       const obsoleteFileUrlContract = await client.callTool({
         name: "analyze_drive_file",

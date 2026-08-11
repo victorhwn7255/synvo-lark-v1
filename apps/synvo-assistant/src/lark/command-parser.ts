@@ -17,14 +17,14 @@ export function parseCommand(text: string): BotCommand {
   }
 
   const match = normalized.match(
-    /^(?:\/organize-folder|organize (?:this |my )?folder:?|please organize (?:this |my )?folder:?)\s+(\S+)$/i,
+    /^\/organize-folder\s+(\S+)$/i,
   );
   if (match?.[1]) {
     return { type: "organize-folder", folderLink: match[1] };
   }
 
   const analyzeFileMatch = normalized.match(
-    /^(?:\/analyze-file|analyze (?:this )?file:?|please analyze (?:this )?file:?)\s+(\S+)$/i,
+    /^\/analyze-file\s+(\S+)$/i,
   );
   if (analyzeFileMatch?.[1]) {
     return { type: "analyze-file", fileLink: analyzeFileMatch[1] };

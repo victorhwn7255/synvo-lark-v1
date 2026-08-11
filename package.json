@@ -10,7 +10,8 @@
     "test:integration": "node --env-file=apps/synvo-assistant/.env --import tsx --test \"tests/integration/postgres/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "migrate": "node --env-file=apps/synvo-assistant/.env --import tsx apps/synvo-assistant/src/db/migrate.ts",
-    "doctor": "node --env-file=apps/synvo-assistant/.env --import tsx apps/synvo-assistant/src/doctor.ts"
+    "doctor": "node --env-file=apps/synvo-assistant/.env --import tsx apps/synvo-assistant/src/doctor.ts",
+    "evaluate:phase13": "node --import tsx apps/synvo-assistant/src/workflows/knowledge/evaluate.ts"
   },
   "engines": {
     "node": ">=20.6"

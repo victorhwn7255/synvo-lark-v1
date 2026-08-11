@@ -12,13 +12,32 @@ const valid: AttachmentEvent = {
   chatId: "oc_pilot",
   requesterOpenId: expected.openId,
   tenantKey: expected.tenantKey,
+  content: JSON.stringify({
+    file_key: "file-not-used-for-consent",
+    file_name: "Quarterly Product Strategy.pdf",
+  }),
 };
 
 test("accepts one direct file message from the configured pilot", () => {
   assert.deepEqual(acceptAttachmentEvent(valid, expected), {
     messageId: "om_source",
     chatId: "oc_pilot",
+    filename: "Quarterly Product Strategy.pdf",
   });
+});
+
+test("rejects malformed and non-PDF display metadata before consent", () => {
+  assert.equal(
+    acceptAttachmentEvent({ ...valid, content: "not-json" }, expected),
+    null,
+  );
+  assert.equal(
+    acceptAttachmentEvent(
+      { ...valid, content: JSON.stringify({ file_name: "notes.txt" }) },
+      expected,
+    ),
+    null,
+  );
 });
 
 for (const [name, override] of [

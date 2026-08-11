@@ -14,6 +14,7 @@ export type AppConfig = {
   organizeFolderRootToken: string;
   organizeFolderWriteEnabled: boolean;
   llmApiKey: string;
+  voyageApiKey: string;
 };
 
 function readRequiredValue(
@@ -159,6 +160,20 @@ function readLlmApiKey(environment: NodeJS.ProcessEnv): string {
   return apiKey;
 }
 
+function readVoyageApiKey(value: string | undefined): string {
+  const apiKey = readRequiredValue(value, "VOYAGE_API_KEY", [
+    "replace_with_voyage_api_key",
+  ]);
+  if (
+    apiKey.length < 20 ||
+    apiKey.length > 512 ||
+    /\s/u.test(apiKey)
+  ) {
+    throw new Error("VOYAGE_API_KEY is malformed");
+  }
+  return apiKey;
+}
+
 function readOptionalFirstName(value: string | undefined): string | undefined {
   const firstName = value?.trim();
   if (!firstName) {
@@ -243,6 +258,7 @@ export function loadConfig(
     environment.ORGANIZE_FOLDER_ROOT_TOKEN,
   );
   const llmApiKey = readLlmApiKey(environment);
+  const voyageApiKey = readVoyageApiKey(environment.VOYAGE_API_KEY);
 
   return {
     appId,
@@ -260,5 +276,6 @@ export function loadConfig(
     organizeFolderRootToken,
     organizeFolderWriteEnabled,
     llmApiKey,
+    voyageApiKey,
   };
 }

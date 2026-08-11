@@ -32,6 +32,7 @@ type DeliveryWorkerOptions = {
   ) => Promise<void>;
   handleAnalyzeAttachment?: StatefulDeliveryHandler;
   handleAnalyzeDriveFile?: StatefulDeliveryHandler;
+  handleKnowledge?: StatefulDeliveryHandler;
   handleOrganizeFolderScan?: StatefulDeliveryHandler;
   now?: () => Date;
   leaseMs?: number;
@@ -62,6 +63,7 @@ export class DeliveryWorker {
   ) => Promise<void>;
   readonly #handleAnalyzeAttachment?: DeliveryWorkerOptions["handleAnalyzeAttachment"];
   readonly #handleAnalyzeDriveFile?: DeliveryWorkerOptions["handleAnalyzeDriveFile"];
+  readonly #handleKnowledge?: DeliveryWorkerOptions["handleKnowledge"];
   readonly #handleOrganizeFolderScan?: DeliveryWorkerOptions["handleOrganizeFolderScan"];
   readonly #now: () => Date;
   readonly #leaseMs: number;
@@ -79,6 +81,7 @@ export class DeliveryWorker {
     this.#sendText = options.sendText;
     this.#handleAnalyzeAttachment = options.handleAnalyzeAttachment;
     this.#handleAnalyzeDriveFile = options.handleAnalyzeDriveFile;
+    this.#handleKnowledge = options.handleKnowledge;
     this.#handleOrganizeFolderScan = options.handleOrganizeFolderScan;
     this.#now = options.now ?? (() => new Date());
     this.#leaseMs = options.leaseMs ?? 120_000;
@@ -120,7 +123,7 @@ export class DeliveryWorker {
 
     try {
       if (
-        job.kind === "ORGANIZE_FOLDER_SCAN" &&
+        (job.kind === "ORGANIZE_FOLDER_SCAN" || job.kind === "KNOWLEDGE") &&
         !(await this.#queue.extendLease(
           job,
           new Date(this.#now().getTime() + CONTENT_ORGANIZATION_LEASE_MS),
@@ -131,6 +134,7 @@ export class DeliveryWorker {
       if (
         job.kind === "ANALYZE_ATTACHMENT" ||
         job.kind === "ANALYZE_DRIVE_FILE" ||
+        job.kind === "KNOWLEDGE" ||
         (job.kind === "ORGANIZE_FOLDER_SCAN" &&
           this.#handleOrganizeFolderScan)
       ) {
@@ -188,6 +192,8 @@ export class DeliveryWorker {
         ? this.#handleAnalyzeAttachment
         : job.kind === "ANALYZE_DRIVE_FILE"
           ? this.#handleAnalyzeDriveFile
+          : job.kind === "KNOWLEDGE"
+            ? this.#handleKnowledge
           : this.#handleOrganizeFolderScan;
     if (!handler) {
       throw new PermanentDeliveryError("Stateful delivery is not configured");
