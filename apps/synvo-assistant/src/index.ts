@@ -20,17 +20,20 @@ import { DeliveryWorker } from "./delivery/worker.js";
 import { LarkAttachmentClient } from "./lark/attachment.js";
 import {
   buildAnalysisCard,
+  buildAssistantClarificationCard,
   buildAssistantHelpCard,
   buildAssistantOnlineCard,
   buildAuthorizationCard,
+  buildCardCallbackResponse,
+  buildFolderLinkRequiredCard,
   buildNoticeCard,
-  isCheckConnectionAction,
 } from "./lark/assistant-card.js";
 import {
+  buildOrganizeFolderConfirmationCard,
   buildOrganizeFolderDecisionCard,
-  buildOrganizeFolderDecisionLoadingCard,
   buildOrganizeFolderLoadingCard,
   buildOrganizeFolderOperationCard,
+  buildOrganizeFolderRequestAcceptedCard,
   buildOrganizeFolderResultCard,
   parseOrganizeFolderCardAction,
 } from "./lark/organize-folder-card.js";
@@ -42,6 +45,7 @@ import { NvidiaNimClient } from "./workflows/analyze-attachment/nim-client.js";
 import { ANALYZE_ATTACHMENT_NIM_TIMEOUT_MS } from "./workflows/analyze-attachment/policy.js";
 import { AnalyzeAttachmentWorkflow } from "./workflows/analyze-attachment/workflow.js";
 import { AnalyzeDriveFileWorkflow } from "./workflows/analyze-drive-file/workflow.js";
+import { understandNaturalLanguage } from "./workflows/natural-language/intent.js";
 import { LarkOAuthService } from "./workflows/organize-folder/authorization.js";
 import { ContentAwareFolderPlanner } from "./workflows/organize-folder/content-planner.js";
 import { PostgresOrganizeFolderRepository } from "./workflows/organize-folder/repository.js";
@@ -152,6 +156,10 @@ async function main(): Promise<void> {
         })
       : undefined,
   });
+  const organizeFolderRootUrl = new URL(
+    `/drive/folder/${config.organizeFolderRootToken}?from=space`,
+    "https://larksuite.com",
+  );
 
   const createCard = async (
     chatId: string,
@@ -190,10 +198,6 @@ async function main(): Promise<void> {
     text: string,
     idempotencyKey: string,
   ): Promise<void> => {
-    const organizeFolderRootUrl = new URL(
-      `/drive/folder/${config.organizeFolderRootToken}?from=space`,
-      "https://larksuite.com",
-    );
     const card =
       buildAuthorizationCard(text) ??
       buildOrganizeFolderOperationCard(text, organizeFolderRootUrl);
@@ -263,6 +267,40 @@ async function main(): Promise<void> {
         tenantKey: pilotIdentity.tenantKey,
       })
     : undefined;
+  const startDriveFileAnalysis = async (
+    request: Parameters<AnalyzeDriveFileWorkflow["start"]>[0],
+  ): Promise<void> => {
+    if (!driveFileWorkflow) {
+      await createCard(
+        request.chatId,
+        buildNoticeCard(
+          "I can’t analyze Drive files for this account yet. Please ask the app administrator to finish the Drive setup.",
+        ),
+        request.messageId,
+      );
+      return;
+    }
+    const result = await driveFileWorkflow.start(request);
+    if (result.kind !== "queued") {
+      await createCard(
+        request.chatId,
+        buildNoticeCard(result.replyText),
+        request.messageId,
+      );
+    }
+  };
+  const startFolderAnalysis = async (
+    request: Parameters<OrganizeFolderWorkflow["start"]>[0],
+  ): Promise<void> => {
+    const result = await workflow.start(request);
+    if (result.kind === "rejected") {
+      await createCard(
+        request.chatId,
+        buildNoticeCard(result.replyText),
+        request.messageId,
+      );
+    }
+  };
   const mcpEndpoint =
     config.synvoMcpAuthToken && pilotIdentity && driveFileWorkflow
       ? createSynvoMcpEndpoint({
@@ -384,6 +422,13 @@ async function main(): Promise<void> {
       if (!messageId || !chatId || !requesterOpenId || !tenantKey || text === null) {
         return;
       }
+      if (
+        !pilotIdentity ||
+        requesterOpenId !== pilotIdentity.openId ||
+        tenantKey !== pilotIdentity.tenantKey
+      ) {
+        return;
+      }
       console.info("[lark] received direct text message");
       const command = parseCommand(text);
       if (command.type === "ping") {
@@ -428,43 +473,102 @@ async function main(): Promise<void> {
         return;
       }
       if (command.type === "analyze-file") {
-        if (!driveFileWorkflow) {
-          await createCard(
-            chatId,
-            buildNoticeCard(
-              "I can’t analyze Drive files for this account yet. Please ask the app administrator to finish the Drive setup.",
-            ),
-            messageId,
-          );
-          return;
-        }
-        const start = await driveFileWorkflow.start({
+        await startDriveFileAnalysis({
           messageId,
           chatId,
           requesterOpenId,
           tenantKey,
           fileLink: command.fileLink,
         });
-        if (start.kind !== "queued") {
-          await createCard(chatId, buildNoticeCard(start.replyText), messageId);
-        }
         return;
       }
-      if (command.type !== "organize-folder") {
+      if (command.type === "organize-folder") {
+        await startFolderAnalysis({
+          messageId,
+          chatId,
+          requesterOpenId,
+          tenantKey,
+          folderLink: command.folderLink,
+        });
+        return;
+      }
+
+      if (text.trimStart().startsWith("/")) {
         await createCard(chatId, buildAssistantHelpCard(), messageId);
         return;
       }
 
-      const start = await workflow.start({
-        messageId,
-        chatId,
-        requesterOpenId,
-        tenantKey,
-        folderLink: command.folderLink,
-      });
-      if (start.kind === "rejected") {
-        await createCard(chatId, buildNoticeCard(start.replyText), messageId);
+      const understood = await understandNaturalLanguage(
+        {
+          text,
+          mentionKeys: message.mentions?.flatMap((mention) =>
+            mention.key ? [mention.key] : [],
+          ),
+        },
+        nimClient,
+      );
+      if (understood.intent === "greeting") {
+        await createCard(
+          chatId,
+          buildAssistantOnlineCard(config.authorizedFirstName),
+          messageId,
+        );
+        return;
       }
+      if (understood.intent === "help") {
+        await createCard(chatId, buildAssistantHelpCard(), messageId);
+        return;
+      }
+      if (understood.intent === "organize_folder") {
+        if (
+          understood.links.length === 0 &&
+          understood.canConfirmApprovedRoot
+        ) {
+          await createCard(
+            chatId,
+            buildOrganizeFolderConfirmationCard(),
+            messageId,
+          );
+          return;
+        }
+        if (understood.links.length === 1 && understood.links[0]) {
+          await startFolderAnalysis({
+            messageId,
+            chatId,
+            requesterOpenId,
+            tenantKey,
+            folderLink: understood.links[0],
+          });
+          return;
+        }
+        if (understood.links.length === 0) {
+          await createCard(
+            chatId,
+            buildFolderLinkRequiredCard(),
+            messageId,
+          );
+          return;
+        }
+      }
+      if (
+        understood.intent === "analyze_drive_file" &&
+        understood.links.length === 1 &&
+        understood.links[0]
+      ) {
+        await startDriveFileAnalysis({
+          messageId,
+          chatId,
+          requesterOpenId,
+          tenantKey,
+          fileLink: understood.links[0],
+        });
+        return;
+      }
+      await createCard(
+        chatId,
+        buildAssistantClarificationCard(),
+        messageId,
+      );
     },
     "card.action.trigger": async (rawEvent: Lark.RawCardActionEvent) => {
       const event = Lark.normalizeCardAction(rawEvent);
@@ -476,12 +580,42 @@ async function main(): Promise<void> {
       ) {
         return;
       }
-      if (isCheckConnectionAction(event.action.value)) {
-        return buildAssistantOnlineCard(config.authorizedFirstName);
-      }
       const action = parseOrganizeFolderCardAction(event.action.value);
       if (!action) {
         return;
+      }
+      if (action.type === "start") {
+        const result = await workflow.start({
+          messageId: event.messageId,
+          chatId: event.chatId,
+          requesterOpenId: event.operator.openId,
+          tenantKey: pilotIdentity.tenantKey,
+          folderLink: organizeFolderRootUrl.toString(),
+        });
+        console.info("[lark] accepted confirmed folder analysis request");
+        if (result.kind === "rejected") {
+          return buildCardCallbackResponse(buildNoticeCard(result.replyText), {
+            type: "error",
+            content: "I couldn’t start the folder analysis.",
+          });
+        }
+        return result.kind === "authorization_required"
+          ? buildCardCallbackResponse(
+              buildNoticeCard(
+                "Please use the secure Lark authorization card I’ve sent in this chat.",
+              ),
+              {
+                type: "info",
+                content: "Lark Drive authorization is required.",
+              },
+            )
+          : buildCardCallbackResponse(
+              buildOrganizeFolderRequestAcceptedCard(),
+              {
+                type: "success",
+                content: "Folder analysis started.",
+              },
+            );
       }
       if (action.type === "undo") {
         const result = await workflow.requestUndo({
@@ -490,20 +624,14 @@ async function main(): Promise<void> {
           tenantKey: pilotIdentity.tenantKey,
         });
         console.info("[lark] recorded folder undo request");
-        return buildOrganizeFolderDecisionCard(
-          result,
-          config.larkLoadingImageKey,
+        return buildCardCallbackResponse(
+          buildOrganizeFolderDecisionCard(
+            result,
+            config.larkLoadingImageKey,
+          ),
+          { type: "success", content: "Undo request saved." },
         );
       }
-      await updateCard(
-        event.messageId,
-        buildOrganizeFolderDecisionLoadingCard(
-          action.decision,
-          config.larkLoadingImageKey,
-        ),
-      ).catch(() => {
-        console.warn("[lark] could not display the folder decision transition");
-      });
       const result = await workflow.decideProposal({
         proposalId: action.proposalId,
         requesterOpenId: event.operator.openId,
@@ -511,9 +639,18 @@ async function main(): Promise<void> {
         decision: action.decision,
       });
       console.info("[lark] recorded folder proposal decision");
-      return buildOrganizeFolderDecisionCard(
-        result,
-        config.larkLoadingImageKey,
+      return buildCardCallbackResponse(
+        buildOrganizeFolderDecisionCard(
+          result,
+          config.larkLoadingImageKey,
+        ),
+        {
+          type: "success",
+          content:
+            action.decision === "APPROVED"
+              ? "Approval saved."
+              : "Proposal rejected.",
+        },
       );
     },
   });
@@ -539,7 +676,10 @@ async function main(): Promise<void> {
     host: config.httpHost,
     port: config.httpPort,
     oauthService,
-    healthCheck: async () => isDatabaseSchemaReady(pool),
+    healthCheck: async () => {
+      await pool.query("SELECT 1");
+      return true;
+    },
     mcpEndpoint,
   });
   console.info(

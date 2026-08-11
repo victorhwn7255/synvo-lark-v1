@@ -5,6 +5,7 @@ import type {
 import { z } from "zod";
 
 export type OrganizeFolderCardAction =
+  | { type: "start" }
   | {
       type: "decision";
       proposalId: string;
@@ -105,6 +106,69 @@ function loadingExtra(loadingImageKey?: string) {
     : undefined;
 }
 
+export function buildOrganizeFolderConfirmationCard(): InteractiveCard {
+  return {
+    config: cardConfig(),
+    header: {
+      template: "blue",
+      title: { tag: "plain_text", content: "Ready to organize your test folder?" },
+    },
+    elements: [
+      {
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: [
+            "I can analyze the files in your approved pilot folder and prepare a clear organization proposal.",
+            "",
+            "**Nothing moves during this analysis.** You’ll review the proposal before any file can change.",
+          ].join("\n"),
+        },
+      },
+      {
+        tag: "action",
+        actions: [
+          {
+            tag: "button",
+            type: "primary",
+            text: { tag: "plain_text", content: "Start folder analysis" },
+            value: { action: "start_organize_folder" },
+          },
+        ],
+      },
+      {
+        tag: "note",
+        elements: [
+          {
+            tag: "plain_text",
+            content: "To use another folder, send me its Lark Drive link instead.",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+export function buildOrganizeFolderRequestAcceptedCard(): InteractiveCard {
+  return {
+    config: cardConfig(),
+    header: {
+      template: "green",
+      title: { tag: "plain_text", content: "Folder analysis requested" },
+    },
+    elements: [
+      {
+        tag: "div",
+        text: {
+          tag: "plain_text",
+          content:
+            "Got it — I’ll post a live progress card here, then replace it with your proposal when it’s ready.",
+        },
+      },
+    ],
+  };
+}
+
 export function buildOrganizeFolderLoadingCard(
   loadingImageKey?: string,
 ): InteractiveCard {
@@ -142,45 +206,6 @@ export function buildOrganizeFolderLoadingCard(
             tag: "plain_text",
             content:
               "🔒 You’re in control — I won’t move anything until you review and approve the plan.",
-          },
-        ],
-      },
-    ],
-  };
-}
-
-export function buildOrganizeFolderDecisionLoadingCard(
-  decision: "APPROVED" | "REJECTED",
-  loadingImageKey?: string,
-): InteractiveCard {
-  const approved = decision === "APPROVED";
-
-  return {
-    config: cardConfig(),
-    header: {
-      template: approved ? "blue" : "grey",
-      title: {
-        tag: "plain_text",
-        content: approved ? "Saving your approval…" : "Saving your choice…",
-      },
-    },
-    elements: [
-      {
-        tag: "div",
-        text: {
-          tag: "lark_md",
-          content: approved
-            ? "I’m recording your approval and getting the organization workflow ready."
-            : "I’m recording your choice. The folder will stay exactly as it is.",
-        },
-        extra: loadingExtra(loadingImageKey),
-      },
-      {
-        tag: "note",
-        elements: [
-          {
-            tag: "plain_text",
-            content: "This usually takes only a moment.",
           },
         ],
       },
@@ -436,6 +461,12 @@ export function parseOrganizeFolderCardAction(
     return null;
   }
   const record = value as Record<string, unknown>;
+  if (
+    record.action === "start_organize_folder" &&
+    Object.keys(record).length === 1
+  ) {
+    return { type: "start" };
+  }
   const proposalId = record.proposal_id;
   if (
     typeof proposalId !== "string" ||

@@ -1,6 +1,6 @@
 # Phase 11: Natural-language interaction and bounded tool routing
 
-Status: planned and ready for implementation.
+Status: completed on 2026-08-11; implementation, automated verification, safe-mode Lark acceptance, and simplification review passed.
 
 ## Goal
 
@@ -58,9 +58,7 @@ NVIDIA may classify the user's intent into a strict schema. It receives no tools
 
 NVIDIA NIM does not connect to MCP directly. The existing Synvo backend remains the orchestrator that invokes the existing authenticated MCP client after deterministic policy checks.
 
-Do not add LangChain, LangGraph, an agent framework, a generic tool registry, a second model client hierarchy, or an autonomous tool loop.
-
-Target implementation size: approximately 150–250 non-test lines. If more than 350 non-test lines, a new table, or a new state machine appears necessary, stop and explain the demonstrated requirement before continuing.
+Do not add new infrastructure unless a current Phase 11 requirement clearly needs it.
 
 ## Fixed Phase 11 boundary
 
@@ -129,84 +127,84 @@ A future multi-folder phase may add an authorized folder finder or picker only a
 
 ### 1. Natural-language policy and provider boundary
 
-- [ ] Add one bounded natural-language intent module under `workflows/natural-language/`.
-- [ ] Reuse the existing NVIDIA HTTP behavior where practical without turning it into a provider framework.
-- [ ] Limit the input length and accept only direct text from the configured pilot.
-- [ ] Extract and remove Lark URLs locally before the NVIDIA request.
-- [ ] Remove Lark mentions, control characters, and native-looking identifiers from model input.
-- [ ] Use one fixed prompt and strict structured response for the five declared intents.
-- [ ] Give NVIDIA no tools and no conversation history.
-- [ ] Bound timeout, response size, and retry behavior using the smallest current policy.
-- [ ] Return a typed safe failure rather than provider text.
+- [x] Add one bounded natural-language intent module under `workflows/natural-language/`.
+- [x] Reuse the existing NVIDIA HTTP behavior where practical without turning it into a provider framework.
+- [x] Limit the input length and accept only direct text from the configured pilot.
+- [x] Extract and remove Lark URLs locally before the NVIDIA request.
+- [x] Remove Lark mentions, control characters, and native-looking identifiers from model input.
+- [x] Use one fixed prompt and strict structured response for the five declared intents.
+- [x] Give NVIDIA no tools and no conversation history.
+- [x] Bound timeout, response size, and retry behavior using the smallest current policy.
+- [x] Return a typed safe failure rather than provider text.
 
 ### 2. Deterministic dispatcher
 
-- [ ] Keep the current command parser as the first path.
-- [ ] Add a greeting-only fast path that cannot swallow an actionable request.
-- [ ] Route each validated intent through one explicit switch.
-- [ ] Reuse the existing personalized online card for greetings.
-- [ ] Reuse the existing capabilities card for help.
-- [ ] Reuse the existing Drive-file workflow when one valid file link is present.
-- [ ] Reuse the existing organize-folder workflow when one valid folder link is present.
-- [ ] Return a friendly clarification when a required link is missing or ambiguous.
-- [ ] Do not add conversation memory, session persistence, or a new delivery job kind.
+- [x] Keep the current command parser as the first path.
+- [x] Add a greeting-only fast path that cannot swallow an actionable request.
+- [x] Route each validated intent through one explicit switch.
+- [x] Reuse the existing personalized online card for greetings.
+- [x] Reuse the existing capabilities card for help.
+- [x] Reuse the existing Drive-file workflow when one valid file link is present.
+- [x] Reuse the existing organize-folder workflow when one valid folder link is present.
+- [x] Return a friendly clarification when a required link is missing or ambiguous.
+- [x] Do not add conversation memory, session persistence, or a new delivery job kind.
 
 ### 3. One-root confirmation card
 
-- [ ] Add one friendly confirmation card for a link-free organize request.
-- [ ] Add a `Start folder analysis` button with one strict action value.
-- [ ] Keep the root token and native identifiers out of the card payload.
-- [ ] Verify callback actor and tenant using the existing pilot boundary.
-- [ ] Start the existing organize-folder workflow with a stable idempotency key.
-- [ ] Show the existing loading card immediately after confirmation.
-- [ ] Keep proposal approval, rejection, execution, and undo cards unchanged.
+- [x] Add one friendly confirmation card for a link-free organize request.
+- [x] Add a `Start folder analysis` button with one strict action value.
+- [x] Keep the root token and native identifiers out of the card payload.
+- [x] Verify callback actor and tenant using the existing pilot boundary.
+- [x] Start the existing organize-folder workflow with a stable idempotency key.
+- [x] Show the existing loading card immediately after confirmation.
+- [x] Keep proposal approval, rejection, execution, and undo cards unchanged.
 
 ### 4. Natural and safe fallback responses
 
-- [ ] Replace the generic unknown-command response with one concise clarification card.
-- [ ] Tell users how to attach a PDF or share a Lark link without exposing slash commands.
-- [ ] If the intent provider is unavailable, keep existing deterministic commands operational.
-- [ ] Never claim a workflow started unless its existing start method accepted the request.
-- [ ] Never imply that a file will move before the existing proposal approval.
+- [x] Replace the generic unknown-command response with one concise clarification card.
+- [x] Tell users how to attach a PDF or share a Lark link without exposing slash commands.
+- [x] If the intent provider is unavailable, keep existing deterministic commands operational.
+- [x] Never claim a workflow started unless its existing start method accepted the request.
+- [x] Never imply that a file will move before the existing proposal approval.
 
 ### 5. Documentation
 
-- [ ] Update `AGENTS.md` current scope and source ownership only after implementation matches it.
-- [ ] Update the root README with employee-facing natural-language examples and the hidden fallback commands.
-- [ ] Record the hosted-NVIDIA privacy boundary and the single-root limitation once.
-- [ ] Move this plan to `tasks/archive/` only after live acceptance passes.
+- [x] Update `AGENTS.md` current scope and source ownership only after implementation matches it.
+- [x] Update the root README with employee-facing natural-language examples and the hidden fallback commands.
+- [x] Record the hosted-NVIDIA privacy boundary and the single-root limitation once.
+- [x] Move this plan to `tasks/archive/` only after live acceptance passes.
 
 ## Required tests
 
 ### Intent behavior
 
-- [ ] Greeting variants route to the personalized welcome card.
-- [ ] Greeting plus an actionable organize request routes to organize, not greeting.
-- [ ] Help and capability questions route to the capabilities card.
-- [ ] Multiple natural organize paraphrases produce the organize intent.
-- [ ] Multiple natural Drive-file analysis paraphrases produce the analyze intent.
-- [ ] Unsupported and ambiguous messages produce clarification and no workflow call.
-- [ ] Existing slash commands continue to behave exactly as before.
+- [x] Greeting variants route to the personalized welcome card.
+- [x] Greeting plus an actionable organize request routes to organize, not greeting.
+- [x] Help and capability questions route to the capabilities card.
+- [x] Multiple natural organize paraphrases produce the organize intent.
+- [x] Multiple natural Drive-file analysis paraphrases produce the analyze intent.
+- [x] Unsupported and ambiguous messages produce clarification and no workflow call.
+- [x] Existing slash commands continue to behave exactly as before.
 
 ### Privacy and untrusted input
 
-- [ ] Lark URLs, native tokens, mentions, and control characters do not reach NVIDIA.
-- [ ] Overlong messages are rejected or bounded before the model call.
-- [ ] Prompt-injection text cannot introduce a new intent, tool name, URL, argument, or write action outside the declared contract.
-- [ ] Malformed, missing, extra, and unknown NVIDIA output fails safely.
-- [ ] Provider 401, 403, 429, 5xx, timeout, and malformed-response paths reveal no provider body or credential.
+- [x] Lark URLs, native tokens, mentions, and control characters do not reach NVIDIA.
+- [x] Overlong messages are rejected or bounded before the model call.
+- [x] Prompt-injection text cannot introduce a new intent, tool name, URL, argument, or write action outside the declared contract.
+- [x] Malformed, missing, extra, and unknown NVIDIA output fails safely.
+- [x] Provider 401, 403, 429, 5xx, timeout, and malformed-response paths reveal no provider body or credential.
 
 ### Routing and safety
 
-- [ ] A valid allowlisted folder link starts exactly one existing organize-folder run.
-- [ ] An external, sibling, nested, Wiki, or malformed folder link starts no run and calls no MCP tool.
-- [ ] A link-free organize request performs no MCP or Drive call before confirmation.
-- [ ] The confirmation button accepts only the configured pilot actor and tenant.
-- [ ] Duplicate confirmation callbacks cannot create competing runs.
-- [ ] Confirmation starts the existing loading/proposal path and no alternate workflow.
-- [ ] A natural request cannot approve a proposal, enable writes, move a file, or request undo.
-- [ ] MCP still exposes exactly `organize_folder_inventory` and `analyze_drive_file`, both read-only.
-- [ ] Existing execution, verification, recovery, and undo tests remain green.
+- [x] A valid allowlisted folder link starts exactly one existing organize-folder run.
+- [x] An external, sibling, nested, Wiki, or malformed folder link starts no run and calls no MCP tool.
+- [x] A link-free organize request performs no MCP or Drive call before confirmation.
+- [x] The confirmation button accepts only the configured pilot actor and tenant.
+- [x] Duplicate confirmation callbacks cannot create competing runs.
+- [x] Confirmation starts the existing loading/proposal path and no alternate workflow.
+- [x] A natural request cannot approve a proposal, enable writes, move a file, or request undo.
+- [x] MCP still exposes exactly `organize_folder_inventory` and `analyze_drive_file`, both read-only.
+- [x] Existing execution, verification, recovery, and undo tests remain green.
 
 ## Failure behavior
 
@@ -229,6 +227,16 @@ npm run doctor
 git diff --check
 ```
 
+Final automated verification completed on 2026-08-11:
+
+- `npm run typecheck`: passed
+- `npm test`: 334 tests passed
+- `npm run test:integration`: 4 tests passed
+- `npm run doctor`: ready with `write_enabled: false`
+- `git diff --check`: passed
+
+Live acceptance confirmed personalized greetings and help, natural folder organization with and without a link, the explicit link-free confirmation, provider-backed proposals, visible rejection results, natural Drive-file analysis, safe handling of a named non-pilot folder, ambiguous-message fallback, and `/ping` backward compatibility. Both proposals were rejected, the provider-backed inventory remained at four root PDFs with empty Product and Research destinations, and writes remained disabled.
+
 Before live acceptance, `doctor` must report:
 
 - pilot identity ready
@@ -240,19 +248,19 @@ Before live acceptance, `doctor` must report:
 
 Run with `ORGANIZE_FOLDER_WRITE_ENABLED=false` and the four disposable, non-sensitive test PDFs restored to the approved root.
 
-1. [ ] Send `Hello` and receive the personalized Victor welcome card.
-2. [ ] Send another greeting variant and receive a natural response without a tool call.
-3. [ ] Send `What can you help me with?` and receive the capabilities card.
-4. [ ] Send a natural organize request containing the approved folder link.
-5. [ ] Confirm the existing loading card appears and one evidence-backed proposal is delivered.
-6. [ ] Reject that proposal and verify no file changed.
-7. [ ] Send a natural organize request without a link.
-8. [ ] Confirm no MCP or Drive work begins before clicking `Start folder analysis`.
-9. [ ] Click the button and receive one new loading card and one proposal.
-10. [ ] Reject the proposal and verify the provider-backed inventory remains unchanged.
-11. [ ] Send an ambiguous unsupported request and receive one clarification with no workflow run.
-12. [ ] Send the existing slash-command form once and confirm backward compatibility.
-13. [ ] Run a final provider-backed inventory proving four root PDFs, empty Product and Research folders, and no unsupported item.
+1. [x] Send `Hello` and receive the personalized Victor welcome card.
+2. [x] Send another greeting variant and receive a natural response without a tool call.
+3. [x] Send `What can you help me with?` and receive the capabilities card.
+4. [x] Send a natural organize request containing the approved folder link.
+5. [x] Confirm the existing loading card appears and one evidence-backed proposal is delivered.
+6. [x] Reject that proposal and verify no file changed.
+7. [x] Send a natural organize request without a link.
+8. [x] Confirm no MCP or Drive work begins before clicking `Start folder analysis`.
+9. [x] Click the button and receive one new loading card and one proposal.
+10. [x] Reject the proposal and verify the provider-backed inventory remains unchanged.
+11. [x] Send an ambiguous unsupported request and receive one clarification with no workflow run.
+12. [x] Send the existing slash-command form once and confirm backward compatibility.
+13. [x] Run a final provider-backed inventory proving four root PDFs, empty Product and Research folders, and no unsupported item.
 
 ## Abort conditions
 
@@ -270,40 +278,33 @@ Stop acceptance and investigate if:
 
 Phase 11 is complete only when:
 
-- [ ] Employees can greet the assistant naturally and receive a personalized response.
-- [ ] Natural help requests produce the existing capabilities guidance.
-- [ ] A natural request with an approved folder link reaches the existing proposal loop.
-- [ ] A natural link-free organize request requires one explicit root confirmation, then reaches the same proposal loop.
-- [ ] Natural Drive-file requests reuse the existing allowlisted analysis path.
-- [ ] Unknown, ambiguous, provider-failed, and malicious inputs perform no operational action.
-- [ ] NVIDIA receives only bounded sanitized intent text and no tools or protected identifiers.
-- [ ] The model cannot authorize, approve, write, verify, or undo.
-- [ ] Existing commands, OAuth, delivery recovery, MCP tools, proposal approval, execution, and undo remain intact.
-- [ ] Automated verification and the safe-mode live acceptance pass.
-- [ ] Final provider inventory is unchanged and `write_enabled: false`.
-- [ ] A simplification pass removes unnecessary wrappers and confirms the documented tree matches the implementation.
+- [x] Employees can greet the assistant naturally and receive a personalized response.
+- [x] Natural help requests produce the existing capabilities guidance.
+- [x] A natural request with an approved folder link reaches the existing proposal loop.
+- [x] A natural link-free organize request requires one explicit root confirmation, then reaches the same proposal loop.
+- [x] Natural Drive-file requests reuse the existing allowlisted analysis path.
+- [x] Unknown, ambiguous, provider-failed, and malicious inputs perform no operational action.
+- [x] NVIDIA receives only bounded sanitized intent text and no tools or protected identifiers.
+- [x] The model cannot authorize, approve, write, verify, or undo.
+- [x] Existing commands, OAuth, delivery recovery, MCP tools, proposal approval, execution, and undo remain intact.
+- [x] Automated verification and the safe-mode live acceptance pass.
+- [x] Final provider inventory is unchanged and `write_enabled: false`.
+- [x] A simplification pass removes unnecessary wrappers and confirms the documented tree matches the implementation.
 
 ## Non-goals
 
-- No general-purpose conversational agent.
-- No unrestricted free-form company Q&A.
-- No long-term conversation memory or new conversation table.
-- No arbitrary model-selected MCP tool loop.
-- No MCP write, approval, execution, or undo tool.
-- No automatic proposal approval or file mutation.
-- No Drive-wide folder search, fuzzy name resolution, or arbitrary-folder access.
-- No new OAuth scopes in Phase 11.
-- No multi-employee identity store or directory integration.
-- No dynamic taxonomy, folder creation, nested traversal, or broader organize-folder policy.
-- No LangChain, LangGraph, provider framework, prompt framework, router framework, registry, service, package, worker, table, migration, or state machine.
+- No general-purpose agent, company Q&A, or conversation memory.
+- No model-selected tools, write actions, proposal decisions, or automatic mutations.
+- No arbitrary-folder discovery, dynamic taxonomy, nested traversal, or new OAuth scope.
+- No new service, framework, persistence model, or deployment boundary.
 
 ## Simplification review
 
-- [ ] Confirm one small intent module and one explicit dispatch switch are sufficient.
-- [ ] Confirm no model response directly names executable code or tool arguments.
-- [ ] Confirm no new persistence was added for a one-message decision.
-- [ ] Reuse existing cards, workflows, OAuth, delivery worker, MCP client, and idempotency behavior.
-- [ ] Delete temporary aliases, duplicated greeting logic, and obsolete unknown-command copy.
-- [ ] Review every sanitizer, retry, and fallback against a demonstrated Phase 11 input or provider risk.
-- [ ] Confirm each new invariant has one authoritative owner.
-- [ ] Confirm `AGENTS.md` source ownership matches the final tree.
+- [x] Confirm one small intent module and one explicit dispatch switch are sufficient.
+- [x] Confirm no model response directly names executable code or tool arguments.
+- [x] Confirm no new persistence was added for a one-message decision.
+- [x] Reuse existing cards, workflows, OAuth, delivery worker, MCP client, and idempotency behavior.
+- [x] Delete temporary aliases, duplicated greeting logic, and obsolete unknown-command copy.
+- [x] Review every sanitizer, retry, and fallback against a demonstrated Phase 11 input or provider risk.
+- [x] Confirm each new invariant has one authoritative owner.
+- [x] Confirm `AGENTS.md` source ownership matches the final tree.

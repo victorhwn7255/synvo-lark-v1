@@ -6,7 +6,6 @@ import type { ProposalStatus } from "./proposal.js";
 
 export type InventoryRun = {
   id: string;
-  chatId: string;
   requesterOpenId: string;
   tenantKey: string;
   state: string;
@@ -55,7 +54,6 @@ export type StoreInventoryResultInput =
     };
 
 export type OAuthSession = {
-  id: string;
   runId: string;
   requestTokenDigest: string;
   requesterOpenId: string;
@@ -63,7 +61,6 @@ export type OAuthSession = {
   redirectUri: string;
   requestedScopes: string[];
   codeVerifierCiphertext: string;
-  expiresAt: Date;
 };
 
 export interface OrganizeFolderRepository {
@@ -139,7 +136,6 @@ export interface OrganizeFolderRepository {
 }
 
 type SessionRow = {
-  id: string;
   run_id: string;
   request_token_digest: string;
   requester_open_id: string;
@@ -147,12 +143,10 @@ type SessionRow = {
   redirect_uri: string;
   requested_scopes: string[];
   code_verifier_ciphertext: string;
-  expires_at: Date;
 };
 
 type InventoryRunRow = {
   id: string;
-  chat_id: string;
   requester_open_id: string;
   tenant_key: string;
   state: string;
@@ -176,7 +170,6 @@ type UndoStatusRow = { undo_status: UndoStatus | null };
 
 function toSession(row: SessionRow): OAuthSession {
   return {
-    id: row.id,
     runId: row.run_id,
     requestTokenDigest: row.request_token_digest,
     requesterOpenId: row.requester_open_id,
@@ -184,7 +177,6 @@ function toSession(row: SessionRow): OAuthSession {
     redirectUri: row.redirect_uri,
     requestedScopes: [...row.requested_scopes].sort(),
     codeVerifierCiphertext: row.code_verifier_ciphertext,
-    expiresAt: row.expires_at,
   };
 }
 
@@ -249,7 +241,6 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
   async findInventoryRunById(runId: string): Promise<InventoryRun | null> {
     const result = await this.#pool.query<InventoryRunRow>(
       `SELECT run.id,
-              run.chat_id,
               run.requester_open_id,
               run.tenant_key,
               run.state,
@@ -276,7 +267,6 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
     return row
       ? {
           id: row.id,
-          chatId: row.chat_id,
           requesterOpenId: row.requester_open_id,
           tenantKey: row.tenant_key,
           state: row.state,
@@ -425,15 +415,13 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
           AND started_at IS NULL
           AND consumed_at IS NULL
           AND expires_at > $4
-      RETURNING id,
-                run_id,
+      RETURNING run_id,
                 request_token_digest,
                 requester_open_id,
                 tenant_key,
                 redirect_uri,
                 requested_scopes,
-                code_verifier_ciphertext,
-                expires_at`,
+                code_verifier_ciphertext`,
       [
         input.requestTokenDigest,
         input.stateDigest,
@@ -454,15 +442,13 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
         WHERE state_digest = $1
           AND consumed_at IS NULL
           AND expires_at > $2
-      RETURNING id,
-                run_id,
+      RETURNING run_id,
                 request_token_digest,
                 requester_open_id,
                 tenant_key,
                 redirect_uri,
                 requested_scopes,
-                code_verifier_ciphertext,
-                expires_at`,
+                code_verifier_ciphertext`,
       [stateDigest, now],
     );
     return result.rows[0] ? toSession(result.rows[0]) : null;

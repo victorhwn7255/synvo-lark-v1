@@ -8,6 +8,22 @@ function cardConfig(): InteractiveCard["config"] {
   };
 }
 
+export function buildCardCallbackResponse(
+  card: InteractiveCard,
+  toast: {
+    type: "success" | "info" | "warning" | "error";
+    content: string;
+  },
+) {
+  return {
+    toast,
+    card: {
+      type: "raw" as const,
+      data: card,
+    },
+  };
+}
+
 function loaderExtra(loadingImageKey?: string) {
   return loadingImageKey
     ? {
@@ -35,24 +51,81 @@ export function buildAssistantHelpCard(): InteractiveCard {
         text: {
           tag: "lark_md",
           content: [
-            "Here are a few things I can help with:",
+            "Here are two things I can help with:",
             "",
-            "📎 **Analyze a PDF** · Send the PDF directly in this chat.",
-            "🔎 **Analyze a Drive file** · Send `analyze this file` followed by its Lark Drive link.",
-            "🗂️ **Organize a folder** · Send `organize this folder` followed by its Lark Drive link.",
+            "📄 **Analyze a File**",
+            "🗂️ **Organize a Folder**",
             "",
-            "I’ll always show you a proposal before moving any files.",
+            "Many more features to come...",
+          ].join("\n"),
+        },
+      },
+    ],
+  };
+}
+
+export function buildAssistantClarificationCard(): InteractiveCard {
+  return {
+    config: cardConfig(),
+    header: {
+      template: "blue",
+      title: {
+        tag: "plain_text",
+        content: "What would you like to work on?",
+      },
+    },
+    elements: [
+      {
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: [
+            "I’m not certain which task you want me to start. Try one of these:",
+            "",
+            "📎 Attach a PDF for a summary and key insights.",
+            "🔎 Share a Lark Drive file link and ask me to analyze it.",
+            "🗂️ Share a Lark Drive folder link and ask me to organize it.",
           ].join("\n"),
         },
       },
       {
-        tag: "action",
-        actions: [
+        tag: "note",
+        elements: [
           {
-            tag: "button",
-            type: "primary",
-            text: { tag: "plain_text", content: "Check connection" },
-            value: { action: "check_connection" },
+            tag: "plain_text",
+            content: "No workflow was started from this message.",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+export function buildFolderLinkRequiredCard(): InteractiveCard {
+  return {
+    config: cardConfig(),
+    header: {
+      template: "blue",
+      title: {
+        tag: "plain_text",
+        content: "Please share that folder’s link",
+      },
+    },
+    elements: [
+      {
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content:
+            "I understand that you want to organize a different folder. Send me its Lark Drive link so I can open the exact folder you mean.",
+        },
+      },
+      {
+        tag: "note",
+        elements: [
+          {
+            tag: "plain_text",
+            content: "No analysis has started, and no files have been changed.",
           },
         ],
       },
@@ -78,7 +151,7 @@ export function buildAssistantOnlineCard(firstName?: string): InteractiveCard {
           content: [
             "**Your AI work assistant is connected and ready.**",
             "",
-            "Here are a few things we can work on together:",
+            "Here are a few things I can do for you:",
           ].join("\n"),
         },
       },
@@ -88,9 +161,8 @@ export function buildAssistantOnlineCard(firstName?: string): InteractiveCard {
         text: {
           tag: "lark_md",
           content: [
-            "📄 **Understand a PDF**  ·  Attach it here for a clear summary and key insights.",
-            "🔎 **Explore a Drive file**  ·  Share its Lark link and ask what you need.",
-            "🗂️ **Organize a folder**  ·  Share the folder link and review my proposed plan.",
+            "📄 **Analyze a File**",
+            "🗂️ **Organize a Folder**",
           ].join("\n\n"),
         },
       },
@@ -106,14 +178,6 @@ export function buildAssistantOnlineCard(firstName?: string): InteractiveCard {
       },
     ],
   };
-}
-
-export function isCheckConnectionAction(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as Record<string, unknown>).action === "check_connection"
-  );
 }
 
 export function buildAuthorizationCard(message: string): InteractiveCard | null {

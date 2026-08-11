@@ -354,7 +354,6 @@ async function approvedExecutionFixture(options: {
   };
   repository.inventoryRun = {
     id: runId,
-    chatId: "oc_chat",
     requesterOpenId: "ou_victor",
     tenantKey: "tenant_synvo",
     state: "COMPLETED",
@@ -494,7 +493,6 @@ async function contentPlanFixture(): Promise<
 function readyInventoryRun(): InventoryRun {
   return {
     id: runId,
-    chatId: "oc_chat",
     requesterOpenId: "ou_victor",
     tenantKey: "tenant_synvo",
     state: "READY_TO_SCAN",
@@ -618,7 +616,6 @@ test("uses a stored terminal result without scanning again", async () => {
   };
   repository.inventoryRun = {
     id: runId,
-    chatId: "oc_chat",
     requesterOpenId: "ou_victor",
     tenantKey: "tenant_synvo",
     state: "FAILED_NO_CHANGE",
@@ -729,7 +726,6 @@ test("reuses the stored proposal on a delivery retry", async () => {
   };
   repository.inventoryRun = {
     id: runId,
-    chatId: "oc_chat",
     requesterOpenId: "ou_victor",
     tenantKey: "tenant_synvo",
     state: "COMPLETED",
@@ -884,7 +880,6 @@ test("rejects a stored proposal encrypted for another run", async () => {
   } satisfies OrganizeFolderProposal;
   repository.inventoryRun = {
     id: runId,
-    chatId: "oc_chat",
     requesterOpenId: "ou_victor",
     tenantKey: "tenant_synvo",
     state: "COMPLETED",

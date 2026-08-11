@@ -54,6 +54,7 @@ class MemoryGrantStore implements OAuthGrantStore {
 class MemoryOrganizeFolderRepository implements OrganizeFolderRepository {
   session: (OAuthSession & {
     requestTokenDigest: string;
+    expiresAt: Date;
     stateDigest?: string;
     consumed?: boolean;
   }) | null = null;
@@ -84,7 +85,6 @@ class MemoryOrganizeFolderRepository implements OrganizeFolderRepository {
     authorizationMessageCiphertext: string;
   }): Promise<boolean> {
     this.session = {
-      id: input.sessionId,
       runId: input.runId,
       requestTokenDigest: input.requestTokenDigest,
       requesterOpenId: input.requesterOpenId,

@@ -8,22 +8,23 @@ The product is delivered by closing small loops: a workflow is complete only whe
 
 ## Current scope
 
-Three closed loops are implemented for Victor's restricted pilot, including the completed Phase 10 content-aware execution extension:
+Three closed loops are implemented for Victor's restricted pilot:
 
-- `/organize-folder` performs user-bound OAuth and inventories one allowlisted My Space folder. Its content-aware path uses the two read-only MCP tools to analyze exactly four owned root PDFs, asks NVIDIA once for strict content decisions, and stores an evidence-backed proposal. The existing trusted workflow owns explicit approval, snapshot revalidation, verified moves, recovery, and separately confirmed undo. Phase 10 live acceptance passed with the original baseline restored and the write switch returned to `false`.
-- A direct PDF message starts `/analyze-attachment`: the application binds the exact Lark resource, downloads and extracts it within fixed limits, calls `nvidia/nemotron-3-super-120b-a12b` without tools, and updates one durable progress message. Live acceptance passed on 2026-08-09.
-- `/analyze-file <Lark Drive PDF link>` accepts one ordinary PDF that is an owned direct child of the allowlisted root, downloads it with Victor's user OAuth grant, and reuses the extraction, model, delivery worker, and progress-message path. Live acceptance passed on 2026-08-09 with Drive writes disabled and the temporary job payload cleared.
+- `/organize-folder` performs user-bound OAuth and inventories one allowlisted My Space folder. Its content-aware path uses the two read-only MCP tools to analyze exactly four owned root PDFs, asks NVIDIA once for strict content decisions, and stores an evidence-backed proposal. The trusted workflow owns explicit approval, snapshot revalidation, verified moves, recovery, and separately confirmed undo.
+- A direct PDF message starts `/analyze-attachment`: the application binds the exact Lark resource, downloads and extracts it within fixed limits, calls `nvidia/nemotron-3-super-120b-a12b` without tools, and updates one durable progress message.
+- `/analyze-file <Lark Drive PDF link>` accepts one ordinary PDF that is an owned direct child of the allowlisted root, downloads it with Victor's user OAuth grant, and reuses the extraction, model, delivery worker, and progress-message path.
 
-The optional authenticated `/mcp` endpoint exposes the proven read-only folder inventory and allowlisted Drive-PDF analysis capabilities. The analysis tool accepts the same allowlisted folder URL plus one exact filename returned by inventory; missing and duplicate names are rejected. Live MCP chainability acceptance passed on 2026-08-09 with an unchanged Drive inventory and writes disabled. Phase 9 reuses these tools through one authenticated local MCP client; it does not add an autonomous agent framework or let NVIDIA choose tools.
+The optional authenticated `/mcp` endpoint exposes the proven read-only folder inventory and allowlisted Drive-PDF analysis capabilities. The analysis tool accepts the same allowlisted folder URL plus one exact filename returned by inventory; missing and duplicate names are rejected. The content-aware organizer reuses these tools through one authenticated local MCP client; it does not add an autonomous agent framework or let NVIDIA choose tools.
 
-Phase 10 live acceptance passed on 2026-08-10 with four neutral filenames, a fresh evidence-backed two/two proposal, exactly one verified execution, idempotent duplicate approval, exactly one verified undo, idempotent duplicate undo, and the original provider baseline restored with writes disabled. Lark Wiki remains a later target when its access and workflow are approved.
+The message adapter handles obvious supported intents locally, sends only bounded sanitized unmatched text to NVIDIA for one strict five-intent result, and maps that result through an explicit backend switch to existing cards and workflows. A link-free organize request requires a button confirmation for the configured pilot root. A named non-pilot folder requires its exact Lark link. The model receives no tools and cannot select arguments, approve work, or reach a write path. Lark Wiki remains a later target when its access and workflow are approved.
 
 ## Architecture
 
 Use one modular Synvo Assistant Node.js application and PostgreSQL:
 
 ```text
-Lark App Bot -> message/OAuth handlers --+-> organize-folder workflow
+Lark App Bot -> local parser and bounded intent classifier
+             -> message/OAuth handlers --+-> organize-folder workflow
                                         |   -> authenticated local MCP client
                                         |      -> read-only inventory
                                         |      -> four bounded PDF analyses
@@ -51,7 +52,7 @@ Keep one process, one npm package, one configuration loader, and one database po
 
 MCP is a thin adapter in the existing process for external AI agents and the content-aware coordinator. It may expose only workflow capabilities that already have an authoritative policy owner; it must not duplicate provider access, workflow state, or authorization logic. Add tools individually when a real agent or workflow needs them—do not build a generic registry or second backend.
 
-NVIDIA NIM is a provider boundary inside the existing application, not another Synvo service. Phase 6 may add one small chat-completions client. Do not build a provider framework, automatic model router, model registry, fallback chain, prompt framework, or autonomous tool loop.
+NVIDIA NIM is a provider boundary inside the existing application, not another Synvo service. Keep its chat-completions client small; do not build a provider framework, automatic model router, model registry, fallback chain, prompt framework, or autonomous tool loop.
 
 ## Simplicity rules
 
@@ -100,13 +101,14 @@ If a change would introduce a new service, package, table, state machine, regist
 - Keep the MCP endpoint disabled unless a strong service credential is configured. During the single-user pilot, map that credential only to the configured Lark `open_id` and tenant; never accept actor identity from MCP tool arguments.
 - Expose only the read-only `organize_folder_inventory` and `analyze_drive_file` MCP tools until a separately approved workflow requires another capability.
 - Keep `LLM_API_KEY` only in ignored local configuration or hosted secret management. Never log it, persist it, place it in a job payload, or send it to Lark.
-- Accept Phase 6 input only from the configured user's direct PDF message. Bind the resource to the triggering message and reject arbitrary URLs, pasted resource keys, group messages, and attachments from other messages.
-- Accept Phase 7 input only from the configured user and one Lark Drive PDF link. Resolve it against the allowlisted root inventory and require an ordinary PDF owned by that user and located directly in the root before downloading it.
+- Accept attachment-analysis input only from the configured user's direct PDF message. Bind the resource to the triggering message and reject arbitrary URLs, pasted resource keys, group messages, and attachments from other messages.
+- Accept Drive-file-analysis input only from the configured user and one Lark Drive PDF link. Resolve it against the allowlisted root inventory and require an ordinary PDF owned by that user and located directly in the root before downloading it.
 - Require the read-only tenant scope `im:message:readonly` for that message-resource binding; do not persist a Lark file key as a shortcut around this boundary.
 - Treat extracted document content as untrusted data. The model receives no tools and cannot call MCP, Lark, Drive, the database, or another operational capability.
-- Keep Phase 9 tool order deterministic: inventory once, analyze the four accepted PDFs, then classify once. NVIDIA must not select or invoke tools.
+- Keep content-aware organization tool order deterministic: inventory once, analyze the four accepted PDFs, then classify once. NVIDIA must not select or invoke tools.
 - Enforce the attachment file, page, extracted-text, output, timeout, and retry limits from `workflows/analyze-attachment/policy.ts` before calling NVIDIA.
 - Never send Lark tokens, resource identifiers, links, user identifiers, raw attachment bytes, or unnecessary metadata to NVIDIA.
+- For natural-language routing, remove links and native identifiers locally, cap the unmatched text before NVIDIA, validate one five-intent response at the provider boundary, and let only the backend choose an existing workflow.
 - Use only disposable, non-sensitive documents with the hosted NVIDIA trial endpoint until Synvo approves processing real internal documents through that provider.
 - Bind OAuth state to the initiating message, user, tenant, redirect URI, scopes, and PKCE verifier.
 - Encrypt access and refresh tokens at rest and rotate refresh tokens atomically.
@@ -138,7 +140,7 @@ For every Drive write:
 - `apps/synvo-assistant/assets/`: small static assets uploaded once to Lark; never add runtime asset processing.
 - `apps/synvo-assistant/src/lark/command-parser.ts`: Lark chat command parsing only.
 - `apps/synvo-assistant/src/lark/assistant-card.ts`: capability, authorization, analysis-progress, analysis-result, and safe-notice cards only.
-- `apps/synvo-assistant/src/lark/organize-folder-card.ts`: organize-folder progress, proposal, decision, execution, and undo cards plus strict button-value parsing only.
+- `apps/synvo-assistant/src/lark/organize-folder-card.ts`: organize-folder confirmation, progress, proposal, decision, execution, and undo cards plus strict button-value parsing only.
 - `apps/synvo-assistant/src/lark/attachment.ts`: exact Lark file-message binding and bounded attachment download only.
 - `apps/synvo-assistant/src/web/`: HTTP routing for health, browser-based OAuth, and the MCP endpoint.
 - `apps/synvo-assistant/src/mcp/`: MCP protocol mapping, service authentication, and the narrow content-aware local client only; delegate all policy and provider work to workflows.
@@ -147,6 +149,7 @@ For every Drive write:
 - `apps/synvo-assistant/src/workflows/organize-folder/`: authorization sessions, bounded content coordinator, PostgreSQL persistence, workflow policy, state transitions, and user-facing formatting.
 - `apps/synvo-assistant/src/workflows/analyze-attachment/`: direct-PDF event policy, local extraction, NVIDIA NIM analysis, and progress-message orchestration.
 - `apps/synvo-assistant/src/workflows/analyze-drive-file/`: allowlisted Drive-PDF policy and reuse of the existing extraction, analysis, and progress path.
+- `apps/synvo-assistant/src/workflows/natural-language/`: deterministic intent policy, bounded sanitization, and the strict natural-language intent contract only.
 - `apps/synvo-assistant/src/delivery/`: durable outbound jobs and retry behavior.
 - `apps/synvo-assistant/src/db/` and `database/migrations/`: database lifecycle and immutable schema history.
 - `apps/synvo-assistant/src/doctor.ts`: concise readiness checks; do not duplicate workflow logic.

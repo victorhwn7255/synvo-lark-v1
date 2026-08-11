@@ -3,9 +3,10 @@ import test from "node:test";
 
 import {
   buildOrganizeFolderDecisionCard,
-  buildOrganizeFolderDecisionLoadingCard,
+  buildOrganizeFolderConfirmationCard,
   buildOrganizeFolderLoadingCard,
   buildOrganizeFolderOperationCard,
+  buildOrganizeFolderRequestAcceptedCard,
   buildOrganizeFolderResultCard,
   parseOrganizeFolderCardAction,
 } from "./organize-folder-card.js";
@@ -42,22 +43,20 @@ test("shows one in-progress card without claiming that work is complete", () => 
   assert.doesNotMatch(serialized, /completed/u);
 });
 
-test("shows an immediate transition while recording a proposal decision", () => {
-  const approved = JSON.stringify(
-    buildOrganizeFolderDecisionLoadingCard(
-      "APPROVED",
-      "img_v2_loading_hourglass",
-    ),
-  );
-  assert.match(approved, /Saving your approval/u);
-  assert.match(approved, /getting the organization workflow ready/u);
-  assert.match(approved, /img_v2_loading_hourglass/u);
+test("confirms the fixed pilot root without exposing its token", () => {
+  const serialized = JSON.stringify(buildOrganizeFolderConfirmationCard());
+  assert.match(serialized, /Start folder analysis/u);
+  assert.match(serialized, /approved pilot folder/u);
+  assert.match(serialized, /Nothing moves during this analysis/u);
+  assert.ok(serialized.includes('"action":"start_organize_folder"'));
+  assert.doesNotMatch(serialized, /folder_token|fldcn|root_token/iu);
+});
 
-  const rejected = JSON.stringify(
-    buildOrganizeFolderDecisionLoadingCard("REJECTED"),
+test("replaces the confirmation with a clear accepted state", () => {
+  assert.match(
+    JSON.stringify(buildOrganizeFolderRequestAcceptedCard()),
+    /Folder analysis requested/u,
   );
-  assert.match(rejected, /Saving your choice/u);
-  assert.match(rejected, /stay exactly as it is/u);
 });
 
 test("shows the optional animated loader without requiring it", () => {
@@ -97,6 +96,17 @@ test("does not show decision buttons while files need review", () => {
 });
 
 test("accepts only an exact supported decision and UUID", () => {
+  assert.deepEqual(
+    parseOrganizeFolderCardAction({ action: "start_organize_folder" }),
+    { type: "start" },
+  );
+  assert.equal(
+    parseOrganizeFolderCardAction({
+      action: "start_organize_folder",
+      folder_token: "must-not-be-accepted",
+    }),
+    null,
+  );
   assert.deepEqual(
     parseOrganizeFolderCardAction({
       action: "approve_folder",

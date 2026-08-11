@@ -263,3 +263,47 @@ test("rejects a classifier request outside the four-file bound before NVIDIA", a
   );
   assert.equal(called, false);
 });
+
+test("returns one strict natural-language intent without tools", async () => {
+  const calls: RequestInit[] = [];
+  const client = new NvidiaNimClient({
+    ...baseOptions,
+    fetchImplementation: (async (_url, init) => {
+      calls.push(init ?? {});
+      return completion(JSON.stringify({ intent: "organize_folder" }));
+    }) as typeof fetch,
+  });
+
+  assert.deepEqual(
+    await client.classifyIntent({ text: "Could you sort this out for me?" }),
+    { intent: "organize_folder" },
+  );
+  const body = JSON.parse(String(calls[0]?.body)) as Record<string, unknown>;
+  assert.equal("tools" in body, false);
+  assert.equal(body.temperature, 0);
+  assert.match(JSON.stringify(body), /You have no tools/u);
+});
+
+for (const [name, content, finishReason] of [
+  ["non-JSON intent output", "organize_folder", "stop"],
+  [
+    "intent output with a model-generated tool",
+    JSON.stringify({ intent: "organize_folder", tool: "move_file" }),
+    "stop",
+  ],
+  ["unknown intent name", JSON.stringify({ intent: "approve_folder" }), "stop"],
+  ["truncated intent output", JSON.stringify({ intent: "help" }), "length"],
+] as const) {
+  test(`rejects ${name}`, async () => {
+    const client = new NvidiaNimClient({
+      ...baseOptions,
+      fetchImplementation: (async () =>
+        completion(content, finishReason)) as typeof fetch,
+    });
+    await assert.rejects(
+      client.classifyIntent({ text: "unmatched request" }),
+      (error: unknown) =>
+        error instanceof NimAnalysisError && error.code === "INVALID_RESPONSE",
+    );
+  });
+}
