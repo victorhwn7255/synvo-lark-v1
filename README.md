@@ -146,7 +146,6 @@ npm run typecheck
 npm test
 npm run test:integration
 npm run doctor
-npm run evaluate:phase13
 ```
 
 Detailed completed acceptance procedures are archived instead of being maintained as active setup instructions. See `tasks/archive/organize-folder-implementation-plan.md`, `tasks/archive/analyze-attachment-acceptance.md`, `tasks/archive/analyze-drive-file-implementation-plan.md`, `tasks/archive/content-aware-execution-implementation-plan.md`, `tasks/archive/natural-language-interaction-implementation-plan.md`, and `tasks/archive/folder-knowledge-rag-implementation-plan.md`.

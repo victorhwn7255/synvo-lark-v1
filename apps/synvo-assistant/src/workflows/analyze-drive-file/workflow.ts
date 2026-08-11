@@ -6,14 +6,10 @@ import { LarkAuthError, type TokenCipher } from "../../lark/auth/index.js";
 import {
   DriveToolError,
   driveToolError,
-  type DriveFileDownloader,
-  type DriveReader,
   type NativeDriveItem,
-  listFolderCompletely,
   parseLarkDriveFileLink,
   parseLarkDriveFolderLink,
   requireAllowlistedRoot,
-  withReadOnlyDriveTokenRecovery,
 } from "../../lark/drive/index.js";
 import {
   formatPdfAnalysis,
@@ -24,32 +20,18 @@ import { extractPdfText, PdfInputError } from "../analyze-attachment/pdf.js";
 import type { ExtractedPdf } from "../analyze-attachment/pdf.js";
 import {
   ANALYZE_ATTACHMENT_JOB_TTL_MS,
-  ANALYZE_ATTACHMENT_MAX_BYTES,
 } from "../analyze-attachment/policy.js";
 import {
   NimAnalysisError,
   type NvidiaNimClient,
 } from "../analyze-attachment/nim-client.js";
-import { organizeFolderPilotPolicy } from "../organize-folder/pilot-policy.js";
+import { AuthorizedDrivePdfReader } from "./authorized-reader.js";
 
 const DEDUPE_PREFIX = "analyze-drive-file:";
 
 type JobContext = {
   fileToken: string;
   progressMessageId: string | null;
-};
-type AccessTokenProvider = {
-  getAccessToken(openId: string, tenantKey: string): Promise<string>;
-  recoverAccessToken(
-    openId: string,
-    tenantKey: string,
-    rejectedAccessToken: string,
-  ): Promise<string>;
-  markAccessTokenRejected(
-    openId: string,
-    tenantKey: string,
-    rejectedAccessToken: string,
-  ): Promise<void>;
 };
 type Analyzer = Pick<NvidiaNimClient, "analyze">;
 
@@ -72,16 +54,6 @@ export type AnalyzeDriveFileResult =
       ok: false;
       error: { message: string; retryable: boolean };
     };
-
-export type KnowledgeDriveFile = {
-  token: string;
-  name: string;
-  version: string;
-};
-
-export type KnowledgeDrivePdf = KnowledgeDriveFile & {
-  bytes: Buffer;
-};
 
 function parseJobContext(value: string): JobContext {
   try {
@@ -155,9 +127,7 @@ export function formatAnalyzeDriveFileResult(
 export class AnalyzeDriveFileWorkflow {
   readonly #queue: DeliveryQueue;
   readonly #cipher: TokenCipher;
-  readonly #tokenBroker: AccessTokenProvider;
-  readonly #driveReader: DriveReader;
-  readonly #downloader: DriveFileDownloader;
+  readonly #pdfReader: AuthorizedDrivePdfReader;
   readonly #analyzer: Analyzer;
   readonly #messenger: AttachmentProgressMessenger;
   readonly #rootToken: string;
@@ -169,9 +139,7 @@ export class AnalyzeDriveFileWorkflow {
   constructor(options: {
     queue: DeliveryQueue;
     cipher: TokenCipher;
-    tokenBroker: AccessTokenProvider;
-    driveReader: DriveReader;
-    downloader: DriveFileDownloader;
+    pdfReader: AuthorizedDrivePdfReader;
     analyzer: Analyzer;
     messenger: AttachmentProgressMessenger;
     rootToken: string;
@@ -182,9 +150,7 @@ export class AnalyzeDriveFileWorkflow {
   }) {
     this.#queue = options.queue;
     this.#cipher = options.cipher;
-    this.#tokenBroker = options.tokenBroker;
-    this.#driveReader = options.driveReader;
-    this.#downloader = options.downloader;
+    this.#pdfReader = options.pdfReader;
     this.#analyzer = options.analyzer;
     this.#messenger = options.messenger;
     this.#rootToken = options.rootToken;
@@ -213,7 +179,7 @@ export class AnalyzeDriveFileWorkflow {
     let fileToken: string;
     try {
       fileToken = parseLarkDriveFileLink(input.fileLink);
-      await this.#tokenBroker.getAccessToken(input.requesterOpenId, input.tenantKey);
+      await this.#pdfReader.verifyAccess(input);
     } catch (error) {
       return {
         kind: "rejected",
@@ -267,7 +233,7 @@ export class AnalyzeDriveFileWorkflow {
     try {
       const folderToken = parseLarkDriveFolderLink(input.folderLink);
       requireAllowlistedRoot(folderToken, this.#rootToken);
-      const items = await this.#listRoot();
+      const items = await this.#pdfReader.listRootItems(input);
       const matches = items.filter((item) => item.name === input.fileName);
       if (matches.length === 0) {
         throw driveToolError(
@@ -298,62 +264,6 @@ export class AnalyzeDriveFileWorkflow {
         },
       };
     }
-  }
-
-  async listKnowledgeFiles(input: {
-    requesterOpenId: string;
-    tenantKey: string;
-  }): Promise<KnowledgeDriveFile[]> {
-    this.#requirePilotIdentity(input.requesterOpenId, input.tenantKey);
-    const items = await this.#listRoot();
-    return items
-      .filter(
-        (item) =>
-          item.parentToken === this.#rootToken &&
-          item.ownerId === this.#requesterOpenId &&
-          item.type === "file" &&
-          /\.pdf$/iu.test(item.name) &&
-          typeof item.modifiedTime === "string",
-      )
-      .map((item) => ({
-        token: item.token,
-        name: item.name,
-        version: item.modifiedTime!,
-      }))
-      .sort((left, right) =>
-        left.name.localeCompare(right.name) || left.token.localeCompare(right.token),
-      );
-  }
-
-  async readKnowledgeFile(input: {
-    requesterOpenId: string;
-    tenantKey: string;
-    fileToken: string;
-    expectedVersion: string;
-  }): Promise<KnowledgeDrivePdf> {
-    this.#requirePilotIdentity(input.requesterOpenId, input.tenantKey);
-    const before = await this.#findKnowledgeFile(
-      input.fileToken,
-      input.expectedVersion,
-    );
-    const bytes = await this.#withAccessToken((accessToken) =>
-      this.#downloader.download({
-        accessToken,
-        fileToken: before.token,
-        maxBytes: ANALYZE_ATTACHMENT_MAX_BYTES,
-      }),
-    );
-    const after = await this.#findKnowledgeFile(
-      input.fileToken,
-      input.expectedVersion,
-    );
-    if (after.name !== before.name) {
-      throw driveToolError(
-        "INCOMPLETE_SCAN",
-        "The Drive PDF changed while it was being read.",
-      );
-    }
-    return { ...after, bytes };
   }
 
   async process(
@@ -404,7 +314,10 @@ export class AnalyzeDriveFileWorkflow {
     fileToken: string,
     beforeModelCall?: () => Promise<void>,
   ): Promise<Extract<AnalyzeDriveFileResult, { ok: true }>["analysis"]> {
-    const items = await this.#listRoot();
+    const items = await this.#pdfReader.listRootItems({
+      requesterOpenId: this.#requesterOpenId,
+      tenantKey: this.#tenantKey,
+    });
     const matches = items.filter((item) => item.token === fileToken);
     const file = matches.length === 1 ? matches[0] : undefined;
     if (!file) {
@@ -416,72 +329,15 @@ export class AnalyzeDriveFileWorkflow {
     return this.#analyzeResolvedFile(file, beforeModelCall);
   }
 
-  #listRoot(): Promise<NativeDriveItem[]> {
-    return this.#withAccessToken((accessToken) =>
-      listFolderCompletely(this.#driveReader, {
-        accessToken,
-        folderToken: this.#rootToken,
-        maxItems: organizeFolderPilotPolicy.maxRootItems,
-      }),
-    );
-  }
-
-  #requirePilotIdentity(requesterOpenId: string, tenantKey: string): void {
-    if (
-      requesterOpenId !== this.#requesterOpenId ||
-      tenantKey !== this.#tenantKey
-    ) {
-      throw driveToolError(
-        "UNAUTHORIZED",
-        "Drive knowledge is not available for this account.",
-      );
-    }
-  }
-
-  async #findKnowledgeFile(
-    fileToken: string,
-    expectedVersion: string,
-  ): Promise<KnowledgeDriveFile> {
-    const file = (await this.listKnowledgeFiles({
-      requesterOpenId: this.#requesterOpenId,
-      tenantKey: this.#tenantKey,
-    })).find((candidate) => candidate.token === fileToken);
-    if (!file || file.version !== expectedVersion) {
-      throw driveToolError(
-        "INCOMPLETE_SCAN",
-        "The Drive PDF no longer matches the approved knowledge snapshot.",
-      );
-    }
-    return file;
-  }
-
   async #analyzeResolvedFile(
     file: NativeDriveItem,
     beforeModelCall?: () => Promise<void>,
   ): Promise<Extract<AnalyzeDriveFileResult, { ok: true }>["analysis"]> {
-    if (
-      file.parentToken !== this.#rootToken ||
-      file.ownerId !== this.#requesterOpenId
-    ) {
-      throw driveToolError(
-        "ROOT_NOT_ALLOWLISTED",
-        "The Drive file is outside the approved pilot root.",
-      );
-    }
-    if (file.type !== "file" || !/\.pdf$/iu.test(file.name)) {
-      throw driveToolError(
-        "INVALID_FILE_LINK",
-        "Only ordinary PDF files are supported.",
-      );
-    }
-
-    const bytes = await this.#withAccessToken((accessToken) =>
-      this.#downloader.download({
-        accessToken,
-        fileToken: file.token,
-        maxBytes: ANALYZE_ATTACHMENT_MAX_BYTES,
-      }),
-    );
+    const bytes = await this.#pdfReader.downloadRootPdf({
+      requesterOpenId: this.#requesterOpenId,
+      tenantKey: this.#tenantKey,
+      file,
+    });
     const pdf = await this.#extractPdf(bytes);
     await beforeModelCall?.();
     const analysis = await this.#analyzer.analyze({
@@ -497,31 +353,4 @@ export class AnalyzeDriveFileWorkflow {
     };
   }
 
-  async #withAccessToken<Result>(
-    operation: (accessToken: string) => Promise<Result>,
-  ): Promise<Result> {
-    const accessToken = await this.#tokenBroker.getAccessToken(
-      this.#requesterOpenId,
-      this.#tenantKey,
-    );
-    const recovered = await withReadOnlyDriveTokenRecovery(
-      {
-        accessToken,
-        recoverAccessToken: (rejectedAccessToken) =>
-          this.#tokenBroker.recoverAccessToken(
-            this.#requesterOpenId,
-            this.#tenantKey,
-            rejectedAccessToken,
-          ),
-        markAccessTokenRejected: (rejectedAccessToken) =>
-          this.#tokenBroker.markAccessTokenRejected(
-            this.#requesterOpenId,
-            this.#tenantKey,
-            rejectedAccessToken,
-          ),
-      },
-      operation,
-    );
-    return recovered.result;
-  }
 }

@@ -6,9 +6,9 @@ import type { TokenCipher } from "../../lark/auth/index.js";
 import { LarkAttachmentError, type LarkAttachmentClient } from "../../lark/attachment.js";
 import { DriveToolError } from "../../lark/drive/index.js";
 import type {
-  AnalyzeDriveFileWorkflow,
   KnowledgeDriveFile,
-} from "../analyze-drive-file/workflow.js";
+  AuthorizedDrivePdfReader,
+} from "../analyze-drive-file/authorized-reader.js";
 import {
   extractPdfText,
   PdfInputError,
@@ -43,7 +43,7 @@ const REFRESH_SNAPSHOT_TTL_MS = 10 * 60_000;
 
 type AttachmentReader = Pick<LarkAttachmentClient, "downloadPdf">;
 type DriveKnowledgeReader = Pick<
-  AnalyzeDriveFileWorkflow,
+  AuthorizedDrivePdfReader,
   "listKnowledgeFiles" | "readKnowledgeFile"
 >;
 type Embedder = Pick<VoyageEmbeddingClient, "embedDocuments" | "embedQuery">;
@@ -548,11 +548,7 @@ export class KnowledgeWorkflow {
     context: Extract<KnowledgeJobContext, { operation: "refresh_drive" }>,
     progressMessageId: string,
   ): Promise<void> {
-    const currentVersions = new Map(
-      (await this.#repository.listSources(this.#scope))
-        .filter((source) => source.sourceKind === "drive_file")
-        .map((source) => [source.sourceKey, source.sourceVersionOrHash]),
-    );
+    const currentVersions = await this.#storedDriveVersions();
     const totalFiles = context.files.length;
     let completedFiles = context.files.filter(
       (file) => currentVersions.get(file.token) === file.version,
@@ -704,11 +700,7 @@ export class KnowledgeWorkflow {
     if (!progressMessageId) {
       return;
     }
-    const versions = new Map(
-      (await this.#repository.listSources(this.#scope))
-        .filter((source) => source.sourceKind === "drive_file")
-        .map((source) => [source.sourceKey, source.sourceVersionOrHash]),
-    );
+    const versions = await this.#storedDriveVersions();
     const completedFiles = context.files.filter(
       (file) => versions.get(file.token) === file.version,
     ).length;
@@ -747,6 +739,14 @@ export class KnowledgeWorkflow {
       throw new Error("Knowledge refresh approval is expired or unauthorized");
     }
     return snapshot;
+  }
+
+  async #storedDriveVersions(): Promise<Map<string, string>> {
+    return new Map(
+      (await this.#repository.listSources(this.#scope))
+        .filter((source) => source.sourceKind === "drive_file")
+        .map((source) => [source.sourceKey, source.sourceVersionOrHash]),
+    );
   }
 
   #encodeSourceReference(source: SourceReference): string {

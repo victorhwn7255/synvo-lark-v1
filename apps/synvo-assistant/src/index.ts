@@ -60,6 +60,7 @@ import { acceptAttachmentEvent } from "./workflows/analyze-attachment/event.js";
 import { NvidiaNimClient } from "./workflows/analyze-attachment/nim-client.js";
 import { ANALYZE_ATTACHMENT_NIM_TIMEOUT_MS } from "./workflows/analyze-attachment/policy.js";
 import { AnalyzeAttachmentWorkflow } from "./workflows/analyze-attachment/workflow.js";
+import { AuthorizedDrivePdfReader } from "./workflows/analyze-drive-file/authorized-reader.js";
 import { AnalyzeDriveFileWorkflow } from "./workflows/analyze-drive-file/workflow.js";
 import { KnowledgeRepository } from "./workflows/knowledge/repository.js";
 import { VoyageEmbeddingClient } from "./workflows/knowledge/voyage-client.js";
@@ -299,13 +300,21 @@ async function main(): Promise<void> {
           messenger: { create: createAnalysisCard, update: updateAnalysisCard },
         })
       : undefined;
-  const driveFileWorkflow = pilotIdentity
-    ? new AnalyzeDriveFileWorkflow({
-        queue: deliveryQueue,
-        cipher,
+  const authorizedDrivePdfReader = pilotIdentity
+    ? new AuthorizedDrivePdfReader({
         tokenBroker,
         driveReader,
         downloader: new LarkDriveFileDownloader(),
+        rootToken: config.organizeFolderRootToken,
+        requesterOpenId: pilotIdentity.openId,
+        tenantKey: pilotIdentity.tenantKey,
+      })
+    : undefined;
+  const driveFileWorkflow = pilotIdentity && authorizedDrivePdfReader
+    ? new AnalyzeDriveFileWorkflow({
+        queue: deliveryQueue,
+        cipher,
+        pdfReader: authorizedDrivePdfReader,
         analyzer: nimClient,
         messenger: { create: createAnalysisCard, update: updateAnalysisCard },
         rootToken: config.organizeFolderRootToken,
@@ -314,14 +323,14 @@ async function main(): Promise<void> {
       })
     : undefined;
   const knowledgeWorkflow =
-    pilotIdentity && attachmentClient && driveFileWorkflow
+    pilotIdentity && attachmentClient && authorizedDrivePdfReader
       ? new KnowledgeWorkflow({
           queue: deliveryQueue,
           cipher,
           repository: new KnowledgeRepository(pool),
           embedder: new VoyageEmbeddingClient({ apiKey: config.voyageApiKey }),
           attachmentReader: attachmentClient,
-          driveReader: driveFileWorkflow,
+          driveReader: authorizedDrivePdfReader,
           answerer: nimClient,
           messenger: {
             create: (chatId, progress, idempotencyKey) =>

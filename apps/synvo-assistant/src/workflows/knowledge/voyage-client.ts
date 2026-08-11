@@ -8,13 +8,10 @@ import {
 } from "./policy.js";
 
 const VOYAGE_EMBEDDINGS_URL = "https://api.voyageai.com/v1/embeddings";
-const MAX_ATTEMPTS = 6;
-const MAX_RETRY_DELAY_MS = 60_000;
 
 export class VoyageEmbeddingError extends Error {
   readonly retryable: boolean;
   readonly category: "INVALID_RESPONSE" | "RATE_LIMITED" | "REJECTED" | "TIMEOUT" | "UNAVAILABLE";
-  readonly retryAfterMs: number | null;
 
   constructor(
     message: string,
@@ -22,13 +19,11 @@ export class VoyageEmbeddingError extends Error {
     category: VoyageEmbeddingError["category"] = retryable
       ? "UNAVAILABLE"
       : "INVALID_RESPONSE",
-    retryAfterMs: number | null = null,
   ) {
     super(message);
     this.name = "VoyageEmbeddingError";
     this.retryable = retryable;
     this.category = category;
-    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -41,21 +36,6 @@ export type VoyageEmbeddingHooks = {
   beforeBatch?: () => Promise<void>;
   onBatchComplete?: (progress: VoyageEmbeddingProgress) => Promise<void>;
 };
-
-function retryAfterMs(response: Response): number | null {
-  const value = response.headers.get("retry-after");
-  if (value === null) {
-    return null;
-  }
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    return Math.min(MAX_RETRY_DELAY_MS, seconds * 1_000);
-  }
-  const date = Date.parse(value);
-  return Number.isFinite(date)
-    ? Math.min(MAX_RETRY_DELAY_MS, Math.max(0, date - Date.now()))
-    : null;
-}
 
 async function wait(ms: number): Promise<void> {
   if (ms > 0) {
@@ -177,26 +157,7 @@ export class VoyageEmbeddingClient {
     if (texts.length < 1 || texts.length > KNOWLEDGE_EMBEDDING_BATCH_SIZE) {
       throw new VoyageEmbeddingError("Voyage embedding batch is invalid");
     }
-    let lastError: VoyageEmbeddingError | null = null;
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-      try {
-        return await this.#request(texts, inputType);
-      } catch (error) {
-        lastError = error instanceof VoyageEmbeddingError
-          ? error
-          : new VoyageEmbeddingError("Voyage is temporarily unavailable", true);
-        if (!lastError.retryable || attempt === MAX_ATTEMPTS) {
-          throw lastError;
-        }
-        if (lastError.category === "RATE_LIMITED") {
-          await wait(
-            lastError.retryAfterMs ??
-              Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** attempt),
-          );
-        }
-      }
-    }
-    throw lastError ?? new VoyageEmbeddingError("Voyage is unavailable", true);
+    return this.#request(texts, inputType);
   }
 
   async #request(
@@ -245,7 +206,6 @@ export class VoyageEmbeddingClient {
           "Voyage is temporarily unavailable",
           true,
           response.status === 429 ? "RATE_LIMITED" : "UNAVAILABLE",
-          response.status === 429 ? retryAfterMs(response) : null,
         );
       }
       if (response.status === 401 || response.status === 403) {

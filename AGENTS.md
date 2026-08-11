@@ -168,7 +168,7 @@ For every Drive write:
 - `apps/synvo-assistant/src/lark/drive/`: Drive link parsing, provider response validation, bounded reads, inventory observations, and the single file-move operation.
 - `apps/synvo-assistant/src/workflows/organize-folder/`: authorization sessions, bounded content coordinator, PostgreSQL persistence, workflow policy, state transitions, and user-facing formatting.
 - `apps/synvo-assistant/src/workflows/analyze-attachment/`: direct-PDF event policy, local extraction, NVIDIA NIM analysis, and progress-message orchestration.
-- `apps/synvo-assistant/src/workflows/analyze-drive-file/`: allowlisted Drive-PDF policy and reuse of the existing extraction, analysis, and progress path.
+- `apps/synvo-assistant/src/workflows/analyze-drive-file/`: the shared authorized Drive-PDF reader, allowlisted analysis policy, and reuse of the existing extraction, analysis, and progress path.
 - `apps/synvo-assistant/src/workflows/natural-language/`: bounded sanitization and the strict semantic intent and folder-reference contract only.
 - `apps/synvo-assistant/src/workflows/knowledge/`: fixed knowledge policy, page-aware chunking, Voyage boundary, scoped repository, resumable ingestion/refresh jobs with exact-job cancellation, retrieval, and grounded-answer ownership.
 - `apps/synvo-assistant/src/workflows/workspace-context/`: bounded top-level My Folders discovery and exact active-root matching; semantic intent recognition remains in the existing natural-language boundary.

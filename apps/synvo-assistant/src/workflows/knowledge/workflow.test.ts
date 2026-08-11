@@ -69,8 +69,6 @@ class FakeRepository {
       sourceKey: source.sourceKey,
       sourceName: source.sourceName,
       sourceVersionOrHash: source.sourceVersionOrHash,
-      chunkCount: source.chunks.length,
-      indexedAt: new Date(),
     });
     return "replaced" as const;
   }
@@ -269,8 +267,6 @@ test("refresh approval is exact, expiring, and revalidates each Drive file", asy
       sourceKey: "old-token",
       sourceName: "old.pdf",
       sourceVersionOrHash: "1",
-      chunkCount: 1,
-      indexedAt: new Date(),
     },
   ];
   const { workflow, queue, messenger } = makeWorkflow({
@@ -342,8 +338,6 @@ test("a retried refresh skips a Drive file version already indexed", async () =>
     sourceKey: "current-token",
     sourceName: "current.pdf",
     sourceVersionOrHash: "2",
-    chunkCount: 1,
-    indexedAt: new Date(),
   }];
   const input = queue.inputs[0]!;
   const job = queuedJob(input);
@@ -427,14 +421,9 @@ test("answers only from bounded retrieved evidence and handles an empty vault", 
 
   repository.hits = [
     {
-      sourceKind: "drive_file",
-      sourceKey: "native-token",
       sourceName: "Guide.pdf",
       pageNumber: 4,
-      heading: "Chunking",
-      chunkIndex: 0,
       text: "Page-aware chunks preserve provenance.",
-      similarity: 0.9,
     },
   ];
   assert.deepEqual(await workflow.searchWorkspace("How are chunks created?"), {
@@ -447,14 +436,9 @@ test("answers only from bounded retrieved evidence and handles an empty vault", 
 test("verifies the active workspace and enforces the evidence budget before answering", async () => {
   const repository = new FakeRepository();
   repository.hits = Array.from({ length: 10 }, (_, index) => ({
-    sourceKind: "drive_file" as const,
-    sourceKey: `token-${index}`,
     sourceName: `Guide-${index}.pdf`,
     pageNumber: index + 1,
-    heading: null,
-    chunkIndex: index,
     text: "x".repeat(3_000),
-    similarity: 0.9 - index / 100,
   }));
   let evidence: Array<{ label: string; text: string }> = [];
   const { workflow } = makeWorkflow({

@@ -14,6 +14,7 @@ import type {
   NativeDriveItem,
 } from "../../lark/drive/index.js";
 import { driveToolError } from "../../lark/drive/index.js";
+import { AuthorizedDrivePdfReader } from "./authorized-reader.js";
 import { AnalyzeDriveFileWorkflow } from "./workflow.js";
 
 const cipher = new TokenCipher(Buffer.alloc(32, 8));
@@ -84,21 +85,28 @@ function fixture(options: {
       return Buffer.from("%PDF-test");
     },
   };
+  const tokenBroker = {
+    async getAccessToken() {
+      if (options.tokenError) {
+        throw options.tokenError;
+      }
+      return "access-one";
+    },
+    async recoverAccessToken() { recoveries += 1; return "access-two"; },
+    async markAccessTokenRejected() { rejections += 1; },
+  };
+  const pdfReader = new AuthorizedDrivePdfReader({
+    tokenBroker,
+    driveReader,
+    downloader,
+    rootToken: "fldcnRoot123",
+    requesterOpenId: "ou_victor",
+    tenantKey: "tenant_synvo",
+  });
   const workflow = new AnalyzeDriveFileWorkflow({
     queue,
     cipher,
-    tokenBroker: {
-      async getAccessToken() {
-        if (options.tokenError) {
-          throw options.tokenError;
-        }
-        return "access-one";
-      },
-      async recoverAccessToken() { recoveries += 1; return "access-two"; },
-      async markAccessTokenRejected() { rejections += 1; },
-    },
-    driveReader,
-    downloader,
+    pdfReader,
     analyzer: {
       async analyze() { return { text: "Grounded result", truncated: false }; },
     },
@@ -118,6 +126,7 @@ function fixture(options: {
   });
   return {
     workflow,
+    pdfReader,
     queue,
     updates,
     downloads: () => downloads,
@@ -243,7 +252,7 @@ test("lists only owned direct-root ordinary PDFs with a provider version", async
   });
 
   assert.deepEqual(
-    await testFixture.workflow.listKnowledgeFiles({
+    await testFixture.pdfReader.listKnowledgeFiles({
       requesterOpenId: "ou_victor",
       tenantKey: "tenant_synvo",
     }),
@@ -261,7 +270,7 @@ test("revalidates a Drive PDF before and after the bounded download", async () =
     modifiedTime: "1723334400",
   };
   const stable = fixture({ items: [file] });
-  const result = await stable.workflow.readKnowledgeFile({
+  const result = await stable.pdfReader.readKnowledgeFile({
     requesterOpenId: "ou_victor",
     tenantKey: "tenant_synvo",
     fileToken: file.token,
@@ -277,7 +286,7 @@ test("revalidates a Drive PDF before and after the bounded download", async () =
     itemResponses: [[file], [{ ...file, modifiedTime: "1723334401" }]],
   });
   await assert.rejects(
-    changed.workflow.readKnowledgeFile({
+    changed.pdfReader.readKnowledgeFile({
       requesterOpenId: "ou_victor",
       tenantKey: "tenant_synvo",
       fileToken: file.token,

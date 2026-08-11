@@ -13,8 +13,6 @@ export type KnowledgeSource = {
   sourceKey: string;
   sourceName: string;
   sourceVersionOrHash: string;
-  chunkCount: number;
-  indexedAt: Date;
 };
 
 export type KnowledgeChunkInput = {
@@ -26,14 +24,9 @@ export type KnowledgeChunkInput = {
 };
 
 export type KnowledgeSearchHit = {
-  sourceKind: KnowledgeSourceKind;
-  sourceKey: string;
   sourceName: string;
   pageNumber: number;
-  heading: string | null;
-  chunkIndex: number;
   text: string;
-  similarity: number;
 };
 
 function vectorLiteral(embedding: number[]): string {
@@ -136,16 +129,12 @@ export class KnowledgeRepository {
       source_key: string;
       source_name: string;
       source_version_or_hash: string;
-      chunk_count: string;
-      indexed_at: Date;
     }>(
-      `SELECT source_kind, source_key, source_name, source_version_or_hash,
-              count(*)::text AS chunk_count, max(indexed_at) AS indexed_at
+      `SELECT DISTINCT source_kind, source_key, source_name, source_version_or_hash
          FROM workspace_chunks
         WHERE tenant_key = $1
           AND user_open_id = $2
           AND workspace_folder_token = $3
-        GROUP BY source_kind, source_key, source_name, source_version_or_hash
         ORDER BY source_name, source_kind, source_key`,
       [scope.tenantKey, scope.userOpenId, scope.workspaceFolderToken],
     );
@@ -154,8 +143,6 @@ export class KnowledgeRepository {
       sourceKey: row.source_key,
       sourceName: row.source_name,
       sourceVersionOrHash: row.source_version_or_hash,
-      chunkCount: Number(row.chunk_count),
-      indexedAt: row.indexed_at,
     }));
   }
 
@@ -176,18 +163,11 @@ export class KnowledgeRepository {
   }): Promise<KnowledgeSearchHit[]> {
     const vector = vectorLiteral(input.embedding);
     const result = await this.#pool.query<{
-      source_kind: KnowledgeSourceKind;
-      source_key: string;
       source_name: string;
       page_number: number;
-      heading: string | null;
-      chunk_index: number;
       chunk_text: string;
-      similarity: number | string;
     }>(
-      `SELECT source_kind, source_key, source_name, page_number, heading,
-              chunk_index, chunk_text,
-              1 - (embedding <=> $4::vector) AS similarity
+      `SELECT source_name, page_number, chunk_text
          FROM workspace_chunks
         WHERE tenant_key = $1
           AND user_open_id = $2
@@ -205,14 +185,9 @@ export class KnowledgeRepository {
       ],
     );
     return result.rows.map((row) => ({
-      sourceKind: row.source_kind,
-      sourceKey: row.source_key,
       sourceName: row.source_name,
       pageNumber: row.page_number,
-      heading: row.heading,
-      chunkIndex: row.chunk_index,
       text: row.chunk_text,
-      similarity: Number(row.similarity),
     }));
   }
 

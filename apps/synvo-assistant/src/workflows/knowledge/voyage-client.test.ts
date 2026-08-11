@@ -117,23 +117,27 @@ test("rejects malformed, missing, and wrong-dimensional embeddings", async () =>
   }
 });
 
-test("retries one rate limit and then succeeds", async () => {
+test("leaves retryable rate limits to the durable delivery worker", async () => {
   let calls = 0;
   const client = new VoyageEmbeddingClient({
     apiKey: "v".repeat(32),
     minRequestIntervalMs: 0,
     fetchImplementation: async () => {
       calls += 1;
-      return calls === 1
-        ? new Response("busy", {
-            status: 429,
-            headers: { "retry-after": "0" },
-          })
-        : responseFor(1);
+      return new Response("busy", {
+        status: 429,
+        headers: { "retry-after": "0" },
+      });
     },
   });
-  assert.equal((await client.embedQuery("question")).length, 1_024);
-  assert.equal(calls, 2);
+  await assert.rejects(
+    client.embedQuery("question"),
+    (error: unknown) =>
+      error instanceof VoyageEmbeddingError &&
+      error.retryable &&
+      error.category === "RATE_LIMITED",
+  );
+  assert.equal(calls, 1);
 });
 
 test("categorizes a persistent rate limit without exposing its response", async () => {
