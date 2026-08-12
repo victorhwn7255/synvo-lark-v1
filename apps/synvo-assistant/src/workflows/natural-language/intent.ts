@@ -36,6 +36,7 @@ export const naturalLanguageIntentSchema = z
       "acknowledgement",
       "help",
       "current_workspace",
+      "refresh_workspace",
       "ask_workspace",
       "organize_folder",
       "analyze_drive_file",

@@ -6,6 +6,10 @@ import type {
   KnowledgeProgress,
   KnowledgeRefreshProposal,
 } from "../workflows/knowledge/workflow.js";
+import {
+  KNOWLEDGE_MAX_RELATIVE_PATH_CODE_POINTS,
+  KNOWLEDGE_REFRESH_SNAPSHOT_MAX_CODE_UNITS,
+} from "../workflows/knowledge/policy.js";
 
 function config(): InteractiveCard["config"] {
   return { enable_forward: false, update_multi: true, wide_screen_mode: true };
@@ -20,6 +24,14 @@ export type KnowledgeCardAction =
   | { type: "refresh_stop"; jobId: string }
   | { type: "remove_request"; sourceReference: string; sourceName: string }
   | { type: "remove_confirm"; sourceReference: string; sourceName: string };
+
+function sanitizeKnowledgeSourceName(value: string, fallback = "PDF file"): string {
+  return sanitizeDisplayValue(
+    value,
+    fallback,
+    KNOWLEDGE_MAX_RELATIVE_PATH_CODE_POINTS,
+  );
+}
 
 export function parseKnowledgeCardAction(value: unknown): KnowledgeCardAction | null {
   if (typeof value !== "object" || value === null) {
@@ -40,7 +52,7 @@ export function parseKnowledgeCardAction(value: unknown): KnowledgeCardAction | 
   if (
     type === "refresh_confirm" &&
     typeof record.snapshot === "string" &&
-    record.snapshot.length <= 8_000
+    record.snapshot.length <= KNOWLEDGE_REFRESH_SNAPSHOT_MAX_CODE_UNITS
   ) {
     return { type, snapshot: record.snapshot };
   }
@@ -149,9 +161,10 @@ export function buildKnowledgeNotNowCard(): InteractiveCard {
 export function buildKnowledgeProgressCard(
   progress: KnowledgeProgress,
   loadingImageKey?: string,
+  workspaceUrl?: URL,
 ): InteractiveCard {
   if (progress.answer) {
-    return buildKnowledgeAnswerCard(progress.answer);
+    return buildKnowledgeAnswerCard(progress.answer, workspaceUrl);
   }
   const complete = progress.stage === "complete";
   const failed = progress.stage === "failed";
@@ -286,7 +299,7 @@ function buildRefreshProgressDetails(progress: KnowledgeProgress): string {
     lines.push(
       "",
       "**Current file**",
-      sanitizeDisplayValue(progress.currentFile, "PDF file"),
+      sanitizeKnowledgeSourceName(progress.currentFile),
     );
   }
   if (progress.chunkCount !== undefined) {
@@ -306,29 +319,50 @@ function buildRefreshProgressDetails(progress: KnowledgeProgress): string {
 export function buildKnowledgeRefreshProposalCard(
   proposal: KnowledgeRefreshProposal,
 ): InteractiveCard {
-  const changed = proposal.files.length === 0
-    ? "No new or changed PDFs."
-    : proposal.files
-        .map((file) => `• ${sanitizeDisplayValue(file.name, "PDF file")}`)
-        .join("\n");
+  const sections: string[] = [];
+  if (proposal.files.length > 0) {
+    sections.push(
+      "**PDFs to add or refresh**",
+      ...proposal.files.map(
+        (file) => `• ${sanitizeKnowledgeSourceName(file.name)}`,
+      ),
+    );
+  }
+  if (proposal.pathUpdates.length > 0) {
+    if (sections.length > 0) {
+      sections.push("");
+    }
+    sections.push(
+      "**Paths to update without reprocessing**",
+      ...proposal.pathUpdates.flatMap((file) => [
+        `• ${sanitizeKnowledgeSourceName(file.name)}`,
+        `  Previously: ${sanitizeKnowledgeSourceName(file.previousName)}`,
+      ]),
+    );
+  }
   const removed = proposal.removedSources.length === 0
     ? []
     : [
-        "",
+        ...(sections.length > 0 ? [""] : []),
         `**Sources to remove from knowledge: ${proposal.removedSources.length}**`,
         ...proposal.removedSources.map(
-          (source) => `• ${sanitizeDisplayValue(source.name, "PDF file")}`,
+          (source) => `• ${sanitizeKnowledgeSourceName(source.name)}`,
         ),
       ];
+  sections.push(...removed);
+  if (sections.length === 0) {
+    sections.push(
+      "**Workspace knowledge is current**",
+      "No new, changed, moved, renamed, or removed PDFs.",
+    );
+  }
   const elements: NonNullable<InteractiveCard["elements"]> = [
     {
       tag: "div",
       text: {
         tag: "lark_md",
         content: [
-          "**PDFs to add or refresh**",
-          changed,
-          ...removed,
+          ...sections,
           "",
           "Updating knowledge stores searchable text and embeddings in Synvo PostgreSQL. It does not modify the Drive files.",
         ].join("\n"),
@@ -365,7 +399,7 @@ export function buildKnowledgeRemovalConfirmationCard(input: {
   sourceReference: string;
   sourceName: string;
 }): InteractiveCard {
-  const name = sanitizeDisplayValue(input.sourceName, "this source");
+  const name = sanitizeKnowledgeSourceName(input.sourceName, "this source");
   return {
     config: config(),
     header: {
@@ -411,14 +445,17 @@ export function buildKnowledgeRemovedCard(sourceName: string): InteractiveCard {
         tag: "div",
         text: {
           tag: "plain_text",
-          content: `${sanitizeDisplayValue(sourceName, "The source")} is no longer searchable. The original file was not changed.`,
+          content: `${sanitizeKnowledgeSourceName(sourceName, "The source")} is no longer searchable. The original file was not changed.`,
         },
       },
     ],
   };
 }
 
-export function buildKnowledgeAnswerCard(answer: KnowledgeAnswer): InteractiveCard {
+export function buildKnowledgeAnswerCard(
+  answer: KnowledgeAnswer,
+  workspaceUrl?: URL,
+): InteractiveCard {
   const elements: NonNullable<InteractiveCard["elements"]> = [
     {
       tag: "div",
@@ -440,7 +477,7 @@ export function buildKnowledgeAnswerCard(answer: KnowledgeAnswer): InteractiveCa
               "**Sources**",
               ...answer.citations.map(
                 (citation) =>
-                  `• ${sanitizeDisplayValue(citation.sourceName, "PDF file")}, page ${citation.pageNumber}`,
+                  `• ${sanitizeKnowledgeSourceName(citation.sourceName)}, page ${citation.pageNumber}`,
               ),
             ].join("\n"),
           },
@@ -448,18 +485,25 @@ export function buildKnowledgeAnswerCard(answer: KnowledgeAnswer): InteractiveCa
       },
     );
   }
-  if (!answer.supported) {
-    elements.push({
-      tag: "action",
-      actions: [
-        {
-          tag: "button",
-          type: "primary",
-          text: { tag: "plain_text", content: "Prepare workspace knowledge" },
-          value: { knowledge_action: "refresh_propose" },
-        },
-      ],
-    });
+  if (!answer.supported && workspaceUrl) {
+    elements.push(
+      { tag: "hr" },
+      {
+        tag: "note",
+        elements: [{ tag: "plain_text", content: "You may want to:" }],
+      },
+      {
+        tag: "action",
+        actions: [
+          {
+            tag: "button",
+            type: "primary",
+            text: { tag: "plain_text", content: "Open workspace" },
+            url: workspaceUrl.toString(),
+          },
+        ],
+      },
+    );
   }
   return {
     config: config(),

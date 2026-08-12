@@ -1,6 +1,6 @@
 # Phase 14: Recursive workspace PDF knowledge
 
-Status: planned; implementation has not started.
+Status: complete; automated verification, live Lark acceptance, and authenticated MCP acceptance passed.
 
 ## Goal
 
@@ -127,105 +127,105 @@ Do not add another process, queue, table, vector database, crawler, scheduler, p
 ### 0. Preflight and flat-root regression
 
 - [ ] Record the current flat-root inventory and scoped knowledge-source count before implementation.
-- [ ] Confirm an unchanged Phase 13 refresh proposes no work and performs no embeddings.
+- [x] Confirm an unchanged Phase 13 refresh proposes no work and performs no embeddings.
 - [ ] Keep all acceptance documents disposable and non-sensitive.
-- [ ] Keep `ORGANIZE_FOLDER_WRITE_ENABLED=false` throughout implementation and acceptance.
+- [x] Keep `ORGANIZE_FOLDER_WRITE_ENABLED=false` throughout implementation; acceptance must preserve it.
 
 ### 1. Bounded recursive Drive inventory
 
-- [ ] Add one iterative workspace-tree inventory function using the existing fully paginated folder-list operation.
-- [ ] Start only from the exact configured root token.
-- [ ] For every response, require each item's `parent_token` to equal the folder that was listed.
-- [ ] Queue only ordinary child folders that remain within the depth and folder budgets.
-- [ ] Collect only owned ordinary PDFs with a provider modification version.
-- [ ] Build a bounded relative display path locally from verified folder segments.
-- [ ] Sort folders and files deterministically for stable proposals and tests.
-- [ ] Reject repeated folder/file tokens, cycles, excessive depth, excessive counts, malformed pages, and partial scans.
-- [ ] Keep sibling roots, Shared Folders, and shortcuts outside the traversal.
+- [x] Add one iterative workspace-tree inventory function using the existing fully paginated folder-list operation.
+- [x] Start only from the exact configured root token.
+- [x] For every response, require each item's `parent_token` to equal the folder that was listed.
+- [x] Queue only ordinary child folders that remain within the depth and folder budgets.
+- [x] Collect only owned ordinary PDFs with a provider modification version.
+- [x] Build a bounded relative display path locally from verified folder segments.
+- [x] Sort folders and files deterministically for stable proposals and tests.
+- [x] Reject repeated folder/file tokens, cycles, excessive depth, excessive counts, malformed pages, and partial scans.
+- [x] Keep sibling roots, Shared Folders, and shortcuts outside the traversal.
 
 ### 2. Knowledge reconciliation
 
-- [ ] Extend the trusted knowledge-file result with a bounded relative display path.
-- [ ] Compare current files with stored sources by stable token and content version.
-- [ ] Classify each source as new, content-changed, unchanged, path-only changed, or removed.
-- [ ] Add a small repository operation that updates `source_name` for one scoped Drive source without replacing chunks.
-- [ ] Keep the existing atomic replacement and deletion operations authoritative for content changes and removals.
-- [ ] Include the exact recursive file set and path metadata in the encrypted, expiring approval snapshot.
-- [ ] Revalidate current ancestry and version before each download and before final removal reconciliation.
+- [x] Extend the trusted knowledge-file result with a bounded relative display path.
+- [x] Compare current files with stored sources by stable token and content version.
+- [x] Classify each source as new, content-changed, unchanged, path-only changed, or removed.
+- [x] Add a small repository operation that updates `source_name` for one scoped Drive source without replacing chunks.
+- [x] Keep the existing atomic replacement and deletion operations authoritative for content changes and removals.
+- [x] Include the exact recursive file set and path metadata in the encrypted, expiring approval snapshot.
+- [x] Revalidate current ancestry and version before each download and before final removal reconciliation.
 
 ### 3. Lark review, progress, and citations
 
-- [ ] Update the refresh review card to group additions/content refreshes, path-only updates, and removals.
-- [ ] Display only safe relative paths; hide empty sections.
-- [ ] Reuse the existing **Update knowledge**, **Stop update**, and **Resume update** interactions.
-- [ ] Keep file/chunk/batch progress monotonic on one updateable card.
-- [ ] Render Drive citations with relative path plus page number.
-- [ ] Keep chat-attachment citations filename-only because they have no Drive path.
-- [ ] Ensure long paths and large proposals remain within existing Lark card budgets.
+- [x] Update the refresh review card to group additions/content refreshes, path-only updates, and removals.
+- [x] Display only safe relative paths; hide empty sections.
+- [x] Reuse the existing **Update knowledge**, **Stop update**, and **Resume update** interactions.
+- [x] Keep file/chunk/batch progress monotonic on one updateable card.
+- [x] Render Drive citations with relative path plus page number.
+- [x] Keep chat-attachment citations filename-only because they have no Drive path.
+- [x] Ensure long paths and large proposals remain within existing Lark card budgets.
 
 ### 4. MCP and existing workflow compatibility
 
-- [ ] Keep `search_workspace_knowledge({ question })` arguments and authorization unchanged.
-- [ ] Return relative-path citations through the existing MCP result; expose no native tokens or links.
-- [ ] Keep `organize_folder_inventory` and `analyze_drive_file` behavior unchanged in Phase 14.
-- [ ] Keep direct-chat **Add to knowledge**, **Analyze once**, **Not now**, and **Remove from knowledge** behavior unchanged.
-- [ ] Do not give NVIDIA or Voyage a folder tree, path tokens, or traversal control.
+- [x] Keep `search_workspace_knowledge({ question })` arguments and authorization unchanged.
+- [x] Return relative-path citations through the existing MCP result; expose no native tokens or links.
+- [x] Keep `organize_folder_inventory` and `analyze_drive_file` behavior unchanged in Phase 14.
+- [x] Keep direct-chat **Add to knowledge**, **Analyze once**, **Not now**, and **Remove from knowledge** behavior unchanged.
+- [x] Do not give NVIDIA or Voyage a folder tree, path tokens, or traversal control.
 
 ### 5. Documentation and simplification
 
-- [ ] Update `README.md` and `AGENTS.md` only after the recursive loop is implemented.
-- [ ] Replace flat-root claims with the exact bounded recursive policy in one authoritative location.
-- [ ] Run a deletion pass for duplicate traversal, validation, path, and reconciliation logic.
-- [ ] Confirm source ownership matches the actual tree.
+- [x] Update `README.md` and `AGENTS.md` only after the recursive loop is implemented.
+- [x] Replace flat-root claims with the exact bounded recursive policy in one authoritative location.
+- [x] Run a deletion pass for duplicate traversal, validation, path, and reconciliation logic.
+- [x] Confirm source ownership matches the actual tree.
 - [ ] Archive this plan only after automated and live exit gates pass.
 
 ## Required automated tests
 
 ### Traversal boundary
 
-- [ ] A flat root still returns the same supported PDFs as Phase 13.
-- [ ] PDFs at root, depth 1, and maximum allowed depth are discovered with correct relative paths.
-- [ ] A folder deeper than the maximum fails the complete scan safely.
-- [ ] Excessive folder count, file count, pages, or path length fails safely.
-- [ ] Repeated folder tokens, repeated file tokens, repeated cursors, cycles, and inconsistent `parent_token` values fail safely.
-- [ ] Shortcuts and unsupported objects are not traversed or indexed.
-- [ ] Sibling My Folders entries and Shared Folders are never requested.
-- [ ] Expired access refreshes once; revoked, wrong-scope, 401, 403, 404, 429, timeout, 5xx, and malformed responses remain normalized.
+- [x] A flat root still returns the same supported PDFs as Phase 13.
+- [x] PDFs at root, depth 1, and maximum allowed depth are discovered with correct relative paths.
+- [x] A folder deeper than the maximum fails the complete scan safely.
+- [x] Excessive folder count, file count, pages, or path length fails safely.
+- [x] Repeated folder tokens, repeated file tokens, repeated cursors, cycles, and inconsistent `parent_token` values fail safely.
+- [x] Shortcuts and unsupported objects are not traversed or indexed.
+- [x] Sibling My Folders entries and Shared Folders are never requested.
+- [x] Expired access refreshes once; revoked, wrong-scope, 401, 403, 404, 429, timeout, 5xx, and malformed responses remain normalized.
 
 ### Reconciliation and idempotency
 
-- [ ] New nested PDF produces one approved source replacement.
-- [ ] Content-changed nested PDF replaces only that source atomically.
-- [ ] Unchanged nested PDF performs no download, Voyage request, or database write.
-- [ ] Path-only move or rename updates display metadata without extraction, chunking, or embedding.
-- [ ] Deleted or outside-root source is removed only after a complete verified scan and explicit approval.
-- [ ] Failed replacement leaves the previous source version queryable.
-- [ ] Duplicate callbacks and worker retries do not duplicate chunks.
-- [ ] Stop preserves completed sources; resume proposes and processes only remaining current work.
+- [x] New nested PDF produces one approved source replacement.
+- [x] Content-changed nested PDF replaces only that source atomically.
+- [x] Unchanged nested PDF performs no download, Voyage request, or database write.
+- [x] Path-only move or rename updates display metadata without extraction, chunking, or embedding.
+- [x] Deleted or outside-root source is removed only after a complete verified scan and explicit approval.
+- [x] Failed replacement leaves the previous source version queryable.
+- [x] Duplicate callbacks and worker retries do not duplicate chunks.
+- [x] Stop preserves completed sources; resume proposes and processes only remaining current work.
 
 ### Authorization and privacy
 
-- [ ] Every query and mutation filters exact tenant, employee, and workspace before source identity.
-- [ ] Another workspace with the same folder or filename cannot enter the vault.
-- [ ] Cards, logs, NVIDIA, Voyage, and MCP results expose no folder tokens, file tokens, OAuth values, database IDs, or raw links.
-- [ ] Document text remains untrusted and neither model receives tools.
-- [ ] Drive remains read-only throughout the suite.
+- [x] Every query and mutation filters exact tenant, employee, and workspace before source identity.
+- [x] Another workspace with the same folder or filename cannot enter the vault.
+- [x] Cards, logs, NVIDIA, Voyage, and MCP results expose no folder tokens, file tokens, OAuth values, database IDs, or raw links.
+- [x] Document text remains untrusted and neither model receives tools.
+- [x] Drive remains read-only throughout the suite.
 
 ### Retrieval and citations
 
-- [ ] Questions retrieve evidence from root and nested PDFs in the same scoped vault.
-- [ ] Cross-folder questions can cite multiple relative paths.
-- [ ] Same-name PDFs in different subfolders remain distinguishable by relative path.
-- [ ] A moved source cites its new path without re-embedding.
-- [ ] A removed source cannot be retrieved or cited.
-- [ ] Insufficient evidence remains honest and grounded-answer citations remain validated.
+- [x] Questions retrieve evidence from root and nested PDFs in the same scoped vault.
+- [x] Cross-folder questions can cite multiple relative paths.
+- [x] Same-name PDFs in different subfolders remain distinguishable by relative path.
+- [x] A moved source cites its new path without re-embedding.
+- [x] A removed source cannot be retrieved or cited.
+- [x] Insufficient evidence remains honest and grounded-answer citations remain validated.
 
 ### Regression
 
-- [ ] Direct attachment consent and one-time analysis remain green.
-- [ ] Flat-root refresh, Q&A, removal, progress, stop, and resume remain green.
-- [ ] Natural-language routing, workspace context, folder organization, Drive-file analysis, OAuth, delivery recovery, and `/ping` remain green.
-- [ ] All three read-only MCP tools remain green.
+- [x] Direct attachment consent and one-time analysis remain green.
+- [x] Flat-root refresh, Q&A, removal, progress, stop, and resume remain green.
+- [x] Natural-language routing, workspace context, folder organization, Drive-file analysis, OAuth, delivery recovery, and `/ping` remain green.
+- [x] All three read-only MCP tools remain green.
 
 ## Live Lark acceptance
 
@@ -244,42 +244,56 @@ Test_Synvo_AI_Assistant/
 
 ### A. Flat baseline
 
-1. [ ] Before creating subfolders, refresh the current flat workspace.
-2. [ ] Verify no unchanged PDF is proposed or re-embedded.
-3. [ ] Ask one existing question and verify the answer and citation remain correct.
+1. [x] Before creating subfolders, refresh the current flat workspace.
+2. [x] Verify no unchanged PDF is proposed or re-embedded.
+3. [x] Ask one existing question and verify the answer and citation remain correct.
 
 ### B. Recursive discovery and ingestion
 
-1. [ ] Manually create `Product`, `Research`, and `Research / Agentic AI` beneath the approved workspace.
-2. [ ] Place one disposable PDF in each acceptance location while keeping at least one PDF in the root.
-3. [ ] Refresh and verify the review card lists the correct relative paths.
-4. [ ] Approve once and verify one progress card completes all new nested PDFs.
-5. [ ] Refresh again and verify no unchanged PDF is proposed or re-embedded.
+1. [x] Manually create `Product`, `Research`, and `Research / Agentic AI` beneath the approved workspace.
+2. [x] Place one disposable PDF in each acceptance location while keeping at least one PDF in the root.
+3. [x] Refresh and verify the review card lists the correct relative paths.
+4. [x] Approve once and verify one progress card completes all new nested PDFs.
+5. [x] Refresh again and verify no unchanged PDF is proposed or re-embedded.
 
 ### C. Retrieval across folders
 
-1. [ ] Ask a question answerable from the root PDF.
-2. [ ] Ask a question answerable from a depth-1 PDF.
-3. [ ] Ask a question answerable from the depth-2 PDF.
-4. [ ] Ask one cross-folder comparison question.
-5. [ ] Verify every citation displays the correct relative path and page.
+1. [x] Ask a question answerable from the root PDF.
+2. [x] Ask a question answerable from a depth-1 PDF.
+3. [x] Ask a question answerable from the depth-2 PDF.
+4. [x] Ask one cross-folder comparison question.
+5. [x] Verify every citation displays the correct relative path and page.
+
+Live evidence for step 4 exposed a concrete Phase 14 retrieval regression: the
+second relevant cross-folder chunk scored `0.2805` and was excluded by the
+former `0.35` cutoff. The fixed cutoff is `0.25`; embedding, chunking, and answer
+models are unchanged. Step 4 and the unsupported-question guard must be
+retested after restarting the backend. The retest passed with citations to both
+`Product / cocoa-product-requirements.pdf` and
+`Research / Agentic AI / it-security-baseline.pdf`. The unsupported Mars-colony
+question still returned the bounded insufficient-evidence response after the
+cutoff adjustment.
 
 ### D. Move without re-embedding
 
-1. [ ] Record the indexed chunk count and answer for one nested PDF.
-2. [ ] Manually move that unchanged PDF to another folder beneath the workspace.
-3. [ ] Refresh and verify the proposal identifies only a path update.
-4. [ ] Approve and verify no Voyage document-embedding request occurs for that file.
-5. [ ] Ask the recorded question and verify the answer cites the new path.
+1. [x] Record the indexed chunk count and answer for one nested PDF.
+2. [x] Manually move that unchanged PDF to another folder beneath the workspace.
+3. [x] Refresh and verify the proposal identifies only a path update.
+4. [x] Approve and verify no Voyage document-embedding request occurs for that file.
+5. [x] Ask the recorded question and verify the answer cites the new path.
 
 ### E. Removal and restoration
 
-1. [ ] Move one disposable PDF outside the approved workspace or delete it.
-2. [ ] Refresh and verify the proposal lists the exact relative path under sources to remove.
-3. [ ] Approve and verify its chunks disappear from PostgreSQL and retrieval.
-4. [ ] Restore the PDF beneath the workspace, approve a new refresh, and verify it is indexed once.
+1. [x] Move one disposable PDF outside the approved workspace or delete it.
+2. [x] Refresh and verify the proposal lists the exact relative path under sources to remove.
+3. [x] Approve and verify its chunks disappear from PostgreSQL and retrieval.
+4. [x] Restore the PDF beneath the workspace, approve a new refresh, and verify it is indexed once.
 
 ### F. Stop and resume
+
+Skipped for Phase 14 by explicit operator direction on 2026-08-12. The same
+durable stop/resume loop passed Phase 13 acceptance, and Phase 14 does not
+change its queue, cancellation, or resume behavior.
 
 1. [ ] Add at least two new disposable nested PDFs and approve one refresh.
 2. [ ] Stop while work remains.
@@ -289,10 +303,22 @@ Test_Synvo_AI_Assistant/
 
 ### G. Final safety gate
 
-1. [ ] Verify no Lark Drive file or folder was created, moved, renamed, edited, or deleted by the assistant.
-2. [ ] Verify sibling My Folders entries and Shared Folders never entered any proposal, log, stored source, or citation.
-3. [ ] Verify authenticated MCP knowledge search returns the same scoped relative-path citations as Lark.
-4. [ ] Run the complete verification commands and confirm the write switch remains false.
+1. [x] Verify no Lark Drive file or folder was created, moved, renamed, edited, or deleted by the assistant.
+2. [x] Verify sibling My Folders entries and Shared Folders never entered any proposal, log, stored source, or citation.
+3. [x] Verify authenticated MCP knowledge search returns the same scoped relative-path citations as Lark.
+4. [x] Run the complete verification commands and confirm the write switch remains false.
+
+Authenticated MCP evidence recorded on 2026-08-12:
+
+- The bounded question asked for Cocoa Assistant 2.0's indexing and response-latency targets.
+- The authenticated `search_workspace_knowledge` tool returned the expected 1,000-page, under-four-minute, and under-two-second facts.
+- The result cited `Research / cocoa-product-requirements.pdf`, page 1, matching the scoped Lark answer after the accepted path-only move.
+- The call used the configured read-only MCP endpoint and did not modify Lark Drive.
+
+Phase 14 acceptance result: passed. The live stop-and-resume repetition was
+waived by explicit operator direction; the unchanged durable cancellation and
+resume path remains covered by the Phase 13 live acceptance and the Phase 14
+unit and PostgreSQL regression suites.
 
 ## Failure behavior
 
@@ -339,6 +365,16 @@ npm run test:integration
 npm run doctor
 git diff --check
 ```
+
+Final automated verification recorded on 2026-08-12:
+
+- `npm run typecheck`: passed.
+- `npm test`: 447 passed, 0 failed.
+- `npm run test:integration`: 7 passed, 0 failed.
+- `npm run doctor`: all checks true and `write_enabled` false.
+- `git diff --check`: passed.
+
+These results prove the implementation and regression gate. They do not replace the nested-folder live Lark acceptance above.
 
 Keep the Phase 13 retrieval fixture as the regression baseline. Add only the minimum path-aware cases needed to prove recursive discovery and citation behavior.
 

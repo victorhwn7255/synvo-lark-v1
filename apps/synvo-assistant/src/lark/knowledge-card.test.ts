@@ -111,15 +111,21 @@ test("completed ingestion offers confirmed removal without exposing source ident
   assert.equal(rendered.includes("om_source"), false);
 });
 
-test("an insufficient answer offers an explicit workspace preparation action", () => {
-  const card = buildKnowledgeAnswerCard({
-    supported: false,
-    answer: "The vault does not contain enough evidence.",
-    citations: [],
-  });
+test("an insufficient answer links to the workspace without proposing a refresh", () => {
+  const card = buildKnowledgeAnswerCard(
+    {
+      supported: false,
+      answer: "The vault does not contain enough evidence.",
+      citations: [],
+    },
+    new URL("https://larksuite.com/drive/folder/approved-root"),
+  );
   const rendered = JSON.stringify(card);
-  assert.match(rendered, /Prepare workspace knowledge/u);
-  assert.match(rendered, /refresh_propose/u);
+  assert.match(rendered, /You may want to:/u);
+  assert.match(rendered, /Open workspace/u);
+  assert.match(rendered, /approved-root/u);
+  assert.equal(rendered.includes("Prepare workspace knowledge"), false);
+  assert.equal(rendered.includes("refresh_propose"), false);
 });
 
 test("grounded answer separates subdued source citations from the answer", () => {
@@ -141,6 +147,7 @@ test("grounded answer separates subdued source citations from the answer", () =>
 test("a current knowledge vault renders no empty Lark action row", () => {
   const card = buildKnowledgeRefreshProposalCard({
     files: [],
+    pathUpdates: [],
     removedSources: [],
     hasChanges: false,
     snapshot: "unused",
@@ -153,6 +160,7 @@ test("a current knowledge vault renders no empty Lark action row", () => {
 test("knowledge refresh lists missing sources only when removal is proposed", () => {
   const card = buildKnowledgeRefreshProposalCard({
     files: [],
+    pathUpdates: [],
     removedSources: [{ name: "Old policy.pdf" }, { name: "Legacy guide.pdf" }],
     hasChanges: true,
     snapshot: "approved-snapshot",
@@ -161,4 +169,27 @@ test("knowledge refresh lists missing sources only when removal is proposed", ()
   assert.match(rendered, /Sources to remove from knowledge: 2/u);
   assert.match(rendered, /Old policy\.pdf/u);
   assert.match(rendered, /Legacy guide\.pdf/u);
+});
+
+test("knowledge refresh groups safe relative-path updates without native identifiers", () => {
+  const card = buildKnowledgeRefreshProposalCard({
+    files: [{ name: "Product / New Guide.pdf" }],
+    pathUpdates: [{
+      name: "Research / ACE.pdf",
+      previousName: "Archive / ACE.pdf",
+    }],
+    removedSources: [{ name: "Old Research / Retired.pdf" }],
+    hasChanges: true,
+    snapshot: "opaque-approved-snapshot",
+  });
+  const rendered = JSON.stringify(card);
+  assert.match(rendered, /PDFs to add or refresh/u);
+  assert.match(rendered, /Product \/ New Guide\.pdf/u);
+  assert.match(rendered, /Paths to update without reprocessing/u);
+  assert.match(rendered, /Research \/ ACE\.pdf/u);
+  assert.match(rendered, /Previously: Archive \/ ACE\.pdf/u);
+  assert.match(rendered, /Sources to remove from knowledge: 1/u);
+  assert.equal(rendered.includes("folder_token"), false);
+  assert.equal(rendered.includes("file_token"), false);
+  assert.equal(rendered.includes("https://"), false);
 });

@@ -288,10 +288,31 @@ test("returns one strict natural-language intent without tools", async () => {
   assert.equal(body.temperature, 0);
   assert.match(JSON.stringify(body), /You have no tools/u);
   assert.match(JSON.stringify(body), /current_workspace/u);
+  assert.match(JSON.stringify(body), /refresh_workspace/u);
   assert.match(JSON.stringify(body), /substantive information question/u);
   assert.match(JSON.stringify(body), /Never classify a greeting/u);
   assert.match(JSON.stringify(body), /policies, requirements, deadlines/u);
   assert.match(JSON.stringify(body), /folder_reference/u);
+});
+
+test("accepts the bounded workspace-refresh intent", async () => {
+  const client = new NvidiaNimClient({
+    ...baseOptions,
+    fetchImplementation: (async () =>
+      completion(
+        JSON.stringify({
+          intent: "refresh_workspace",
+          folder_reference: "none",
+        }),
+      )) as typeof fetch,
+  });
+
+  assert.deepEqual(
+    await client.classifyIntent({
+      text: "Is our workspace knowledge up to date?",
+    }),
+    { intent: "refresh_workspace", folder_reference: "none" },
+  );
 });
 
 test("accepts the bounded current-workspace intent", async () => {

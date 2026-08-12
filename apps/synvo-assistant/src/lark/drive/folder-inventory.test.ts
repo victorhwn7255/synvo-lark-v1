@@ -163,6 +163,19 @@ test("returns the exact bounded read-only pilot inventory", async () => {
   assert.equal(JSON.stringify(inventory).includes(productToken), false);
 });
 
+test("accepts a renamed root when the configured token and ownership still match", async () => {
+  const inventory = await readInventory(
+    new FixtureReader({
+      metadata: metadataFor(rootToken, "folder", "Synvo_Wiki"),
+    }),
+    scanContext(),
+  );
+
+  assert.equal(inventory.root.name, "Synvo_Wiki");
+  assert.equal(inventory.baseline_matches, true);
+  assert.deepEqual(inventory.issues, []);
+});
+
 test("reports an unexpected starting hierarchy without repairing it", async () => {
   const inventory = await readInventory(
     new FixtureReader({

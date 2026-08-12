@@ -121,6 +121,69 @@ test(
         [],
       );
 
+      assert.equal(
+        await repository.replaceSource({
+          scope,
+          sourceKind: "drive_file",
+          sourceKey: "stable-drive-token",
+          sourceName: "Archive / guide.pdf",
+          sourceVersionOrHash: "drive-version-one",
+          chunks: [{
+            pageNumber: 4,
+            heading: null,
+            chunkIndex: 0,
+            text: "Path metadata can move without replacing this chunk.",
+            embedding: vector(2),
+          }],
+        }),
+        "replaced",
+      );
+      assert.equal(
+        await repository.updateSourceName({
+          scope: otherScope,
+          sourceKind: "drive_file",
+          sourceKey: "stable-drive-token",
+          sourceVersionOrHash: "drive-version-one",
+          sourceName: "Research / guide.pdf",
+        }),
+        false,
+      );
+      assert.equal(
+        await repository.updateSourceName({
+          scope,
+          sourceKind: "drive_file",
+          sourceKey: "stable-drive-token",
+          sourceVersionOrHash: "wrong-version",
+          sourceName: "Research / guide.pdf",
+        }),
+        false,
+      );
+      assert.equal(
+        await repository.updateSourceName({
+          scope,
+          sourceKind: "drive_file",
+          sourceKey: "stable-drive-token",
+          sourceVersionOrHash: "drive-version-one",
+          sourceName: "Research / guide.pdf",
+        }),
+        true,
+      );
+      assert.equal(
+        (await repository.listSources(scope)).find(
+          (source) => source.sourceKey === "stable-drive-token",
+        )?.sourceName,
+        "Research / guide.pdf",
+      );
+      assert.deepEqual(
+        (await repository.search({
+          scope,
+          embedding: vector(2),
+          limit: 10,
+          minimumSimilarity: 0.5,
+        })).map((hit) => hit.sourceName),
+        ["Research / guide.pdf"],
+      );
+
       await assert.rejects(
         repository.replaceSource({
           scope,
@@ -155,7 +218,7 @@ test(
         ),
         false,
       );
-      assert.equal((await repository.listSources(scope)).length, 1);
+      assert.equal((await repository.listSources(scope)).length, 2);
       assert.equal(
         await repository.deleteSource(
           scope,
@@ -163,6 +226,23 @@ test(
           "message-one",
         ),
         true,
+      );
+      assert.equal(
+        await repository.deleteSource(
+          scope,
+          "drive_file",
+          "stable-drive-token",
+        ),
+        true,
+      );
+      assert.deepEqual(
+        await repository.search({
+          scope,
+          embedding: vector(2),
+          limit: 10,
+          minimumSimilarity: 0,
+        }),
+        [],
       );
     } finally {
       await pool.query(

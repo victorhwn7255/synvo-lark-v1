@@ -16,6 +16,11 @@ import type {
 import { driveToolError } from "../../lark/drive/index.js";
 import { AuthorizedDrivePdfReader } from "./authorized-reader.js";
 import { AnalyzeDriveFileWorkflow } from "./workflow.js";
+import {
+  KNOWLEDGE_MAX_DESCENDANT_DEPTH,
+  KNOWLEDGE_MAX_DISCOVERED_PDFS,
+  KNOWLEDGE_MAX_VISITED_FOLDERS,
+} from "../knowledge/policy.js";
 
 const cipher = new TokenCipher(Buffer.alloc(32, 8));
 const fileLink = "https://synvo-ai.larksuite.com/file/boxcnPdf123";
@@ -47,9 +52,11 @@ function fixture(options: {
   parentToken?: string;
   items?: NativeDriveItem[];
   itemResponses?: NativeDriveItem[][];
+  folderItems?: Record<string, NativeDriveItem[]>;
   downloadError?: unknown;
   tokenError?: unknown;
   listError?: unknown;
+  listErrors?: unknown[];
 } = {}) {
   const queue = new FakeQueue();
   const updates: string[] = [];
@@ -57,14 +64,21 @@ function fixture(options: {
   let recoveries = 0;
   let rejections = 0;
   let lists = 0;
+  const requestedFolders: string[] = [];
+  const requestedAccessTokens: string[] = [];
   const driveReader: DriveReader = {
-    async listFolderPage() {
+    async listFolderPage(input) {
       lists += 1;
-      if (options.listError) {
-        throw options.listError;
+      requestedFolders.push(input.folderToken);
+      requestedAccessTokens.push(input.accessToken);
+      const listError = options.listErrors?.[lists - 1] ?? options.listError;
+      if (listError) {
+        throw listError;
       }
       return {
-        items: options.itemResponses?.[lists - 1] ?? options.items ?? [{
+        items: options.folderItems
+          ? options.folderItems[input.folderToken] ?? []
+          : options.itemResponses?.[lists - 1] ?? options.items ?? [{
             token: options.token ?? "boxcnPdf123",
             name: options.name ?? "pilot.pdf",
             type: options.type ?? "file",
@@ -133,6 +147,8 @@ function fixture(options: {
     lists: () => lists,
     recoveries: () => recoveries,
     rejections: () => rejections,
+    requestedFolders,
+    requestedAccessTokens,
   };
 }
 
@@ -149,6 +165,21 @@ const analyzeInput = {
   folderLink,
   fileName: "pilot.pdf",
 };
+
+function folder(token: string, name: string, parentToken: string): NativeDriveItem {
+  return { token, name, type: "folder", parentToken, ownerId: "ou_victor" };
+}
+
+function pdf(token: string, name: string, parentToken: string): NativeDriveItem {
+  return {
+    token,
+    name,
+    type: "file",
+    parentToken,
+    ownerId: "ou_victor",
+    modifiedTime: "1723334400",
+  };
+}
 
 test("queues one encrypted Drive analysis context without exposing the file token", async () => {
   const testFixture = fixture();
@@ -232,7 +263,7 @@ test("returns the same bounded analysis to a direct read-only consumer", async (
   assert.deepEqual(testFixture.updates, []);
 });
 
-test("lists only owned direct-root ordinary PDFs with a provider version", async () => {
+test("preserves flat-root PDF discovery and filters unsupported files", async () => {
   const eligible: NativeDriveItem = {
     token: "boxcnEligible",
     name: "Eligible.pdf",
@@ -245,7 +276,6 @@ test("lists only owned direct-root ordinary PDFs with a provider version", async
     items: [
       eligible,
       { ...eligible, token: "boxcnDocx", name: "Guide.docx", type: "docx" },
-      { ...eligible, token: "boxcnNested", parentToken: "fldcnNested" },
       { ...eligible, token: "boxcnOther", ownerId: "ou_other" },
       { ...eligible, token: "boxcnNoVersion", modifiedTime: undefined },
     ],
@@ -258,6 +288,219 @@ test("lists only owned direct-root ordinary PDFs with a provider version", async
     }),
     [{ token: "boxcnEligible", name: "Eligible.pdf", version: "1723334400" }],
   );
+});
+
+test("discovers root and nested PDFs through the maximum depth with safe relative paths", async () => {
+  const root = "fldcnRoot123";
+  const folderItems: Record<string, NativeDriveItem[]> = {
+    [root]: [pdf("pdf-root", "Root.pdf", root), folder("folder-1", "Product", root)],
+    "folder-1": [pdf("pdf-one", "Guide.pdf", "folder-1"), folder("folder-2", "Research", "folder-1")],
+    "folder-2": [folder("folder-3", "Agentic AI", "folder-2")],
+    "folder-3": [folder("folder-4", "Deep", "folder-3")],
+    "folder-4": [pdf("pdf-four", "Context.pdf", "folder-4")],
+  };
+  const testFixture = fixture({ folderItems });
+
+  assert.deepEqual(
+    await testFixture.pdfReader.listKnowledgeFiles({
+      requesterOpenId: "ou_victor",
+      tenantKey: "tenant_synvo",
+    }),
+    [
+      {
+        token: "pdf-one",
+        name: "Product / Guide.pdf",
+        version: "1723334400",
+      },
+      {
+        token: "pdf-four",
+        name: "Product / Research / Agentic AI / Deep / Context.pdf",
+        version: "1723334400",
+      },
+      { token: "pdf-root", name: "Root.pdf", version: "1723334400" },
+    ],
+  );
+  assert.deepEqual(testFixture.requestedFolders, [
+    root,
+    "folder-1",
+    "folder-2",
+    "folder-3",
+    "folder-4",
+  ]);
+});
+
+test("restarts one recursive scan with a recovered access token", async () => {
+  const root = "fldcnRoot123";
+  const testFixture = fixture({
+    listErrors: [
+      driveToolError(
+        "UNAUTHORIZED",
+        "private provider detail",
+        false,
+        { authFailure: "ACCESS_TOKEN_REJECTED" },
+      ),
+    ],
+    folderItems: {
+      [root]: [folder("nested", "Research", root)],
+      nested: [pdf("nested-pdf", "Guide.pdf", "nested")],
+    },
+  });
+
+  assert.deepEqual(
+    await testFixture.pdfReader.listKnowledgeFiles({
+      requesterOpenId: "ou_victor",
+      tenantKey: "tenant_synvo",
+    }),
+    [{
+      token: "nested-pdf",
+      name: "Research / Guide.pdf",
+      version: "1723334400",
+    }],
+  );
+  assert.equal(testFixture.recoveries(), 1);
+  assert.equal(testFixture.rejections(), 0);
+  assert.deepEqual(testFixture.requestedFolders, [root, root, "nested"]);
+  assert.deepEqual(testFixture.requestedAccessTokens, [
+    "access-one",
+    "access-two",
+    "access-two",
+  ]);
+});
+
+test("fails closed on excessive depth, folder count, PDF count, and path length", async (t) => {
+  await t.test("depth", async () => {
+    const folderItems: Record<string, NativeDriveItem[]> = {};
+    let parent = "fldcnRoot123";
+    for (let depth = 1; depth <= KNOWLEDGE_MAX_DESCENDANT_DEPTH + 1; depth += 1) {
+      const token = `depth-${depth}`;
+      folderItems[parent] = [folder(token, `Depth ${depth}`, parent)];
+      parent = token;
+    }
+    await assert.rejects(
+      fixture({ folderItems }).pdfReader.listKnowledgeFiles({
+        requesterOpenId: "ou_victor",
+        tenantKey: "tenant_synvo",
+      }),
+      /depth/u,
+    );
+  });
+
+  await t.test("folders", async () => {
+    const root = "fldcnRoot123";
+    const children = Array.from(
+      { length: KNOWLEDGE_MAX_VISITED_FOLDERS },
+      (_, index) => folder(`folder-${index}`, `Folder ${index}`, root),
+    );
+    await assert.rejects(
+      fixture({ folderItems: { [root]: children } }).pdfReader.listKnowledgeFiles({
+        requesterOpenId: "ou_victor",
+        tenantKey: "tenant_synvo",
+      }),
+      /too many folders/u,
+    );
+  });
+
+  await t.test("PDFs", async () => {
+    const root = "fldcnRoot123";
+    const files = Array.from(
+      { length: KNOWLEDGE_MAX_DISCOVERED_PDFS + 1 },
+      (_, index) => pdf(`pdf-${index}`, `Document ${index}.pdf`, root),
+    );
+    await assert.rejects(
+      fixture({ folderItems: { [root]: files } }).pdfReader.listKnowledgeFiles({
+        requesterOpenId: "ou_victor",
+        tenantKey: "tenant_synvo",
+      }),
+      /too many PDFs|inventory limit/u,
+    );
+  });
+
+  await t.test("path", async () => {
+    const root = "fldcnRoot123";
+    const longName = "x".repeat(160);
+    const folderItems: Record<string, NativeDriveItem[]> = {
+      [root]: [folder("long-1", longName, root)],
+      "long-1": [folder("long-2", longName, "long-1")],
+      "long-2": [folder("long-3", longName, "long-2")],
+      "long-3": [folder("long-4", longName, "long-3")],
+    };
+    await assert.rejects(
+      fixture({ folderItems }).pdfReader.listKnowledgeFiles({
+        requesterOpenId: "ou_victor",
+        tenantKey: "tenant_synvo",
+      }),
+      /display limit/u,
+    );
+  });
+});
+
+test("rejects repeated tokens, cycles, and inconsistent parents without leaving the root", async (t) => {
+  const identity = {
+    requesterOpenId: "ou_victor",
+    tenantKey: "tenant_synvo",
+  };
+  await t.test("repeated file", async () => {
+    const root = "fldcnRoot123";
+    await assert.rejects(
+      fixture({
+        folderItems: {
+          [root]: [folder("child", "Child", root), pdf("same", "One.pdf", root)],
+          child: [pdf("same", "Two.pdf", "child")],
+        },
+      }).pdfReader.listKnowledgeFiles(identity),
+      /repeated Drive item/u,
+    );
+  });
+  await t.test("cycle", async () => {
+    const root = "fldcnRoot123";
+    await assert.rejects(
+      fixture({
+        folderItems: {
+          [root]: [folder("child", "Child", root)],
+          child: [folder(root, "Back to root", "child")],
+        },
+      }).pdfReader.listKnowledgeFiles(identity),
+      /repeated folder/u,
+    );
+  });
+  await t.test("parent", async () => {
+    await assert.rejects(
+      fixture({
+        folderItems: {
+          fldcnRoot123: [pdf("outside", "Outside.pdf", "fldcnSibling")],
+        },
+      }).pdfReader.listKnowledgeFiles(identity),
+      /outside the folder/u,
+    );
+  });
+});
+
+test("ignores shortcuts and unsupported objects and never requests sibling roots", async () => {
+  const root = "fldcnRoot123";
+  const testFixture = fixture({
+    folderItems: {
+      [root]: [
+        { ...folder("shortcut", "Shared alias", root), type: "shortcut" },
+        { ...pdf("docx", "Guide.docx", root), type: "docx" },
+        folder("nested", "Nested", root),
+      ],
+      nested: [pdf("nested-pdf", "Nested.pdf", "nested")],
+      shortcut: [pdf("forbidden", "Forbidden.pdf", "shortcut")],
+      fldcnSibling: [pdf("sibling", "Sibling.pdf", "fldcnSibling")],
+    },
+  });
+  assert.deepEqual(
+    await testFixture.pdfReader.listKnowledgeFiles({
+      requesterOpenId: "ou_victor",
+      tenantKey: "tenant_synvo",
+    }),
+    [{
+      token: "nested-pdf",
+      name: "Nested / Nested.pdf",
+      version: "1723334400",
+    }],
+  );
+  assert.deepEqual(testFixture.requestedFolders, [root, "nested"]);
 });
 
 test("revalidates a Drive PDF before and after the bounded download", async () => {
@@ -275,6 +518,7 @@ test("revalidates a Drive PDF before and after the bounded download", async () =
     tenantKey: "tenant_synvo",
     fileToken: file.token,
     expectedVersion: file.modifiedTime!,
+    expectedName: file.name,
   });
   assert.equal(result.name, "pilot.pdf");
   assert.equal(result.version, "1723334400");
@@ -291,10 +535,26 @@ test("revalidates a Drive PDF before and after the bounded download", async () =
       tenantKey: "tenant_synvo",
       fileToken: file.token,
       expectedVersion: file.modifiedTime!,
+      expectedName: file.name,
     }),
     /changed|available|no longer matches/u,
   );
   assert.equal(changed.downloads(), 1);
+
+  const renamed = fixture({
+    itemResponses: [[file], [{ ...file, name: "renamed.pdf" }]],
+  });
+  await assert.rejects(
+    renamed.pdfReader.readKnowledgeFile({
+      requesterOpenId: "ou_victor",
+      tenantKey: "tenant_synvo",
+      fileToken: file.token,
+      expectedVersion: file.modifiedTime!,
+      expectedName: file.name,
+    }),
+    /no longer matches/u,
+  );
+  assert.equal(renamed.downloads(), 1);
 });
 
 test("rejects an unauthorized direct analysis consumer before Drive access", async () => {

@@ -7,13 +7,15 @@ The current Victor-only pilot implements four employee workflows:
 - **Organize a folder:** authorize one allowlisted Lark My Space folder, inventory and analyze its four PDF fixtures through the two read-only MCP tools, prepare a Product/Research/Needs-review proposal, require explicit approval, verify every enabled move, and support separately confirmed verified undo.
 - **Handle an attached PDF:** show an explicit **Add to knowledge / Analyze once / Not now** card, then bind and re-fetch the exact Lark resource only after the employee chooses an action.
 - **Analyze a Drive PDF:** verify one owned PDF directly inside the allowlisted root, download it through the user's OAuth grant, and reuse the bounded extraction, NVIDIA analysis, and durable progress path.
-- **Use workspace knowledge:** explicitly ingest approved PDFs into a tenant/user/workspace-scoped pgvector vault, refresh changed direct-root Drive PDFs only after review, and answer natural-language questions from bounded evidence with validated file/page citations.
+- **Use workspace knowledge:** explicitly ingest approved PDFs into a tenant/user/workspace-scoped pgvector vault, discover root and descendant Drive PDFs through one bounded reviewed traversal, and answer natural-language questions from bounded evidence with validated relative-path/page citations.
 
 An approved multi-file knowledge refresh updates one Lark card with file, chunk, and Voyage-batch progress. **Stop update** cancels only that exact refresh between bounded work units; it never clears the shared queue. Atomically completed sources remain indexed, and **Resume update** creates a fresh reviewed proposal for only the remaining work.
 
 Natural-language routing sends every normal employee message through one bounded semantic NVIDIA classification. The strict result contains one of eight supported intents, including `ask_workspace`, plus a bounded folder reference; links and native identifiers are removed locally first. The backend—not the model—selects an existing workflow or verified response. Exact parsing remains only for operational slash-command fallbacks. A link-free request for the active workspace requires a **Start folder analysis** confirmation, while a named or different folder requires its exact Lark link.
 
 Phase 12 workspace context is complete. On a greeting, the assistant reads only Victor's top-level **My Folders** directory through the existing OAuth grant, matches the configured root by exact token, and shows the verified active workspace plus other folder names in the welcome card. NVIDIA may classify a sanitized utterance as a current-workspace question; the backend then retrieves and renders verified Lark context. Workspace names, links, and tokens are never sent to NVIDIA. Other folders remain informational and do not expand the organizer allowlist.
+
+The configured folder token is the stable workspace identity. Its Lark display name may be changed without changing authorization; the assistant reads the current name from Lark and reflects it after the next request or knowledge refresh.
 
 The Lark experience uses interactive cards for authorization, progress, proposals, decisions, verified execution, and undo. Approve, Reject, Authorize, Undo, and Start folder analysis are buttons. Employees can say `Hello`, ask `What can you help me with?`, request folder organization naturally with or without the approved link, or ask to analyze a Drive PDF. The original slash commands remain hidden compatibility fallbacks.
 
@@ -48,6 +50,7 @@ Lark App Bot -> local parsing + bounded intent classification
 
                                              +-> knowledge workflow
                                                  -> explicit ingestion/refresh consent
+                                                 -> bounded breadth-first workspace scan
                                                  -> page-aware chunks + Voyage embeddings
                                                  -> scoped exact pgvector retrieval
                                                  -> no-tools NVIDIA grounded answer
@@ -117,6 +120,8 @@ The provider client calls `nvidia/nemotron-3-super-120b-a12b`. Keep the real API
 
 Workspace knowledge uses a separate required `VOYAGE_API_KEY` only for fixed `voyage-4` document and query embeddings at 1,024 dimensions. The assistant sends Voyage only explicitly approved bounded chunk text or the bounded employee question. Voyage's [embedding documentation](https://docs.voyageai.com/docs/embeddings) confirms the model and output dimension. Its [current pricing](https://docs.voyageai.com/docs/pricing), verified on 2026-08-11, includes the first 200 million tokens and then charges $0.06 per million tokens; pricing is operational information, not a runtime assumption. Before using real Synvo internal documents, enable and verify Voyage's organization-level zero-day-retention/data opt-out and store the hosted credential in secret management. Changing to an incompatible embedding model or dimension requires re-embedding every stored chunk before it can be queried; do not mix embedding spaces in one vault.
 
+Drive-backed workspace knowledge starts only at the exact configured root and uses an iterative breadth-first scan. The authoritative limits live in `workflows/knowledge/policy.ts`: depth 4 below the root, 50 visited folders including the root, 200 owned ordinary PDFs, and 512 Unicode code points per safe relative path. Every folder is fully paginated and parent relationships, repeated tokens, cycles, and provider bounds fail the complete scan closed. Path-only moves update citation metadata without extraction or re-embedding; removals require an approved, complete, revalidated tree. The organizer and direct Drive-file analyzer remain direct-root-only workflows.
+
 For natural-language routing, each non-command direct message is capped at 600 characters; Lark links, mentions, native identifiers, and control characters are removed locally before the remaining short utterance is classified. NVIDIA receives no tools, workspace metadata, or conversation history and can return only `greeting`, `acknowledgement`, `help`, `current_workspace`, `ask_workspace`, `organize_folder`, `analyze_drive_file`, or `unknown`, plus `active_workspace`, `named_or_other_folder`, or `none` as a folder reference. The reference never carries a name, link, token, or authorization decision. Invalid or unavailable classification starts no workflow.
 
 To enable the local MCP endpoint, generate a separate service credential and add it to the ignored `.env`:
@@ -150,7 +155,7 @@ npm run doctor
 
 Detailed completed acceptance procedures are archived instead of being maintained as active setup instructions. See `tasks/archive/organize-folder-implementation-plan.md`, `tasks/archive/analyze-attachment-acceptance.md`, `tasks/archive/analyze-drive-file-implementation-plan.md`, `tasks/archive/content-aware-execution-implementation-plan.md`, `tasks/archive/natural-language-interaction-implementation-plan.md`, and `tasks/archive/folder-knowledge-rag-implementation-plan.md`.
 
-Phase 12 and Phase 13 have completed their Victor-only live Lark acceptance. Phase 13 closed explicit PDF ingestion, flat-root reconciliation, scoped pgvector retrieval, grounded citations, removal/restoration, and exact-job stop/resume. Voyage handles embeddings only; NVIDIA remains the no-tools intent, document-analysis, and grounded-answer provider. Hosted production rollout remains separately gated on managed secrets, production pgvector support, and verified Voyage zero-day retention.
+Phases 12–14 have completed their Victor-only live Lark acceptance. Phase 13 closed explicit PDF ingestion, flat-root reconciliation, scoped pgvector retrieval, grounded citations, removal/restoration, and exact-job stop/resume. Phase 14 closed bounded recursive PDF discovery, path-aware citations, metadata-only move reconciliation, verified removal/restoration, cross-folder retrieval, and authenticated MCP knowledge search. Its completed record is archived in `tasks/archive/recursive-workspace-knowledge-implementation-plan.md`. Voyage handles embeddings only; NVIDIA remains the no-tools intent, document-analysis, and grounded-answer provider. Hosted production rollout remains separately gated on managed secrets, production pgvector support, and verified Voyage zero-day retention.
 
 ## Safety
 

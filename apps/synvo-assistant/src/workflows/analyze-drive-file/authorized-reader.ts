@@ -7,7 +7,14 @@ import {
   withReadOnlyDriveTokenRecovery,
 } from "../../lark/drive/index.js";
 import { ANALYZE_ATTACHMENT_MAX_BYTES } from "../analyze-attachment/policy.js";
+import { sanitizeDisplayValue } from "../organize-folder/inventory-message.js";
 import { organizeFolderPilotPolicy } from "../organize-folder/pilot-policy.js";
+import {
+  KNOWLEDGE_MAX_DESCENDANT_DEPTH,
+  KNOWLEDGE_MAX_DISCOVERED_PDFS,
+  KNOWLEDGE_MAX_RELATIVE_PATH_CODE_POINTS,
+  KNOWLEDGE_MAX_VISITED_FOLDERS,
+} from "../knowledge/policy.js";
 
 type AccessTokenProvider = {
   getAccessToken(openId: string, tenantKey: string): Promise<string>;
@@ -88,44 +95,133 @@ export class AuthorizedDrivePdfReader {
   }
 
   async listKnowledgeFiles(input: PilotIdentity): Promise<KnowledgeDriveFile[]> {
-    const items = await this.listRootItems(input);
-    return items
-      .filter(
-        (item) =>
-          this.#isOwnedRootPdf(item) &&
-          typeof item.modifiedTime === "string",
-      )
-      .map((item) => ({
-        token: item.token,
-        name: item.name,
-        version: item.modifiedTime!,
-      }))
-      .sort((left, right) =>
-        left.name.localeCompare(right.name) || left.token.localeCompare(right.token),
+    this.#requirePilotIdentity(input);
+    return this.#withAccessToken(async (accessToken) => {
+      const folders = [{ token: this.#rootToken, path: [] as string[], depth: 0 }];
+      const seenFolders = new Set([this.#rootToken]);
+      const seenItems = new Set<string>();
+      const files: KnowledgeDriveFile[] = [];
+
+      for (let index = 0; index < folders.length; index += 1) {
+        const folder = folders[index]!;
+        const items = await listFolderCompletely(this.#driveReader, {
+          accessToken,
+          folderToken: folder.token,
+          maxItems: organizeFolderPilotPolicy.maxRootItems,
+        });
+        items.sort(
+          (left, right) =>
+            left.name.localeCompare(right.name) ||
+            left.token.localeCompare(right.token),
+        );
+
+        for (const item of items) {
+          if (item.parentToken !== folder.token) {
+            throw driveToolError(
+              "INCOMPLETE_SCAN",
+              "Lark returned a Drive item outside the folder being scanned.",
+            );
+          }
+          if (seenItems.has(item.token)) {
+            throw driveToolError(
+              "INCOMPLETE_SCAN",
+              "Lark returned a repeated Drive item while scanning the workspace.",
+            );
+          }
+          seenItems.add(item.token);
+
+          if (item.type === "folder") {
+            const depth = folder.depth + 1;
+            if (depth > KNOWLEDGE_MAX_DESCENDANT_DEPTH) {
+              throw driveToolError(
+                "LIMIT_EXCEEDED",
+                "The workspace folder tree exceeds the supported depth.",
+              );
+            }
+            if (
+              seenFolders.has(item.token) ||
+              seenFolders.size >= KNOWLEDGE_MAX_VISITED_FOLDERS
+            ) {
+              throw driveToolError(
+                seenFolders.has(item.token) ? "INCOMPLETE_SCAN" : "LIMIT_EXCEEDED",
+                seenFolders.has(item.token)
+                  ? "Lark returned a repeated folder while scanning the workspace."
+                  : "The workspace contains too many folders for one safe scan.",
+              );
+            }
+            const path = [
+              ...folder.path,
+              sanitizeDisplayValue(
+                item.name,
+                "[unnamed]",
+                KNOWLEDGE_MAX_RELATIVE_PATH_CODE_POINTS,
+              ),
+            ];
+            this.#safeRelativePath(path);
+            seenFolders.add(item.token);
+            folders.push({
+              token: item.token,
+              path,
+              depth,
+            });
+            continue;
+          }
+
+          if (
+            item.type !== "file" ||
+            item.ownerId !== this.#requesterOpenId ||
+            typeof item.modifiedTime !== "string" ||
+            !/\.pdf$/iu.test(item.name)
+          ) {
+            continue;
+          }
+          if (files.length >= KNOWLEDGE_MAX_DISCOVERED_PDFS) {
+            throw driveToolError(
+              "LIMIT_EXCEEDED",
+              "The workspace contains too many PDFs for one safe scan.",
+            );
+          }
+          files.push({
+            token: item.token,
+            name: this.#safeRelativePath([
+              ...folder.path,
+              sanitizeDisplayValue(
+                item.name,
+                "[unnamed]",
+                KNOWLEDGE_MAX_RELATIVE_PATH_CODE_POINTS,
+              ),
+            ]),
+            version: item.modifiedTime,
+          });
+        }
+      }
+
+      return files.sort(
+        (left, right) =>
+          left.name.localeCompare(right.name) ||
+          left.token.localeCompare(right.token),
       );
+    });
   }
 
   async readKnowledgeFile(input: PilotIdentity & {
     fileToken: string;
     expectedVersion: string;
+    expectedName: string;
   }): Promise<KnowledgeDrivePdf> {
     const before = await this.#findKnowledgeFile(
       input,
       input.fileToken,
       input.expectedVersion,
+      input.expectedName,
     );
     const bytes = await this.#downloadFile(before.token);
     const after = await this.#findKnowledgeFile(
       input,
       input.fileToken,
       input.expectedVersion,
+      input.expectedName,
     );
-    if (after.name !== before.name) {
-      throw driveToolError(
-        "INCOMPLETE_SCAN",
-        "The Drive PDF changed while it was being read.",
-      );
-    }
     return { ...after, bytes };
   }
 
@@ -139,15 +235,6 @@ export class AuthorizedDrivePdfReader {
         "Drive knowledge is not available for this account.",
       );
     }
-  }
-
-  #isOwnedRootPdf(file: NativeDriveItem): boolean {
-    return (
-      file.parentToken === this.#rootToken &&
-      file.ownerId === this.#requesterOpenId &&
-      file.type === "file" &&
-      /\.pdf$/iu.test(file.name)
-    );
   }
 
   #requireOwnedRootPdf(file: NativeDriveItem): void {
@@ -182,17 +269,36 @@ export class AuthorizedDrivePdfReader {
     identity: PilotIdentity,
     fileToken: string,
     expectedVersion: string,
+    expectedName: string,
   ): Promise<KnowledgeDriveFile> {
     const file = (await this.listKnowledgeFiles(identity)).find(
       (candidate) => candidate.token === fileToken,
     );
-    if (!file || file.version !== expectedVersion) {
+    if (
+      !file ||
+      file.version !== expectedVersion ||
+      file.name !== expectedName
+    ) {
       throw driveToolError(
         "INCOMPLETE_SCAN",
         "The Drive PDF no longer matches the approved knowledge snapshot.",
       );
     }
     return file;
+  }
+
+  #safeRelativePath(segments: string[]): string {
+    const path = segments.join(" / ");
+    if (
+      !path ||
+      Array.from(path).length > KNOWLEDGE_MAX_RELATIVE_PATH_CODE_POINTS
+    ) {
+      throw driveToolError(
+        "LIMIT_EXCEEDED",
+        "A workspace PDF path exceeds the safe display limit.",
+      );
+    }
+    return path;
   }
 
   async #withAccessToken<Result>(

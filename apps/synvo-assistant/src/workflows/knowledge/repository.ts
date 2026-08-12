@@ -155,6 +155,35 @@ export class KnowledgeRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
+  async updateSourceName(input: {
+    scope: KnowledgeScope;
+    sourceKind: KnowledgeSourceKind;
+    sourceKey: string;
+    sourceVersionOrHash: string;
+    sourceName: string;
+  }): Promise<boolean> {
+    const result = await this.#pool.query(
+      `UPDATE workspace_chunks
+          SET source_name = $6
+        WHERE tenant_key = $1
+          AND user_open_id = $2
+          AND workspace_folder_token = $3
+          AND source_kind = $4
+          AND source_key = $5
+          AND source_version_or_hash = $7`,
+      [
+        input.scope.tenantKey,
+        input.scope.userOpenId,
+        input.scope.workspaceFolderToken,
+        input.sourceKind,
+        input.sourceKey,
+        input.sourceName,
+        input.sourceVersionOrHash,
+      ],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
   async search(input: {
     scope: KnowledgeScope;
     embedding: number[];

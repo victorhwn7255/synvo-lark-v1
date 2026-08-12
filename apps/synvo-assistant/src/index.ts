@@ -339,6 +339,7 @@ async function main(): Promise<void> {
                 buildKnowledgeProgressCard(
                   progress,
                   config.larkLoadingImageKey,
+                  organizeFolderRootUrl,
                 ),
                 idempotencyKey,
               ),
@@ -348,6 +349,7 @@ async function main(): Promise<void> {
                 buildKnowledgeProgressCard(
                   progress,
                   config.larkLoadingImageKey,
+                  organizeFolderRootUrl,
                 ),
               ),
           },
@@ -679,6 +681,27 @@ async function main(): Promise<void> {
         await resolveCard(
           buildCurrentWorkspaceCard(await loadWorkspaceCardContext()),
         );
+        return;
+      }
+      if (understood.intent === "refresh_workspace") {
+        if (!knowledgeWorkflow) {
+          await resolveCard(
+            buildNoticeCard(
+              "I can’t check the active workspace knowledge right now. Please reconnect Lark Drive and try again.",
+            ),
+          );
+          return;
+        }
+        try {
+          const proposal = await knowledgeWorkflow.proposeRefresh();
+          await resolveCard(buildKnowledgeRefreshProposalCard(proposal));
+        } catch {
+          await resolveCard(
+            buildNoticeCard(
+              "I couldn’t compare the workspace safely. Please try again.",
+            ),
+          );
+        }
         return;
       }
       if (understood.intent === "ask_workspace") {

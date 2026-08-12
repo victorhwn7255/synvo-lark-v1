@@ -4,7 +4,7 @@ import { encryptDeliveryMessage } from "../../delivery/crypto.js";
 import type { DeliveryJob, DeliveryQueue } from "../../delivery/repository.js";
 import type { TokenCipher } from "../../lark/auth/index.js";
 import { LarkAttachmentError, type LarkAttachmentClient } from "../../lark/attachment.js";
-import { DriveToolError } from "../../lark/drive/index.js";
+import { DriveToolError, driveToolError } from "../../lark/drive/index.js";
 import type {
   KnowledgeDriveFile,
   AuthorizedDrivePdfReader,
@@ -22,11 +22,13 @@ import {
   KNOWLEDGE_MAX_QUESTION_CODE_POINTS,
   KNOWLEDGE_SEARCH_MIN_SIMILARITY,
   KNOWLEDGE_SEARCH_TOP_K,
+  KNOWLEDGE_REFRESH_SNAPSHOT_MAX_CODE_UNITS,
 } from "./policy.js";
 import {
   type KnowledgeRepository,
   type KnowledgeScope,
   type KnowledgeSearchHit,
+  type KnowledgeSource,
   type KnowledgeSourceKind,
 } from "./repository.js";
 import {
@@ -49,7 +51,7 @@ type DriveKnowledgeReader = Pick<
 type Embedder = Pick<VoyageEmbeddingClient, "embedDocuments" | "embedQuery">;
 type KnowledgeStore = Pick<
   KnowledgeRepository,
-  "replaceSource" | "listSources" | "deleteSource" | "search"
+  "replaceSource" | "listSources" | "deleteSource" | "updateSourceName" | "search"
 >;
 
 export type KnowledgeProgress = {
@@ -82,6 +84,7 @@ export type KnowledgeAnswer = {
 
 export type KnowledgeRefreshProposal = {
   files: Array<{ name: string }>;
+  pathUpdates: Array<{ name: string; previousName: string }>;
   removedSources: Array<{ name: string }>;
   hasChanges: boolean;
   snapshot: string;
@@ -114,7 +117,9 @@ type KnowledgeJobContext =
     }
   | {
       operation: "refresh_drive";
+      observedFiles: KnowledgeDriveFile[] | null;
       files: KnowledgeDriveFile[];
+      pathUpdates: KnowledgeDriveFile[];
       removedSourceKeys: string[];
       progressMessageId: string | null;
     }
@@ -129,7 +134,9 @@ type RefreshSnapshot = {
   userOpenId: string;
   workspaceFolderToken: string;
   expiresAt: string;
+  observedFiles: KnowledgeDriveFile[];
   files: KnowledgeDriveFile[];
+  pathUpdates: KnowledgeDriveFile[];
   removedSourceKeys: string[];
 };
 
@@ -157,7 +164,17 @@ function parseJobContext(value: string | null): KnowledgeJobContext {
     throw new Error("Knowledge job context is missing");
   }
   try {
-    return JSON.parse(value) as KnowledgeJobContext;
+    const parsed = JSON.parse(value) as KnowledgeJobContext & {
+      observedFiles?: KnowledgeDriveFile[];
+      pathUpdates?: KnowledgeDriveFile[];
+    };
+    return parsed.operation === "refresh_drive"
+      ? {
+          ...parsed,
+          observedFiles: parsed.observedFiles ?? null,
+          pathUpdates: parsed.pathUpdates ?? [],
+        }
+      : parsed;
   } catch {
     throw new Error("Knowledge job context is invalid");
   }
@@ -283,6 +300,13 @@ export class KnowledgeWorkflow {
     const changed = files.filter(
       (file) => storedByKey.get(file.token)?.sourceVersionOrHash !== file.version,
     );
+    const pathUpdates = files.filter((file) => {
+      const source = storedByKey.get(file.token);
+      return (
+        source?.sourceVersionOrHash === file.version &&
+        source.sourceName !== file.name
+      );
+    });
     const present = new Set(files.map((file) => file.token));
     const removedSources = storedDrive.filter(
       (source) => !present.has(source.sourceKey),
@@ -291,7 +315,9 @@ export class KnowledgeWorkflow {
     const snapshot: RefreshSnapshot = {
       ...this.#scope,
       expiresAt: new Date(this.#now().getTime() + REFRESH_SNAPSHOT_TTL_MS).toISOString(),
+      observedFiles: files,
       files: changed,
+      pathUpdates,
       removedSourceKeys,
     };
     // Defends native Drive tokens in the Lark card payload while binding approval to one exact snapshot.
@@ -299,12 +325,25 @@ export class KnowledgeWorkflow {
       JSON.stringify(snapshot),
       REFRESH_SNAPSHOT_AAD,
     );
+    if (encrypted.length > KNOWLEDGE_REFRESH_SNAPSHOT_MAX_CODE_UNITS) {
+      throw driveToolError(
+        "LIMIT_EXCEEDED",
+        "The workspace knowledge review exceeds the safe Lark card limit.",
+      );
+    }
     return {
       files: changed.map((file) => ({ name: file.name })),
+      pathUpdates: pathUpdates.map((file) => ({
+        name: file.name,
+        previousName: storedByKey.get(file.token)!.sourceName,
+      })),
       removedSources: removedSources.map((source) => ({
         name: source.sourceName,
       })),
-      hasChanges: changed.length > 0 || removedSourceKeys.length > 0,
+      hasChanges:
+        changed.length > 0 ||
+        pathUpdates.length > 0 ||
+        removedSourceKeys.length > 0,
       snapshot: encrypted,
     };
   }
@@ -315,6 +354,13 @@ export class KnowledgeWorkflow {
     snapshot: string;
   }): Promise<EnqueuedKnowledgeJob & { totalFiles: number }> {
     const parsed = this.#readRefreshSnapshot(input.snapshot);
+    const observedFiles = await this.#driveReader.listKnowledgeFiles({
+      requesterOpenId: this.#scope.userOpenId,
+      tenantKey: this.#scope.tenantKey,
+    });
+    if (!this.#sameKnowledgeFiles(parsed.observedFiles, observedFiles)) {
+      throw new Error("The workspace changed after the knowledge review");
+    }
     const approvalId = createHash("sha256")
       .update(input.snapshot)
       .digest("hex");
@@ -323,12 +369,17 @@ export class KnowledgeWorkflow {
       input.chatId,
       {
         operation: "refresh_drive",
+        observedFiles: parsed.observedFiles,
         files: parsed.files,
+        pathUpdates: parsed.pathUpdates,
         removedSourceKeys: parsed.removedSourceKeys,
         progressMessageId: input.messageId,
       },
     );
-    return { ...enqueued, totalFiles: parsed.files.length };
+    return {
+      ...enqueued,
+      totalFiles: parsed.files.length + parsed.pathUpdates.length,
+    };
   }
 
   requestRefreshStop(input: {
@@ -430,7 +481,7 @@ export class KnowledgeWorkflow {
             message: "Reading the approved PDFs → refreshing searchable knowledge",
             jobId: job.id,
             completedFiles: 0,
-            totalFiles: context.files.length,
+            totalFiles: context.files.length + context.pathUpdates.length,
           }
         : { stage: "answering" as const, message: "Finding the most relevant evidence and preparing a cited answer" };
     if (
@@ -548,12 +599,29 @@ export class KnowledgeWorkflow {
     context: Extract<KnowledgeJobContext, { operation: "refresh_drive" }>,
     progressMessageId: string,
   ): Promise<void> {
-    const currentVersions = await this.#storedDriveVersions();
-    const totalFiles = context.files.length;
-    let completedFiles = context.files.filter(
-      (file) => currentVersions.get(file.token) === file.version,
+    if (context.observedFiles) {
+      const observed = await this.#driveReader.listKnowledgeFiles({
+        requesterOpenId: this.#scope.userOpenId,
+        tenantKey: this.#scope.tenantKey,
+      });
+      if (!this.#sameKnowledgeFiles(context.observedFiles, observed)) {
+        throw new Error("The workspace changed after the knowledge update was approved");
+      }
+    }
+    const currentSources = await this.#storedDriveSources();
+    const totalFiles = context.files.length + context.pathUpdates.length;
+    const isCurrent = (file: KnowledgeDriveFile): boolean => {
+      const source = currentSources.get(file.token);
+      return (
+        source?.sourceVersionOrHash === file.version &&
+        source.sourceName === file.name
+      );
+    };
+    let completedFiles = [...context.files, ...context.pathUpdates].filter(
+      isCurrent,
     ).length;
     let indexed = 0;
+    let pathsUpdated = 0;
     await this.#messenger.update(progressMessageId, {
       stage: "refreshing",
       message: "Reading the approved PDFs → refreshing searchable knowledge",
@@ -562,7 +630,7 @@ export class KnowledgeWorkflow {
       totalFiles,
     });
     for (const file of context.files) {
-      if (currentVersions.get(file.token) === file.version) {
+      if (isCurrent(file)) {
         continue;
       }
       await this.#assertRefreshRunning(job);
@@ -571,6 +639,7 @@ export class KnowledgeWorkflow {
         tenantKey: this.#scope.tenantKey,
         fileToken: file.token,
         expectedVersion: file.version,
+        expectedName: file.name,
       });
       let currentChunkCount = 0;
       await this.#indexPdf({
@@ -610,6 +679,12 @@ export class KnowledgeWorkflow {
         },
       });
       indexed += 1;
+      currentSources.set(downloaded.token, {
+        sourceKind: "drive_file",
+        sourceKey: downloaded.token,
+        sourceName: downloaded.name,
+        sourceVersionOrHash: downloaded.version,
+      });
       completedFiles += 1;
       await this.#messenger.update(progressMessageId, {
         stage: "refreshing",
@@ -619,13 +694,68 @@ export class KnowledgeWorkflow {
         totalFiles,
       });
     }
+    if (context.pathUpdates.length > 0) {
+      await this.#assertRefreshRunning(job);
+      const observed = new Map(
+        (await this.#driveReader.listKnowledgeFiles({
+          requesterOpenId: this.#scope.userOpenId,
+          tenantKey: this.#scope.tenantKey,
+        })).map((file) => [file.token, file]),
+      );
+      for (const file of context.pathUpdates) {
+        if (isCurrent(file)) {
+          continue;
+        }
+        await this.#assertRefreshRunning(job);
+        const current = observed.get(file.token);
+        if (
+          !current ||
+          current.version !== file.version ||
+          current.name !== file.name
+        ) {
+          throw new Error("A Drive PDF path changed after approval");
+        }
+        if (
+          !(await this.#repository.updateSourceName({
+            scope: this.#scope,
+            sourceKind: "drive_file",
+            sourceKey: file.token,
+            sourceVersionOrHash: file.version,
+            sourceName: file.name,
+          }))
+        ) {
+          throw new Error("The indexed Drive PDF no longer matches the approved path update");
+        }
+        currentSources.set(file.token, {
+          sourceKind: "drive_file",
+          sourceKey: file.token,
+          sourceName: file.name,
+          sourceVersionOrHash: file.version,
+        });
+        pathsUpdated += 1;
+        completedFiles += 1;
+        await this.#messenger.update(progressMessageId, {
+          stage: "refreshing",
+          message: "Updating verified PDF paths without reprocessing content",
+          jobId: job.id,
+          completedFiles,
+          totalFiles,
+          currentFile: file.name,
+        });
+      }
+    }
     await this.#assertRefreshRunning(job);
-    const present = new Set(
-      (await this.#driveReader.listKnowledgeFiles({
-        requesterOpenId: this.#scope.userOpenId,
-        tenantKey: this.#scope.tenantKey,
-      })).map((file) => file.token),
-    );
+    const finalObserved = await this.#driveReader.listKnowledgeFiles({
+      requesterOpenId: this.#scope.userOpenId,
+      tenantKey: this.#scope.tenantKey,
+    });
+    if (
+      context.observedFiles &&
+      !this.#sameKnowledgeFiles(context.observedFiles, finalObserved)
+    ) {
+      throw new Error("The workspace changed while knowledge was being updated");
+    }
+    const present = new Set(finalObserved.map((file) => file.token));
     let removed = 0;
     for (const sourceKey of context.removedSourceKeys) {
       await this.#assertRefreshRunning(job);
@@ -644,7 +774,7 @@ export class KnowledgeWorkflow {
     }
     await this.#messenger.update(progressMessageId, {
       stage: "complete",
-      message: `Workspace knowledge is current. Added or refreshed: **${indexed}**. Removed unavailable Drive sources: **${removed}**.`,
+      message: `Workspace knowledge is current. Added or refreshed: **${indexed}**. Paths updated without reprocessing: **${pathsUpdated}**. Removed unavailable Drive sources: **${removed}**.`,
       completedFiles: totalFiles,
       totalFiles,
     });
@@ -700,11 +830,16 @@ export class KnowledgeWorkflow {
     if (!progressMessageId) {
       return;
     }
-    const versions = await this.#storedDriveVersions();
-    const completedFiles = context.files.filter(
-      (file) => versions.get(file.token) === file.version,
-    ).length;
-    const totalFiles = context.files.length;
+    const sources = await this.#storedDriveSources();
+    const allFiles = [...context.files, ...context.pathUpdates];
+    const completedFiles = allFiles.filter((file) => {
+      const source = sources.get(file.token);
+      return (
+        source?.sourceVersionOrHash === file.version &&
+        source.sourceName === file.name
+      );
+    }).length;
+    const totalFiles = allFiles.length;
     await this.#messenger.update(progressMessageId, {
       stage: "stopped",
       message: [
@@ -734,19 +869,59 @@ export class KnowledgeWorkflow {
       snapshot.tenantKey !== this.#scope.tenantKey ||
       snapshot.userOpenId !== this.#scope.userOpenId ||
       snapshot.workspaceFolderToken !== this.#scope.workspaceFolderToken ||
-      new Date(snapshot.expiresAt).getTime() <= this.#now().getTime()
+      new Date(snapshot.expiresAt).getTime() <= this.#now().getTime() ||
+      !Array.isArray(snapshot.observedFiles) ||
+      !Array.isArray(snapshot.files) ||
+      !Array.isArray(snapshot.pathUpdates) ||
+      !Array.isArray(snapshot.removedSourceKeys) ||
+      !snapshot.observedFiles.every((file) => this.#isKnowledgeFile(file)) ||
+      !snapshot.files.every((file) => this.#isKnowledgeFile(file)) ||
+      !snapshot.pathUpdates.every((file) => this.#isKnowledgeFile(file)) ||
+      !snapshot.removedSourceKeys.every((key) => typeof key === "string" && key.length > 0)
     ) {
       throw new Error("Knowledge refresh approval is expired or unauthorized");
     }
     return snapshot;
   }
 
-  async #storedDriveVersions(): Promise<Map<string, string>> {
+  #isKnowledgeFile(value: unknown): value is KnowledgeDriveFile {
+    if (typeof value !== "object" || value === null) {
+      return false;
+    }
+    const file = value as Partial<KnowledgeDriveFile>;
+    return (
+      typeof file.token === "string" &&
+      file.token.length > 0 &&
+      typeof file.name === "string" &&
+      file.name.length > 0 &&
+      typeof file.version === "string" &&
+      file.version.length > 0
+    );
+  }
+
+  async #storedDriveSources(): Promise<Map<string, KnowledgeSource>> {
     return new Map(
       (await this.#repository.listSources(this.#scope))
         .filter((source) => source.sourceKind === "drive_file")
-        .map((source) => [source.sourceKey, source.sourceVersionOrHash]),
+        .map((source) => [source.sourceKey, source]),
     );
+  }
+
+  #sameKnowledgeFiles(
+    expected: KnowledgeDriveFile[],
+    observed: KnowledgeDriveFile[],
+  ): boolean {
+    if (expected.length !== observed.length) {
+      return false;
+    }
+    return expected.every((file, index) => {
+      const current = observed[index];
+      return (
+        current?.token === file.token &&
+        current.name === file.name &&
+        current.version === file.version
+      );
+    });
   }
 
   #encodeSourceReference(source: SourceReference): string {

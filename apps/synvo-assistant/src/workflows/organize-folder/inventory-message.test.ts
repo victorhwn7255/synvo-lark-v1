@@ -7,6 +7,7 @@ import type { OrganizeFolderProposal } from "./proposal.js";
 import {
   formatDriveInventory,
   formatOrganizeFolderProposal,
+  sanitizeDisplayValue,
 } from "./inventory-message.js";
 
 const IDENTITY_DIGEST = "a".repeat(64);
@@ -191,6 +192,15 @@ test("caps each rendered display value without splitting Unicode code points", (
   assert.match(match[1] ?? "", /\ud83d\ude80\u2026$/u);
   assert.match(match[2] ?? "", /\u2026$/u);
   assert.equal((match[1] ?? "").includes("overflow"), false);
+});
+
+test("allows an existing caller to select a larger bounded display budget", () => {
+  const value = "x".repeat(300);
+  assert.equal(sanitizeDisplayValue(value, "fallback", 512), value);
+  assert.equal(
+    Array.from(sanitizeDisplayValue("x".repeat(600), "fallback", 512)).length,
+    512,
+  );
 });
 
 test("renders a concise proposal without internal references or links", () => {

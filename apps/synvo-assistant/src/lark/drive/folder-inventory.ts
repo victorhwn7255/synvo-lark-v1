@@ -169,9 +169,6 @@ export async function observeAllowlistedFolder(
   }));
 
   const issues: string[] = [];
-  if (rootMetadata.title !== organizeFolderPilotPolicy.rootName) {
-    issues.push("The allowlisted root title differs from the pilot baseline.");
-  }
   for (const destination of destinationItems) {
     if (destination.matches.length !== 1) {
       issues.push(

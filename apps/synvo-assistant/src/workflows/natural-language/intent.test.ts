@@ -9,6 +9,7 @@ function classifier(
     | "acknowledgement"
     | "help"
     | "current_workspace"
+    | "refresh_workspace"
     | "ask_workspace"
     | "organize_folder"
     | "analyze_drive_file"
@@ -42,6 +43,22 @@ for (const text of [
 
     assert.equal(result.intent, "greeting");
     assert.deepEqual(calls, []);
+  });
+}
+
+for (const text of [
+  "Please refresh workspace knowledge",
+  "Is our current workspace knowledge base up to date?",
+]) {
+  test(`recognizes a natural workspace refresh request: ${text}`, async () => {
+    const calls: string[] = [];
+    const result = await understandNaturalLanguage(
+      { text },
+      classifier("refresh_workspace", calls),
+    );
+
+    assert.equal(result.intent, "refresh_workspace");
+    assert.deepEqual(calls, [text]);
   });
 }
 

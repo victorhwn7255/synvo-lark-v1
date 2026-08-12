@@ -21,7 +21,16 @@ export const KNOWLEDGE_PROVIDER_TIMEOUT_MS = 45_000;
 export const KNOWLEDGE_MAX_PROVIDER_RESPONSE_BYTES = 4_000_000;
 export const KNOWLEDGE_JOB_TTL_MS = 30 * 60_000;
 
+export const KNOWLEDGE_MAX_DESCENDANT_DEPTH = 4;
+export const KNOWLEDGE_MAX_VISITED_FOLDERS = 50;
+export const KNOWLEDGE_MAX_DISCOVERED_PDFS = 200;
+export const KNOWLEDGE_MAX_RELATIVE_PATH_CODE_POINTS = 512;
+export const KNOWLEDGE_REFRESH_SNAPSHOT_MAX_CODE_UNITS = 8_000;
+
 export const KNOWLEDGE_SEARCH_TOP_K = 10;
-export const KNOWLEDGE_SEARCH_MIN_SIMILARITY = 0.35;
+// Phase 14 live cross-folder evidence scored 0.2805 for the second relevant
+// source. Keep a small margin while the grounded-answer model still rejects
+// unsupported questions from the retrieved evidence.
+export const KNOWLEDGE_SEARCH_MIN_SIMILARITY = 0.25;
 export const KNOWLEDGE_MAX_EVIDENCE_CODE_POINTS = 24_000;
 export const KNOWLEDGE_MAX_QUESTION_CODE_POINTS = 1_000;

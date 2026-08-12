@@ -51,7 +51,11 @@ function neutralizeAutolinks(value: string): string {
   );
 }
 
-export function sanitizeDisplayValue(value: string, fallback: string): string {
+export function sanitizeDisplayValue(
+  value: string,
+  fallback: string,
+  maxCodePoints = MAX_DISPLAY_VALUE_LENGTH,
+): string {
   const collapsed = value
     .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")
     .replace(/\s+/gu, " ")
@@ -61,10 +65,10 @@ export function sanitizeDisplayValue(value: string, fallback: string): string {
   const safeValue = neutralizeAutolinks(collapsed) || fallback;
   const codePoints = Array.from(safeValue);
 
-  if (codePoints.length <= MAX_DISPLAY_VALUE_LENGTH) {
+  if (codePoints.length <= maxCodePoints) {
     return safeValue;
   }
-  return `${codePoints.slice(0, MAX_DISPLAY_VALUE_LENGTH - 1).join("")}\u2026`;
+  return `${codePoints.slice(0, Math.max(0, maxCodePoints - 1)).join("")}\u2026`;
 }
 
 function lineForDestination(

@@ -84,7 +84,7 @@ const analysisResult: AnalyzeDriveFileResult = {
 const knowledgeResult = {
   supported: true,
   answer: "The workspace uses bounded retrieval.",
-  citations: [{ sourceName: "pilot.pdf", pageNumber: 2 }],
+  citations: [{ sourceName: "Research / Agentic AI / pilot.pdf", pageNumber: 2 }],
 };
 
 async function withEndpoint(
