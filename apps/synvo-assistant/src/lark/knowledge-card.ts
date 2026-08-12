@@ -23,7 +23,8 @@ export type KnowledgeCardAction =
   | { type: "refresh_confirm"; snapshot: string }
   | { type: "refresh_stop"; jobId: string }
   | { type: "remove_request"; sourceReference: string; sourceName: string }
-  | { type: "remove_confirm"; sourceReference: string; sourceName: string };
+  | { type: "remove_confirm"; sourceReference: string; sourceName: string }
+  | { type: "delete_source_confirm"; sourceReference: string; sourceName: string };
 
 function sanitizeKnowledgeSourceName(value: string, fallback = "PDF file"): string {
   return sanitizeDisplayValue(
@@ -66,7 +67,9 @@ export function parseKnowledgeCardAction(value: unknown): KnowledgeCardAction | 
     return { type, jobId: record.job_id };
   }
   if (
-    (type === "remove_request" || type === "remove_confirm") &&
+    (type === "remove_request" ||
+      type === "remove_confirm" ||
+      type === "delete_source_confirm") &&
     typeof record.source_reference === "string" &&
     record.source_reference.length <= 2_048 &&
     typeof record.source_name === "string" &&
@@ -169,7 +172,8 @@ export function buildKnowledgeProgressCard(
   const complete = progress.stage === "complete";
   const failed = progress.stage === "failed";
   const stopped = progress.stage === "stopped";
-  const terminal = complete || failed || stopped;
+  const deleted = progress.stage === "deleted";
+  const terminal = complete || failed || stopped || deleted;
   const title = progress.stage === "ingesting"
     ? "Adding this PDF to workspace knowledge…"
     : progress.stage === "refreshing"
@@ -180,6 +184,10 @@ export function buildKnowledgeProgressCard(
           ? "Knowledge update stopped"
       : progress.stage === "answering"
         ? "Searching workspace knowledge…"
+        : progress.stage === "deleting"
+          ? "Deleting the approved file…"
+          : progress.stage === "deleted"
+            ? "File deleted"
         : complete
           ? "Workspace knowledge updated"
           : "I couldn’t update workspace knowledge";
@@ -251,19 +259,21 @@ export function buildKnowledgeProgressCard(
       ],
     });
   }
-  elements.push({
-    tag: "note",
-    elements: [
-      {
-        tag: "plain_text",
-        content: "The original Lark file remains unchanged.",
-      },
-    ],
-  });
+  if (progress.stage !== "deleting" && progress.stage !== "deleted") {
+    elements.push({
+      tag: "note",
+      elements: [
+        {
+          tag: "plain_text",
+          content: "The original Lark file remains unchanged.",
+        },
+      ],
+    });
+  }
   return {
     config: config(),
     header: {
-      template: complete ? "green" : failed ? "red" : stopped ? "grey" : "blue",
+      template: complete || deleted ? "green" : failed ? "red" : stopped ? "grey" : "blue",
       title: { tag: "plain_text", content: title },
     },
     elements,
@@ -307,11 +317,22 @@ function buildRefreshProgressDetails(progress: KnowledgeProgress): string {
   }
   if (
     progress.completedBatches !== undefined &&
-    progress.totalBatches !== undefined
+    progress.totalBatches !== undefined &&
+    progress.totalBatches > 0
   ) {
-    lines.push(
-      `→ Embedding chunks: ${progress.completedBatches} of ${progress.totalBatches} batches`,
+    const completedBatches = Math.min(
+      progress.completedBatches,
+      progress.totalBatches,
     );
+    if (completedBatches < progress.totalBatches) {
+      lines.push(
+        `→ Embedding batch ${completedBatches + 1} of ${progress.totalBatches}…`,
+      );
+    } else {
+      lines.push(
+        `✓ Embeddings ready · ${completedBatches} of ${progress.totalBatches} ${progress.totalBatches === 1 ? "batch" : "batches"} complete`,
+      );
+    }
   }
   return lines.join("\n");
 }
@@ -447,6 +468,48 @@ export function buildKnowledgeRemovedCard(sourceName: string): InteractiveCard {
           tag: "plain_text",
           content: `${sanitizeKnowledgeSourceName(sourceName, "The source")} is no longer searchable. The original file was not changed.`,
         },
+      },
+    ],
+  };
+}
+
+export function buildDriveKnowledgeDeletionConfirmationCard(input: {
+  sourceReference: string;
+  sourceName: string;
+}): InteractiveCard {
+  const name = sanitizeKnowledgeSourceName(input.sourceName, "this file");
+  return {
+    config: config(),
+    header: {
+      template: "red",
+      title: { tag: "plain_text", content: "Delete this file from Synvo_Wiki?" },
+    },
+    elements: [
+      {
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: [
+            `This will move **${name}** to Lark’s recycle bin and remove all of its searchable chunks and embeddings.`,
+            "",
+            "You can recover the original file manually from Lark’s recycle bin, but Synvo AI does not provide an automatic undo for this action.",
+          ].join("\n"),
+        },
+      },
+      {
+        tag: "action",
+        actions: [
+          {
+            tag: "button",
+            type: "danger",
+            text: { tag: "plain_text", content: "Delete file and knowledge" },
+            value: {
+              knowledge_action: "delete_source_confirm",
+              source_reference: input.sourceReference,
+              source_name: input.sourceName,
+            },
+          },
+        ],
       },
     ],
   };

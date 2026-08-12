@@ -7,6 +7,8 @@ import {
 } from "./lark/auth/index.js";
 import {
   LarkDriveFileDownloader,
+  LarkDriveFileDeleter,
+  LarkDriveFolderCreator,
   LarkDriveMover,
   LarkDriveReader,
 } from "./lark/drive/index.js";
@@ -16,6 +18,7 @@ import { loadConfig } from "./config.js";
 import { isDatabaseSchemaReady } from "./db/migrate.js";
 import { createDatabasePool } from "./db/pool.js";
 import { PostgresDeliveryQueue } from "./delivery/repository.js";
+import type { DeliveryJob } from "./delivery/repository.js";
 import { DeliveryWorker } from "./delivery/worker.js";
 import { LarkAttachmentClient } from "./lark/attachment.js";
 import {
@@ -28,6 +31,7 @@ import {
   buildAssistantClarificationCard,
   buildAssistantHelpCard,
   buildAssistantOnlineCard,
+  buildWorkspaceConnectedCard,
   buildAssistantWorkingCard,
   buildAuthorizationCard,
   buildCardCallbackResponse,
@@ -51,9 +55,9 @@ import {
   buildKnowledgeRefreshProposalCard,
   buildKnowledgeRemovalConfirmationCard,
   buildKnowledgeRemovedCard,
+  buildDriveKnowledgeDeletionConfirmationCard,
   parseKnowledgeCardAction,
 } from "./lark/knowledge-card.js";
-import { SynvoMcpClient } from "./mcp/client.js";
 import { createSynvoMcpEndpoint } from "./mcp/server.js";
 import { startAssistantWebServer } from "./web/server.js";
 import { acceptAttachmentEvent } from "./workflows/analyze-attachment/event.js";
@@ -66,7 +70,10 @@ import { KnowledgeRepository } from "./workflows/knowledge/repository.js";
 import { VoyageEmbeddingClient } from "./workflows/knowledge/voyage-client.js";
 import { KnowledgeWorkflow } from "./workflows/knowledge/workflow.js";
 import { understandNaturalLanguage } from "./workflows/natural-language/intent.js";
-import { LarkOAuthService } from "./workflows/organize-folder/authorization.js";
+import {
+  LarkOAuthService,
+  WORKSPACE_AUTHORIZATION_COMPLETE_MESSAGE,
+} from "./workflows/organize-folder/authorization.js";
 import { ContentAwareFolderPlanner } from "./workflows/organize-folder/content-planner.js";
 import { PostgresOrganizeFolderRepository } from "./workflows/organize-folder/repository.js";
 import { OrganizeFolderWorkflow } from "./workflows/organize-folder/workflow.js";
@@ -157,30 +164,6 @@ async function main(): Promise<void> {
           tenantKey: config.authorizedTenantKey,
         }
       : undefined;
-  const contentMcpClient = config.synvoMcpAuthToken && pilotIdentity
-    ? new SynvoMcpClient({
-        url: new URL(
-          `http://${config.httpHost.includes(":") ? "[::1]" : "127.0.0.1"}:${config.httpPort}/mcp`,
-        ),
-        authToken: config.synvoMcpAuthToken,
-      })
-    : undefined;
-  const workflow = new OrganizeFolderWorkflow({
-    config,
-    grantStore,
-    repository,
-    oauthService,
-    tokenBroker,
-    cipher,
-    driveReader,
-    driveMover: new LarkDriveMover(),
-    contentPlanner: contentMcpClient
-      ? new ContentAwareFolderPlanner({
-          tools: contentMcpClient,
-          classifier: nimClient,
-        })
-      : undefined,
-  });
   const organizeFolderRootUrl = new URL(
     `/drive/folder/${config.organizeFolderRootToken}?from=space`,
     "https://larksuite.com",
@@ -241,11 +224,36 @@ async function main(): Promise<void> {
     chatId: string,
     text: string,
     idempotencyKey: string,
+    operation?: Pick<DeliveryJob, "kind" | "runId">,
   ): Promise<void> => {
+    if (text === WORKSPACE_AUTHORIZATION_COMPLETE_MESSAGE) {
+      await createCard(
+        chatId,
+        buildWorkspaceConnectedCard(
+          config.authorizedFirstName,
+          await loadWorkspaceCardContext(),
+        ),
+        idempotencyKey,
+      );
+      return;
+    }
     const card =
       buildAuthorizationCard(text) ??
       buildOrganizeFolderOperationCard(text, organizeFolderRootUrl);
     if (card) {
+      if (
+        operation?.runId &&
+        (operation.kind === "ORGANIZE_FOLDER_EXECUTE" ||
+          operation.kind === "ORGANIZE_FOLDER_UNDO")
+      ) {
+        const operationMessageId = await workflow.getOperationMessageId(
+          operation.runId,
+        );
+        if (operationMessageId?.startsWith("om_")) {
+          await updateCard(operationMessageId, card);
+          return;
+        }
+      }
       await createCard(chatId, card, idempotencyKey);
       return;
     }
@@ -305,6 +313,7 @@ async function main(): Promise<void> {
         tokenBroker,
         driveReader,
         downloader: new LarkDriveFileDownloader(),
+        deleter: new LarkDriveFileDeleter(),
         rootToken: config.organizeFolderRootToken,
         requesterOpenId: pilotIdentity.openId,
         tenantKey: pilotIdentity.tenantKey,
@@ -360,8 +369,32 @@ async function main(): Promise<void> {
           },
           verifyWorkspace: async () =>
             Boolean(await loadWorkspaceCardContext()),
+          driveDeleteEnabled: config.organizeFolderWriteEnabled,
         })
       : undefined;
+  if (!pilotIdentity || !authorizedDrivePdfReader || !knowledgeWorkflow) {
+    throw new Error(
+      "The configured pilot identity, Drive reader, and workspace knowledge are required",
+    );
+  }
+  const contentPlanner = new ContentAwareFolderPlanner({
+    reader: authorizedDrivePdfReader,
+    knowledge: knowledgeWorkflow,
+    classifier: nimClient,
+  });
+  const workflow = new OrganizeFolderWorkflow({
+    config,
+    grantStore,
+    repository,
+    oauthService,
+    tokenBroker,
+    cipher,
+    workspaceReader: authorizedDrivePdfReader,
+    driveMover: new LarkDriveMover(),
+    folderCreator: new LarkDriveFolderCreator(),
+    knowledge: knowledgeWorkflow,
+    contentPlanner,
+  });
   const startDriveFileAnalysis = async (
     request: Parameters<AnalyzeDriveFileWorkflow["start"]>[0],
   ): Promise<void> => {
@@ -380,13 +413,56 @@ async function main(): Promise<void> {
       await createCard(request.chatId, buildNoticeCard(result.replyText), request.messageId);
     }
   };
-  const startFolderAnalysis = async (
-    request: Parameters<OrganizeFolderWorkflow["start"]>[0],
-  ): Promise<void> => {
-    const result = await workflow.start(request);
-    if (result.kind === "rejected") {
-      await createCard(request.chatId, buildNoticeCard(result.replyText), request.messageId);
+  const buildWorkspaceOrganizationConsent = async (request: {
+    messageId: string;
+    chatId: string;
+    requesterOpenId: string;
+    tenantKey: string;
+    folderLink: string;
+  }): Promise<Lark.InteractiveCard> => {
+    const result = await workflow.prepareConsent(request);
+    if (result.kind === "rejected") return buildNoticeCard(result.replyText);
+    if (result.kind === "authorization_required") {
+      return buildNoticeCard(
+        "Please use the secure Lark authorization card in this chat. After connecting Drive, ask me to organize the workspace again so you can review the exact provider-consent step.",
+        "Connect Lark Drive first",
+      );
     }
+    if (result.kind === "duplicate") {
+      return buildNoticeCard(
+        "This authorization request is already active. Complete it, then ask me to organize the workspace again.",
+      );
+    }
+    const refresh = await knowledgeWorkflow.proposeRefresh();
+    return buildOrganizeFolderConfirmationCard({
+      pdfPaths: result.inventory.inventory.files.map((file) => file.relative_path),
+      newOrChangedCount: refresh.files.length,
+      snapshotDigest: result.snapshotDigest,
+      expiresAt: result.expiresAt,
+    });
+  };
+  const buildWelcomeCard = async (request: {
+    messageId: string;
+    chatId: string;
+    requesterOpenId: string;
+    tenantKey: string;
+  }): Promise<Lark.InteractiveCard> => {
+    const workspace = await loadWorkspaceCardContext();
+    if (workspace) {
+      return buildAssistantOnlineCard(config.authorizedFirstName, workspace);
+    }
+    const authorization = await workflow.prepareConsent({
+      ...request,
+      folderLink: organizeFolderRootUrl.toString(),
+      authorizationDelivery: "inline",
+    });
+    return buildAssistantOnlineCard(
+      config.authorizedFirstName,
+      undefined,
+      authorization.kind === "authorization_required"
+        ? authorization.authorizationUrl
+        : undefined,
+    );
   };
   const mcpEndpoint =
     config.synvoMcpAuthToken && pilotIdentity && driveFileWorkflow && knowledgeWorkflow
@@ -559,14 +635,20 @@ async function main(): Promise<void> {
       if (command.type === "ping") {
         await createCard(
           chatId,
-          buildAssistantOnlineCard(config.authorizedFirstName),
+          await buildWelcomeCard({
+            messageId,
+            chatId,
+            requesterOpenId,
+            tenantKey,
+          }),
           messageId,
         );
         return;
       }
-      if (command.type === "decide-folder") {
+      if (command.type === "decide-workspace") {
         const replyText = await workflow.decideProposal({
           proposalId: command.proposalId,
+          chatId,
           requesterOpenId,
           tenantKey,
           decision: command.decision,
@@ -581,9 +663,10 @@ async function main(): Promise<void> {
         );
         return;
       }
-      if (command.type === "undo-folder") {
+      if (command.type === "undo-workspace") {
         const replyText = await workflow.requestUndo({
           proposalId: command.proposalId,
+          chatId,
           requesterOpenId,
           tenantKey,
         });
@@ -607,14 +690,18 @@ async function main(): Promise<void> {
         });
         return;
       }
-      if (command.type === "organize-folder") {
-        await startFolderAnalysis({
-          messageId,
+      if (command.type === "organize-workspace") {
+        await createCard(
           chatId,
-          requesterOpenId,
-          tenantKey,
-          folderLink: command.folderLink,
-        });
+          await buildWorkspaceOrganizationConsent({
+            messageId,
+            chatId,
+            requesterOpenId,
+            tenantKey,
+            folderLink: command.folderLink ?? organizeFolderRootUrl.toString(),
+          }),
+          messageId,
+        );
         return;
       }
 
@@ -661,12 +748,12 @@ async function main(): Promise<void> {
         }
       };
       if (understood.intent === "greeting") {
-        await resolveCard(
-          buildAssistantOnlineCard(
-            config.authorizedFirstName,
-            await loadWorkspaceCardContext(),
-          ),
-        );
+        await resolveCard(await buildWelcomeCard({
+          messageId,
+          chatId,
+          requesterOpenId,
+          tenantKey,
+        }));
         return;
       }
       if (understood.intent === "acknowledgement") {
@@ -704,6 +791,58 @@ async function main(): Promise<void> {
         }
         return;
       }
+      if (understood.intent === "remove_knowledge_source") {
+        if (!knowledgeWorkflow) {
+          await resolveCard(buildNoticeCard("Workspace knowledge is not available right now."));
+          return;
+        }
+        const proposal = await knowledgeWorkflow.proposeSourceRemoval(
+          understood.sanitizedText,
+        );
+        if (proposal.kind === "not_found") {
+          await resolveCard(
+            buildNoticeCard(
+              "I couldn’t find an indexed file with that exact filename. Please include the full filename, including .pdf.",
+              "I couldn’t identify that file",
+            ),
+          );
+          return;
+        }
+        if (proposal.kind === "ambiguous") {
+          await resolveCard(
+            buildNoticeCard(
+              `I found more than one possible match:\n\n${proposal.sourceNames.map((name) => `• ${name}`).join("\n")}\n\nPlease use the full workspace path shown above.`,
+              "Which file did you mean?",
+            ),
+          );
+          return;
+        }
+        if (proposal.kind === "knowledge_only") {
+          await resolveCard(
+            buildKnowledgeRemovalConfirmationCard({
+              sourceReference: proposal.sourceReference,
+              sourceName: proposal.sourceName,
+            }),
+          );
+          return;
+        }
+        if (!proposal.driveDeleteEnabled) {
+          await resolveCard(
+            buildNoticeCard(
+              "I found the file, but Drive deletion is disabled by the operator safety switch. Nothing was changed.",
+              "Drive deletion is disabled",
+            ),
+          );
+          return;
+        }
+        await resolveCard(
+          buildDriveKnowledgeDeletionConfirmationCard({
+            sourceReference: proposal.sourceReference,
+            sourceName: proposal.sourceName,
+          }),
+        );
+        return;
+      }
       if (understood.intent === "ask_workspace") {
         const workspace = await loadWorkspaceCardContext();
         if (!knowledgeWorkflow || !workspace) {
@@ -731,28 +870,32 @@ async function main(): Promise<void> {
         });
         return;
       }
-      if (understood.intent === "organize_folder") {
+      if (understood.intent === "organize_workspace") {
         if (
           understood.links.length === 0 &&
           understood.folder_reference === "active_workspace"
         ) {
-          await resolveCard(buildOrganizeFolderConfirmationCard());
+          await resolveCard(
+            await buildWorkspaceOrganizationConsent({
+              messageId,
+              chatId,
+              requesterOpenId,
+              tenantKey,
+              folderLink: organizeFolderRootUrl.toString(),
+            }),
+          );
           return;
         }
         if (understood.links.length === 1 && understood.links[0]) {
-          await finishWorkingCard(
-            buildNoticeCard(
-              "I found the folder link and I’m starting the analysis now.",
-              "Folder analysis requested",
-            ),
+          await resolveCard(
+            await buildWorkspaceOrganizationConsent({
+              messageId,
+              chatId,
+              requesterOpenId,
+              tenantKey,
+              folderLink: understood.links[0],
+            }),
           );
-          await startFolderAnalysis({
-            messageId,
-            chatId,
-            requesterOpenId,
-            tenantKey,
-            folderLink: understood.links[0],
-          });
           return;
         }
         if (understood.links.length === 0) {
@@ -947,6 +1090,37 @@ async function main(): Promise<void> {
             { type: "warning", content: "Please confirm removal." },
           );
         }
+        if (knowledgeAction.type === "delete_source_confirm") {
+          try {
+            const result = await knowledgeWorkflow.enqueueDriveSourceDeletion({
+              sourceReference: knowledgeAction.sourceReference,
+              cardMessageId: event.messageId,
+              chatId: event.chatId,
+            });
+            return buildCardCallbackResponse(
+              buildKnowledgeProgressCard(
+                {
+                  stage: "deleting",
+                  message: result.queued
+                    ? "Verifying the approved file → moving it to the Lark recycle bin → removing its searchable knowledge"
+                    : "This exact deletion is already being processed.",
+                },
+                config.larkLoadingImageKey,
+              ),
+              {
+                type: result.queued ? "warning" : "info",
+                content: result.queued ? "Approved deletion started." : "Already started.",
+              },
+            );
+          } catch {
+            return buildCardCallbackResponse(
+              buildNoticeCard(
+                "I couldn’t start that deletion safely. Drive deletion may be disabled, or the approval may no longer match the file.",
+              ),
+              { type: "error", content: "Deletion did not start." },
+            );
+          }
+        }
         try {
           await knowledgeWorkflow.removeSource(knowledgeAction.sourceReference);
           return buildCardCallbackResponse(
@@ -964,6 +1138,15 @@ async function main(): Promise<void> {
       if (!action) {
         return;
       }
+      if (action.type === "cancel") {
+        return buildCardCallbackResponse(
+          buildNoticeCard(
+            "No problem — I didn’t send workspace content to Voyage or NVIDIA, and nothing was changed.",
+            "Workspace analysis cancelled",
+          ),
+          { type: "info", content: "Nothing was analyzed or changed." },
+        );
+      }
       if (action.type === "start") {
         const result = await workflow.start({
           messageId: event.messageId,
@@ -971,6 +1154,8 @@ async function main(): Promise<void> {
           requesterOpenId: event.operator.openId,
           tenantKey: pilotIdentity.tenantKey,
           folderLink: organizeFolderRootUrl.toString(),
+          consentSnapshotDigest: action.snapshotDigest,
+          consentExpiresAt: action.expiresAt,
         });
         console.info("[lark] accepted confirmed folder analysis request");
         if (result.kind === "rejected") {
@@ -1000,8 +1185,10 @@ async function main(): Promise<void> {
       if (action.type === "undo") {
         const result = await workflow.requestUndo({
           proposalId: action.proposalId,
+          chatId: event.chatId,
           requesterOpenId: event.operator.openId,
           tenantKey: pilotIdentity.tenantKey,
+          operationMessageId: event.messageId,
         });
         console.info("[lark] recorded folder undo request");
         return buildCardCallbackResponse(
@@ -1012,11 +1199,25 @@ async function main(): Promise<void> {
           { type: "success", content: "Undo request saved." },
         );
       }
+      if (action.type === "page") {
+        const message = await workflow.readProposalMessage({
+          proposalId: action.proposalId,
+          chatId: event.chatId,
+          requesterOpenId: event.operator.openId,
+          tenantKey: pilotIdentity.tenantKey,
+        });
+        return buildCardCallbackResponse(
+          buildOrganizeFolderResultCard(action.proposalId, message, action.page),
+          { type: "info", content: "Proposal page updated." },
+        );
+      }
       const result = await workflow.decideProposal({
         proposalId: action.proposalId,
+        chatId: event.chatId,
         requesterOpenId: event.operator.openId,
         tenantKey: pilotIdentity.tenantKey,
         decision: action.decision,
+        operationMessageId: event.messageId,
       });
       console.info("[lark] recorded folder proposal decision");
       return buildCardCallbackResponse(
@@ -1078,7 +1279,6 @@ async function main(): Promise<void> {
     console.info(`[app] received ${signal}; shutting down`);
     wsClient.close();
     await deliveryWorker.stop();
-    await contentMcpClient?.close().catch(() => {});
     await new Promise<void>((resolve) => webServer.close(() => resolve()));
     await mcpEndpoint?.close();
     await pool.end();

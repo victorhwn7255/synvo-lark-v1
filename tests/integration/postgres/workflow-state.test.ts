@@ -38,6 +38,7 @@ test(
     const openId = `ou_${suffix}`;
     const tenantKey = `tenant_${suffix}`;
     const runId = randomUUID();
+    const inlineRunId = randomUUID();
     const repository = new PostgresOrganizeFolderRepository(pool);
     const grantStore = new PostgresOAuthGrantStore(pool);
     const cipher = new TokenCipher(Buffer.alloc(32, 11));
@@ -129,8 +130,43 @@ test(
         }),
         null,
       );
+
+      assert.equal(
+        await repository.createAwaitingOAuthRun({
+          runId: inlineRunId,
+          sessionId: randomUUID(),
+          messageId: `om_inline_${suffix}`,
+          chatId: `oc_${suffix}`,
+          requesterOpenId: openId,
+          tenantKey,
+          rootTokenDigest: "a".repeat(64),
+          requestTokenDigest: "e".repeat(64),
+          redirectUri: "http://localhost:3000/oauth/lark/callback",
+          requestedScopes: [...ORGANIZE_FOLDER_USER_SCOPES],
+          expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+          deliveryJobId: null,
+          authorizationMessageCiphertext: null,
+        }),
+        true,
+      );
+      const inlineDeliveryJobs = await pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count
+           FROM lark_delivery_jobs
+          WHERE run_id = $1`,
+        [inlineRunId],
+      );
+      assert.equal(inlineDeliveryJobs.rows[0]?.count, "0");
+      assert.ok(
+        await repository.startOAuthSession({
+          requestTokenDigest: "e".repeat(64),
+          stateDigest: "f".repeat(64),
+          codeVerifierCiphertext: "inline-verifier",
+          now: new Date(),
+        }),
+      );
     } finally {
       await cleanRun(pool, runId);
+      await cleanRun(pool, inlineRunId);
       await pool.query(
         "DELETE FROM lark_oauth_grants WHERE open_id = $1 AND tenant_key = $2",
         [openId, tenantKey],
@@ -152,6 +188,7 @@ test(
     const runId = randomUUID();
     const rejectedRunId = randomUUID();
     const safeApprovalRunId = randomUUID();
+    const expiredProposalRunId = randomUUID();
     const grantId = randomUUID();
     const messageId = `om_${suffix}`;
     const repository = new PostgresOrganizeFolderRepository(pool);
@@ -186,6 +223,7 @@ test(
           tenantKey,
           rootTokenDigest: "a".repeat(64),
           oauthGrantId: storedGrant.id,
+          consentSnapshotCiphertext: "encrypted-consent-snapshot",
           deliveryJobId: grantId,
         }),
         true,
@@ -199,6 +237,7 @@ test(
           tenantKey,
           rootTokenDigest: "a".repeat(64),
           oauthGrantId: storedGrant.id,
+          consentSnapshotCiphertext: "encrypted-consent-snapshot",
           deliveryJobId: randomUUID(),
         }),
         false,
@@ -234,11 +273,13 @@ test(
       assert.deepEqual(
         await repository.recordProposalDecision({
           proposalId: runId,
+          chatId: `oc_${suffix}`,
           requesterOpenId: openId,
           tenantKey,
           decision: "APPROVED",
           decidedAt: new Date("2026-08-08T00:00:00.000Z"),
           executionJobId: randomUUID(),
+          operationMessageId: "om_execution_progress",
         }),
         {
           kind: "recorded",
@@ -250,6 +291,10 @@ test(
       assert.ok(executionJob);
       assert.equal(executionJob.kind, "ORGANIZE_FOLDER_EXECUTE");
       assert.equal(executionJob.runId, runId);
+      assert.equal(
+        (await repository.findInventoryRunById(runId))?.operationMessageId,
+        "om_execution_progress",
+      );
       assert.equal(await repository.startExecution(runId), true);
       assert.equal(
         await repository.storeExecution({
@@ -264,10 +309,12 @@ test(
       assert.deepEqual(
         await repository.requestUndo({
           proposalId: runId,
+          chatId: `oc_${suffix}`,
           requesterOpenId: openId,
           tenantKey,
           deliveryJobId: randomUUID(),
           executionCiphertext: "encrypted-execution-with-undo-request",
+          operationMessageId: "om_undo_progress",
         }),
         { kind: "recorded" },
       );
@@ -275,6 +322,10 @@ test(
       assert.ok(undoJob);
       assert.equal(undoJob.kind, "ORGANIZE_FOLDER_UNDO");
       assert.equal(undoJob.runId, runId);
+      assert.equal(
+        (await repository.findInventoryRunById(runId))?.operationMessageId,
+        "om_undo_progress",
+      );
       assert.equal(await repository.startUndo(runId), true);
       assert.equal(
         await repository.storeUndo({
@@ -288,6 +339,7 @@ test(
       assert.deepEqual(
         await repository.recordProposalDecision({
           proposalId: runId,
+          chatId: `oc_${suffix}`,
           requesterOpenId: openId,
           tenantKey,
           decision: "APPROVED",
@@ -301,6 +353,7 @@ test(
       assert.deepEqual(
         await repository.recordProposalDecision({
           proposalId: runId,
+          chatId: `oc_${suffix}`,
           requesterOpenId: openId,
           tenantKey,
           decision: "REJECTED",
@@ -314,10 +367,22 @@ test(
       assert.deepEqual(
         await repository.recordProposalDecision({
           proposalId: runId,
+          chatId: `oc_${suffix}`,
           requesterOpenId: `other_${openId}`,
           tenantKey,
           decision: "APPROVED",
           decidedAt: new Date("2026-08-08T00:03:00.000Z"),
+        }),
+        { kind: "not_found" },
+      );
+      assert.deepEqual(
+        await repository.recordProposalDecision({
+          proposalId: runId,
+          chatId: `oc_other_${suffix}`,
+          requesterOpenId: openId,
+          tenantKey,
+          decision: "APPROVED",
+          decidedAt: new Date("2026-08-08T00:03:30.000Z"),
         }),
         { kind: "not_found" },
       );
@@ -331,6 +396,7 @@ test(
           tenantKey,
           rootTokenDigest: "a".repeat(64),
           oauthGrantId: storedGrant.id,
+          consentSnapshotCiphertext: "encrypted-consent-snapshot",
           deliveryJobId: randomUUID(),
         }),
         true,
@@ -349,6 +415,7 @@ test(
       assert.deepEqual(
         await repository.recordProposalDecision({
           proposalId: rejectedRunId,
+          chatId: `oc_${suffix}`,
           requesterOpenId: openId,
           tenantKey,
           decision: "REJECTED",
@@ -370,6 +437,7 @@ test(
           tenantKey,
           rootTokenDigest: "a".repeat(64),
           oauthGrantId: storedGrant.id,
+          consentSnapshotCiphertext: "encrypted-consent-snapshot",
           deliveryJobId: randomUUID(),
         }),
         true,
@@ -388,6 +456,7 @@ test(
       assert.deepEqual(
         await repository.recordProposalDecision({
           proposalId: safeApprovalRunId,
+          chatId: `oc_${suffix}`,
           requesterOpenId: openId,
           tenantKey,
           decision: "APPROVED",
@@ -402,6 +471,7 @@ test(
       assert.deepEqual(
         await repository.recordProposalDecision({
           proposalId: safeApprovalRunId,
+          chatId: `oc_${suffix}`,
           requesterOpenId: openId,
           tenantKey,
           decision: "APPROVED",
@@ -421,6 +491,53 @@ test(
         [safeApprovalRunId],
       );
       assert.equal(delayedExecutionJobs.rows[0]?.count, "0");
+
+      assert.equal(
+        await repository.createReadyRun({
+          id: expiredProposalRunId,
+          messageId: `om_expired_proposal_${suffix}`,
+          chatId: `oc_${suffix}`,
+          requesterOpenId: openId,
+          tenantKey,
+          rootTokenDigest: "a".repeat(64),
+          oauthGrantId: storedGrant.id,
+          consentSnapshotCiphertext: "encrypted-consent-snapshot",
+          deliveryJobId: randomUUID(),
+        }),
+        true,
+      );
+      assert.equal(
+        await repository.storeInventoryResult({
+          runId: expiredProposalRunId,
+          resultCiphertext: "encrypted-result",
+          state: "COMPLETED",
+          errorCode: null,
+          proposalCiphertext: "encrypted-proposal",
+          proposalStatus: "PROPOSED",
+        }),
+        true,
+      );
+      assert.deepEqual(
+        await repository.recordProposalDecision({
+          proposalId: expiredProposalRunId,
+          chatId: `oc_${suffix}`,
+          requesterOpenId: openId,
+          tenantKey,
+          decision: "APPROVED",
+          decidedAt: new Date("2099-01-01T00:00:00.000Z"),
+          proposalNotBefore: new Date("2098-12-31T23:00:00.000Z"),
+          executionJobId: randomUUID(),
+        }),
+        { kind: "existing", status: "STALE" },
+      );
+      const expiredExecutionJobs = await pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count
+           FROM lark_delivery_jobs
+          WHERE run_id = $1
+            AND kind = 'ORGANIZE_FOLDER_EXECUTE'`,
+        [expiredProposalRunId],
+      );
+      assert.equal(expiredExecutionJobs.rows[0]?.count, "0");
 
       const storedRun = await repository.findInventoryRunById(runId);
       const rejectedRun = await repository.findInventoryRunById(rejectedRunId);
@@ -461,6 +578,7 @@ test(
       await cleanRun(pool, runId);
       await cleanRun(pool, rejectedRunId);
       await cleanRun(pool, safeApprovalRunId);
+      await cleanRun(pool, expiredProposalRunId);
       await pool.query(
         "DELETE FROM lark_oauth_grants WHERE open_id = $1 AND tenant_key = $2",
         [openId, tenantKey],

@@ -6,6 +6,7 @@ import type { ProposalStatus } from "./proposal.js";
 
 export type InventoryRun = {
   id: string;
+  chatId: string;
   requesterOpenId: string;
   tenantKey: string;
   state: string;
@@ -18,6 +19,7 @@ export type InventoryRun = {
   executionCiphertext: string | null;
   executionStatus: ExecutionStatus | null;
   undoStatus: UndoStatus | null;
+  operationMessageId: string | null;
 };
 
 export type ProposalDecisionStoreResult =
@@ -74,6 +76,7 @@ export interface OrganizeFolderRepository {
     tenantKey: string;
     rootTokenDigest: string;
     oauthGrantId: string;
+    consentSnapshotCiphertext: string;
     deliveryJobId: string;
   }): Promise<boolean>;
   createAwaitingOAuthRun(input: {
@@ -88,8 +91,8 @@ export interface OrganizeFolderRepository {
     redirectUri: string;
     requestedScopes: string[];
     expiresAt: Date;
-    deliveryJobId: string;
-    authorizationMessageCiphertext: string;
+    deliveryJobId: string | null;
+    authorizationMessageCiphertext: string | null;
   }): Promise<boolean>;
   startOAuthSession(input: {
     requestTokenDigest: string;
@@ -102,16 +105,20 @@ export interface OrganizeFolderRepository {
     runId: string,
     grantId: string,
     deliveryJobId: string,
+    completionMessageCiphertext: string,
   ): Promise<void>;
   markRunFailed(runId: string, errorCode: string): Promise<void>;
   storeInventoryResult(input: StoreInventoryResultInput): Promise<boolean>;
   recordProposalDecision(input: {
     proposalId: string;
+    chatId: string;
     requesterOpenId: string;
     tenantKey: string;
     decision: "APPROVED" | "REJECTED";
     decidedAt: Date;
+    proposalNotBefore?: Date;
     executionJobId?: string;
+    operationMessageId?: string;
   }): Promise<ProposalDecisionStoreResult>;
   markProposalStale(proposalId: string): Promise<boolean>;
   startExecution(proposalId: string): Promise<boolean>;
@@ -122,10 +129,12 @@ export interface OrganizeFolderRepository {
   }): Promise<boolean>;
   requestUndo(input: {
     proposalId: string;
+    chatId: string;
     requesterOpenId: string;
     tenantKey: string;
     deliveryJobId: string;
     executionCiphertext: string;
+    operationMessageId?: string;
   }): Promise<UndoRequestStoreResult>;
   startUndo(proposalId: string): Promise<boolean>;
   storeUndo(input: {
@@ -147,6 +156,7 @@ type SessionRow = {
 
 type InventoryRunRow = {
   id: string;
+  chat_id: string;
   requester_open_id: string;
   tenant_key: string;
   state: string;
@@ -159,6 +169,7 @@ type InventoryRunRow = {
   execution_ciphertext: string | null;
   execution_status: ExecutionStatus | null;
   undo_status: UndoStatus | null;
+  operation_message_id: string | null;
 };
 
 type ProposalDecisionRow = {
@@ -241,6 +252,7 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
   async findInventoryRunById(runId: string): Promise<InventoryRun | null> {
     const result = await this.#pool.query<InventoryRunRow>(
       `SELECT run.id,
+              run.chat_id,
               run.requester_open_id,
               run.tenant_key,
               run.state,
@@ -252,6 +264,7 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
               run.execution_ciphertext,
               run.execution_status,
               run.undo_status,
+              run.operation_message_id,
               EXISTS (
                 SELECT 1
                   FROM lark_oauth_grants AS oauth_grant
@@ -267,6 +280,7 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
     return row
       ? {
           id: row.id,
+          chatId: row.chat_id,
           requesterOpenId: row.requester_open_id,
           tenantKey: row.tenant_key,
           state: row.state,
@@ -279,6 +293,7 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
           executionCiphertext: row.execution_ciphertext,
           executionStatus: row.execution_status,
           undoStatus: row.undo_status,
+          operationMessageId: row.operation_message_id,
         }
       : null;
   }
@@ -291,6 +306,7 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
     tenantKey: string;
     rootTokenDigest: string;
     oauthGrantId: string;
+    consentSnapshotCiphertext: string;
     deliveryJobId: string;
   }): Promise<boolean> {
     const client = await this.#pool.connect();
@@ -304,6 +320,13 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
         await client.query("ROLLBACK");
         return false;
       }
+      await client.query(
+        `UPDATE organize_folder_runs
+            SET scan_result_ciphertext = $2,
+                updated_at = now()
+          WHERE id = $1`,
+        [input.id, input.consentSnapshotCiphertext],
+      );
       const queued = await insertDeliveryJob(client, {
         id: input.deliveryJobId,
         dedupeKey: `organize-folder-scan:${input.id}`,
@@ -336,8 +359,8 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
     redirectUri: string;
     requestedScopes: string[];
     expiresAt: Date;
-    deliveryJobId: string;
-    authorizationMessageCiphertext: string;
+    deliveryJobId: string | null;
+    authorizationMessageCiphertext: string | null;
   }): Promise<boolean> {
     const client = await this.#pool.connect();
     try {
@@ -378,17 +401,25 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
           input.expiresAt,
         ],
       );
-      const queued = await insertDeliveryJob(client, {
-        id: input.deliveryJobId,
-        dedupeKey: `organize-folder-authorization:${input.runId}`,
-        runId: input.runId,
-        kind: "TEXT",
-        chatId: input.chatId,
-        payloadCiphertext: input.authorizationMessageCiphertext,
-        expiresAt: input.expiresAt,
-      });
-      if (!queued) {
-        throw new Error("Authorization delivery job could not be created");
+      if (
+        (input.deliveryJobId === null) !==
+        (input.authorizationMessageCiphertext === null)
+      ) {
+        throw new Error("Authorization delivery fields must be provided together");
+      }
+      if (input.deliveryJobId && input.authorizationMessageCiphertext) {
+        const queued = await insertDeliveryJob(client, {
+          id: input.deliveryJobId,
+          dedupeKey: `organize-folder-authorization:${input.runId}`,
+          runId: input.runId,
+          kind: "TEXT",
+          chatId: input.chatId,
+          payloadCiphertext: input.authorizationMessageCiphertext,
+          expiresAt: input.expiresAt,
+        });
+        if (!queued) {
+          throw new Error("Authorization delivery job could not be created");
+        }
       }
       await client.query("COMMIT");
       return true;
@@ -458,6 +489,7 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
     runId: string,
     grantId: string,
     deliveryJobId: string,
+    completionMessageCiphertext: string,
   ): Promise<void> {
     const client = await this.#pool.connect();
     try {
@@ -465,7 +497,8 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
       const result = await client.query<{ chat_id: string }>(
         `UPDATE organize_folder_runs
             SET oauth_grant_id = $2,
-                state = 'READY_TO_SCAN',
+                state = 'FAILED_NO_CHANGE',
+                terminal_error_code = NULL,
                 updated_at = now()
           WHERE id = $1 AND state = 'AWAITING_OAUTH'
         RETURNING chat_id`,
@@ -477,13 +510,14 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
       }
       const queued = await insertDeliveryJob(client, {
         id: deliveryJobId,
-        dedupeKey: `organize-folder-scan:${runId}`,
+        dedupeKey: `organize-workspace-authorization-complete:${runId}`,
         runId,
-        kind: "ORGANIZE_FOLDER_SCAN",
+        kind: "TEXT",
         chatId: row.chat_id,
+        payloadCiphertext: completionMessageCiphertext,
       });
       if (!queued) {
-        throw new Error("Drive scan delivery job could not be created");
+        throw new Error("Authorization completion delivery job could not be created");
       }
       await client.query("COMMIT");
     } catch (error) {
@@ -532,11 +566,14 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
 
   async recordProposalDecision(input: {
     proposalId: string;
+    chatId: string;
     requesterOpenId: string;
     tenantKey: string;
     decision: "APPROVED" | "REJECTED";
     decidedAt: Date;
+    proposalNotBefore?: Date;
     executionJobId?: string;
+    operationMessageId?: string;
   }): Promise<ProposalDecisionStoreResult> {
     const client = await this.#pool.connect();
     try {
@@ -549,12 +586,18 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
                 proposal_decided_by_open_id = $2,
                 proposal_decided_at = $5,
                 execution_status = CASE WHEN $6 THEN 'QUEUED' ELSE execution_status END,
+                operation_message_id = CASE
+                  WHEN $6 THEN COALESCE($9, operation_message_id)
+                  ELSE operation_message_id
+                END,
                 updated_at = now()
           WHERE id = $1
             AND requester_open_id = $2
             AND tenant_key = $3
+            AND chat_id = $7
             AND proposal_status = 'PROPOSED'
             AND proposal_ciphertext IS NOT NULL
+            AND updated_at >= $8
         RETURNING proposal_status, chat_id`,
         [
           input.proposalId,
@@ -563,6 +606,9 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
           input.decision,
           input.decidedAt,
           queueExecution,
+          input.chatId,
+          input.proposalNotBefore ?? new Date(0),
+          input.operationMessageId ?? null,
         ],
       );
       const row = updated.rows[0];
@@ -587,15 +633,41 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
         };
       }
 
+      const expired = await client.query<ProposalDecisionRow>(
+        `UPDATE organize_folder_runs
+            SET proposal_status = 'STALE',
+                updated_at = now()
+          WHERE id = $1
+            AND requester_open_id = $2
+            AND tenant_key = $3
+            AND chat_id = $4
+            AND proposal_status = 'PROPOSED'
+            AND proposal_ciphertext IS NOT NULL
+            AND updated_at < $5
+        RETURNING proposal_status, chat_id`,
+        [
+          input.proposalId,
+          input.requesterOpenId,
+          input.tenantKey,
+          input.chatId,
+          input.proposalNotBefore ?? new Date(0),
+        ],
+      );
+      if (expired.rows[0]) {
+        await client.query("COMMIT");
+        return { kind: "existing", status: "STALE" };
+      }
+
       const existing = await client.query<Pick<ProposalDecisionRow, "proposal_status">>(
         `SELECT proposal_status
            FROM organize_folder_runs
           WHERE id = $1
             AND requester_open_id = $2
             AND tenant_key = $3
+            AND chat_id = $4
             AND proposal_status IS NOT NULL
             AND proposal_ciphertext IS NOT NULL`,
-        [input.proposalId, input.requesterOpenId, input.tenantKey],
+        [input.proposalId, input.requesterOpenId, input.tenantKey, input.chatId],
       );
       await client.query("COMMIT");
       const existingRow = existing.rows[0];
@@ -659,10 +731,12 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
 
   async requestUndo(input: {
     proposalId: string;
+    chatId: string;
     requesterOpenId: string;
     tenantKey: string;
     deliveryJobId: string;
     executionCiphertext: string;
+    operationMessageId?: string;
   }): Promise<UndoRequestStoreResult> {
     const client = await this.#pool.connect();
     try {
@@ -671,10 +745,12 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
         `UPDATE organize_folder_runs
             SET undo_status = 'REQUESTED',
                 execution_ciphertext = $4,
+                operation_message_id = COALESCE($6, operation_message_id),
                 updated_at = now()
           WHERE id = $1
             AND requester_open_id = $2
             AND tenant_key = $3
+            AND chat_id = $5
             AND execution_ciphertext IS NOT NULL
             AND execution_status IN ('COMPLETED', 'PARTIAL')
             AND undo_status IS NULL
@@ -684,6 +760,8 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
           input.requesterOpenId,
           input.tenantKey,
           input.executionCiphertext,
+          input.chatId,
+          input.operationMessageId ?? null,
         ],
       );
       const row = updated.rows[0];
@@ -707,8 +785,9 @@ export class PostgresOrganizeFolderRepository implements OrganizeFolderRepositor
            FROM organize_folder_runs
           WHERE id = $1
             AND requester_open_id = $2
-            AND tenant_key = $3`,
-        [input.proposalId, input.requesterOpenId, input.tenantKey],
+            AND tenant_key = $3
+            AND chat_id = $4`,
+        [input.proposalId, input.requesterOpenId, input.tenantKey, input.chatId],
       );
       await client.query("COMMIT");
       const existingRow = existing.rows[0];

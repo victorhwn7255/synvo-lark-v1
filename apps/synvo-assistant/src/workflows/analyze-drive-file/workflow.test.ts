@@ -57,12 +57,14 @@ function fixture(options: {
   tokenError?: unknown;
   listError?: unknown;
   listErrors?: unknown[];
+  deleteError?: unknown;
 } = {}) {
   const queue = new FakeQueue();
   const updates: string[] = [];
   let downloads = 0;
   let recoveries = 0;
   let rejections = 0;
+  let deletions = 0;
   let lists = 0;
   const requestedFolders: string[] = [];
   const requestedAccessTokens: string[] = [];
@@ -84,6 +86,7 @@ function fixture(options: {
             type: options.type ?? "file",
             parentToken: options.parentToken ?? "fldcnRoot123",
             ownerId: options.ownerId ?? "ou_victor",
+            modifiedTime: "1723334400",
           }],
         hasMore: false,
       };
@@ -97,6 +100,14 @@ function fixture(options: {
         throw options.downloadError;
       }
       return Buffer.from("%PDF-test");
+    },
+  };
+  const deleter = {
+    async deleteFile() {
+      deletions += 1;
+      if (options.deleteError) {
+        throw options.deleteError;
+      }
     },
   };
   const tokenBroker = {
@@ -113,6 +124,7 @@ function fixture(options: {
     tokenBroker,
     driveReader,
     downloader,
+    deleter,
     rootToken: "fldcnRoot123",
     requesterOpenId: "ou_victor",
     tenantKey: "tenant_synvo",
@@ -147,6 +159,7 @@ function fixture(options: {
     lists: () => lists,
     recoveries: () => recoveries,
     rejections: () => rejections,
+    deletions: () => deletions,
     requestedFolders,
     requestedAccessTokens,
   };
@@ -163,7 +176,7 @@ const analyzeInput = {
   requesterOpenId: "ou_victor",
   tenantKey: "tenant_synvo",
   folderLink,
-  fileName: "pilot.pdf",
+  relativePath: "pilot.pdf",
 };
 
 function folder(token: string, name: string, parentToken: string): NativeDriveItem {
@@ -327,6 +340,33 @@ test("discovers root and nested PDFs through the maximum depth with safe relativ
     "folder-3",
     "folder-4",
   ]);
+});
+
+test("accepts exactly 99 organizer PDFs and rejects the 100th without a partial inventory", async () => {
+  const root = "fldcnRoot123";
+  const identity = {
+    requesterOpenId: "ou_victor",
+    tenantKey: "tenant_synvo",
+  };
+  const files = Array.from(
+    { length: 100 },
+    (_, index) => pdf(`pdf-${index}`, `Document ${String(index).padStart(3, "0")}.pdf`, root),
+  );
+
+  const accepted = await fixture({
+    folderItems: { [root]: files.slice(0, 99) },
+  }).pdfReader.inspectWorkspace(identity, { maxPdfs: 99 });
+  assert.equal(accepted.files.length, 99);
+  assert.equal(accepted.files.at(0)?.fileName, "Document 000.pdf");
+  assert.equal(accepted.files.at(-1)?.fileName, "Document 098.pdf");
+
+  await assert.rejects(
+    fixture({ folderItems: { [root]: files } }).pdfReader.inspectWorkspace(
+      identity,
+      { maxPdfs: 99 },
+    ),
+    /too many PDFs/u,
+  );
 });
 
 test("restarts one recursive scan with a recovered access token", async () => {
@@ -557,6 +597,48 @@ test("revalidates a Drive PDF before and after the bounded download", async () =
   assert.equal(renamed.downloads(), 1);
 });
 
+test("deletes only an unchanged approved PDF and verifies its absence", async () => {
+  const file = pdf("boxcnPdf123", "pilot.pdf", "fldcnRoot123");
+  const deleted = fixture({ itemResponses: [[file], []] });
+  await deleted.pdfReader.deleteKnowledgeFile({
+    requesterOpenId: "ou_victor",
+    tenantKey: "tenant_synvo",
+    fileToken: file.token,
+    expectedVersion: file.modifiedTime!,
+    expectedName: file.name,
+  });
+  assert.equal(deleted.deletions(), 1);
+  assert.equal(deleted.lists(), 2);
+
+  const changed = fixture({ itemResponses: [[{ ...file, modifiedTime: "changed" }]] });
+  await assert.rejects(
+    changed.pdfReader.deleteKnowledgeFile({
+      requesterOpenId: "ou_victor",
+      tenantKey: "tenant_synvo",
+      fileToken: file.token,
+      expectedVersion: file.modifiedTime!,
+      expectedName: file.name,
+    }),
+    /approved deletion snapshot/u,
+  );
+  assert.equal(changed.deletions(), 0);
+});
+
+test("does not report deletion when the approved PDF was moved before execution", async () => {
+  const testFixture = fixture({ items: [] });
+  await assert.rejects(
+    testFixture.pdfReader.deleteKnowledgeFile({
+      requesterOpenId: "ou_victor",
+      tenantKey: "tenant_synvo",
+      fileToken: "boxcnPdf123",
+      expectedVersion: "1723334400",
+      expectedName: "pilot.pdf",
+    }),
+    /no longer present/u,
+  );
+  assert.equal(testFixture.deletions(), 0);
+});
+
 test("rejects an unauthorized direct analysis consumer before Drive access", async () => {
   for (const identity of [
     { requesterOpenId: "ou_other", tenantKey: "tenant_synvo" },
@@ -625,12 +707,12 @@ test("rejects malformed and unallowlisted folder links before Drive access", asy
   }
 });
 
-test("requires one exact, unambiguous, owned root PDF filename", async () => {
+test("requires one exact, unambiguous, owned workspace PDF path", async () => {
   const missing = fixture();
   assert.equal(
     (await missing.workflow.analyzeListedFile({
       ...analyzeInput,
-      fileName: "missing.pdf",
+      relativePath: "missing.pdf",
     })).ok,
     false,
   );
@@ -660,15 +742,14 @@ test("requires one exact, unambiguous, owned root PDF filename", async () => {
   );
   assert.equal(duplicate.downloads(), 0);
 
-  for (const { testFixture, fileName } of [
-    { testFixture: fixture({ type: "docx" }), fileName: "pilot.pdf" },
-    { testFixture: fixture({ name: "pilot.txt" }), fileName: "pilot.txt" },
-    { testFixture: fixture({ ownerId: "ou_other" }), fileName: "pilot.pdf" },
-    { testFixture: fixture({ parentToken: "fldcnNested" }), fileName: "pilot.pdf" },
+  for (const { testFixture, relativePath } of [
+    { testFixture: fixture({ type: "docx" }), relativePath: "pilot.pdf" },
+    { testFixture: fixture({ name: "pilot.txt" }), relativePath: "pilot.txt" },
+    { testFixture: fixture({ ownerId: "ou_other" }), relativePath: "pilot.pdf" },
   ]) {
     const result = await testFixture.workflow.analyzeListedFile({
       ...analyzeInput,
-      fileName,
+      relativePath,
     });
     assert.equal(result.ok, false);
     assert.equal(testFixture.downloads(), 0);

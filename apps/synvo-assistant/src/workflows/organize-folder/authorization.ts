@@ -17,6 +17,9 @@ import type { OrganizeFolderRepository } from "./repository.js";
 
 const sessionLifetimeMs = 10 * 60 * 1_000;
 
+export const WORKSPACE_AUTHORIZATION_COMPLETE_MESSAGE =
+  "Synvo_Wiki workspace authorization completed.";
+
 function canonicalScopes(scopes: readonly string[]): string[] {
   return [...new Set(scopes)].sort();
 }
@@ -60,6 +63,12 @@ type PendingAuthorizationInput = {
   requesterOpenId: string;
   tenantKey: string;
   rootTokenDigest: string;
+  delivery?: "queued" | "inline";
+};
+
+export type PendingAuthorizationResult = {
+  created: boolean;
+  startUrl: URL;
 };
 
 function authorizationRequiredMessage(startUrl: URL): string {
@@ -102,7 +111,7 @@ export class LarkOAuthService {
 
   async createPendingAuthorization(
     input: PendingAuthorizationInput,
-  ): Promise<boolean> {
+  ): Promise<PendingAuthorizationResult> {
     const now = this.#now();
     const runId = randomUUID();
     const sessionId = randomUUID();
@@ -110,7 +119,7 @@ export class LarkOAuthService {
     const requestTokenDigest = digestOpaqueValue(requestToken);
     const startUrl = new URL("/oauth/lark/start", this.#redirectUri);
     startUrl.searchParams.set("request", requestToken);
-    const deliveryJobId = randomUUID();
+    const deliveryJobId = input.delivery === "inline" ? null : randomUUID();
     const created = await this.#repository.createAwaitingOAuthRun({
       runId,
       sessionId,
@@ -124,13 +133,15 @@ export class LarkOAuthService {
       requestedScopes: [...this.#requiredScopes],
       expiresAt: new Date(now.getTime() + sessionLifetimeMs),
       deliveryJobId,
-      authorizationMessageCiphertext: encryptDeliveryMessage(
-        this.#cipher,
-        deliveryJobId,
-        authorizationRequiredMessage(startUrl),
-      ),
+      authorizationMessageCiphertext: deliveryJobId
+        ? encryptDeliveryMessage(
+            this.#cipher,
+            deliveryJobId,
+            authorizationRequiredMessage(startUrl),
+          )
+        : null,
     });
-    return created;
+    return { created, startUrl };
   }
 
   async beginAuthorization(requestToken: string): Promise<URL> {
@@ -234,7 +245,7 @@ export class LarkOAuthService {
       if (!hasExactScopes(token.scopes, this.#requiredScopes)) {
         throw new LarkAuthError(
           "WRONG_SCOPE",
-          "The Lark authorization scope set does not match the organize-folder policy.",
+          "The Lark authorization scope set does not match the workspace-organization policy.",
         );
       }
 
@@ -278,10 +289,16 @@ export class LarkOAuthService {
           now: this.#now(),
         }),
       );
+      const completionJobId = randomUUID();
       await this.#repository.bindGrantToRun(
         session.runId,
         grant.id,
-        randomUUID(),
+        completionJobId,
+        encryptDeliveryMessage(
+          this.#cipher,
+          completionJobId,
+          WORKSPACE_AUTHORIZATION_COMPLETE_MESSAGE,
+        ),
       );
     } catch (error) {
       const errorCode =

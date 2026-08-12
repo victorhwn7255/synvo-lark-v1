@@ -7,22 +7,25 @@ test("recognizes /ping with harmless whitespace and casing", () => {
   assert.deepEqual(parseCommand("  /PING\n"), { type: "ping" });
 });
 
-test("parses one organize-folder link", () => {
+test("parses the workspace command with an optional exact link", () => {
   assert.deepEqual(
     parseCommand(
-      "/organize-folder https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123",
+      "/organize-workspace https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123",
     ),
     {
-      type: "organize-folder",
+      type: "organize-workspace",
       folderLink:
         "https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123",
     },
   );
+  assert.deepEqual(parseCommand("/organize-workspace"), {
+    type: "organize-workspace",
+  });
 });
 
-test("rejects missing or extra organize-folder arguments", () => {
+test("rejects obsolete or malformed workspace commands", () => {
   assert.deepEqual(parseCommand("/organize-folder"), { type: "unknown" });
-  assert.deepEqual(parseCommand("/organize-folder one two"), {
+  assert.deepEqual(parseCommand("/organize-workspace one two"), {
     type: "unknown",
   });
   assert.deepEqual(parseCommand("/organize-wiki"), { type: "unknown" });
@@ -60,33 +63,35 @@ test("rejects missing or extra analyze-file arguments", () => {
   });
 });
 
-test("parses approve and reject commands with one proposal ID", () => {
-  assert.deepEqual(parseCommand("/approve-folder proposal-id"), {
-    type: "decide-folder",
+test("parses workspace approval decisions with one proposal ID", () => {
+  assert.deepEqual(parseCommand("/approve-workspace proposal-id"), {
+    type: "decide-workspace",
     proposalId: "proposal-id",
     decision: "APPROVED",
   });
-  assert.deepEqual(parseCommand(" /REJECT-folder proposal-id "), {
-    type: "decide-folder",
+  assert.deepEqual(parseCommand(" /REJECT-workspace proposal-id "), {
+    type: "decide-workspace",
     proposalId: "proposal-id",
     decision: "REJECTED",
   });
 });
 
-test("rejects missing or extra proposal decision arguments", () => {
-  assert.deepEqual(parseCommand("/approve-folder"), { type: "unknown" });
-  assert.deepEqual(parseCommand("/reject-folder one two"), {
+test("rejects missing, extra, or obsolete proposal decision arguments", () => {
+  assert.deepEqual(parseCommand("/approve-workspace"), { type: "unknown" });
+  assert.deepEqual(parseCommand("/reject-workspace one two"), {
     type: "unknown",
   });
+  assert.deepEqual(parseCommand("/approve-folder proposal-id"), { type: "unknown" });
 });
 
-test("parses one separately confirmed undo command", () => {
-  assert.deepEqual(parseCommand(" /UNDO-folder proposal-id "), {
-    type: "undo-folder",
+test("parses one separately confirmed workspace undo command", () => {
+  assert.deepEqual(parseCommand(" /UNDO-workspace proposal-id "), {
+    type: "undo-workspace",
     proposalId: "proposal-id",
   });
-  assert.deepEqual(parseCommand("/undo-folder"), { type: "unknown" });
-  assert.deepEqual(parseCommand("/undo-folder one two"), {
+  assert.deepEqual(parseCommand("/undo-workspace"), { type: "unknown" });
+  assert.deepEqual(parseCommand("/undo-workspace one two"), {
     type: "unknown",
   });
+  assert.deepEqual(parseCommand("/undo-folder proposal-id"), { type: "unknown" });
 });

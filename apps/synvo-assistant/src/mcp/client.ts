@@ -5,11 +5,9 @@ import {
 import { z } from "zod";
 
 import type { AnalyzeDriveFileResult } from "../workflows/analyze-drive-file/workflow.js";
-import type { DriveFolderInventoryResult } from "../workflows/organize-folder/contracts.js";
-
 const EXPECTED_TOOLS = [
   "analyze_drive_file",
-  "organize_folder_inventory",
+  "inspect_workspace",
   "search_workspace_knowledge",
 ] as const;
 const MCP_INVENTORY_TIMEOUT_MS = 60_000;
@@ -19,40 +17,26 @@ const safeErrorFields = {
   message: z.string(),
   retryable: z.boolean(),
 };
-const inventoryItemSchema = z.object({
-  ref: z.string(),
-  identity_digest: z.string(),
+const inspectedPdfSchema = z.object({
   name: z.string(),
-  type: z.string(),
-  parent_ref: z.string(),
-  modified_time: z.string().optional(),
-  owner_verification: z.enum(["matched", "missing", "mismatched"]),
+  path: z.string(),
+  parent_path: z.string(),
 }).strict();
-const inventoryFolderSchema = z.object({
-  ref: z.string(),
-  identity_digest: z.string(),
+const inspectedFolderSchema = z.object({
   name: z.string(),
-  parent_ref: z.string().nullable(),
-  owner_verification: z.enum(["matched", "missing", "mismatched"]),
-  child_count: z.number().int().nonnegative(),
+  path: z.string(),
+  depth: z.number().int().positive(),
 }).strict();
 const inventoryResultSchema = z.discriminatedUnion("ok", [
   z.object({
     ok: z.literal(true),
-    inventory: z.object({
-      run_id: z.string(),
-      complete: z.boolean(),
-      baseline_matches: z.boolean(),
-      root: inventoryFolderSchema,
-      destinations: z.array(inventoryFolderSchema),
-      files: z.array(inventoryItemSchema),
-      skipped: z.array(inventoryItemSchema),
-      issues: z.array(z.string()),
-      summary: z.object({
-        root_folder_count: z.number().int().nonnegative(),
-        root_file_count: z.number().int().nonnegative(),
-        root_skipped_count: z.number().int().nonnegative(),
-        destination_child_count: z.number().int().nonnegative(),
+    workspace: z.object({
+      complete: z.literal(true),
+      folders: z.array(inspectedFolderSchema),
+      pdfs: z.array(inspectedPdfSchema),
+      totals: z.object({
+        folders: z.number().int().nonnegative(),
+        eligible_pdfs: z.number().int().nonnegative(),
       }).strict(),
     }).strict(),
   }).strict(),
@@ -148,10 +132,10 @@ export class SynvoMcpClient {
     await client?.close();
   }
 
-  async inventory(folderUrl: string): Promise<DriveFolderInventoryResult> {
+  async inspectWorkspace(folderUrl: string) {
     const result = await this.#callTool(
       {
-        name: "organize_folder_inventory",
+        name: "inspect_workspace",
         arguments: { folder_url: folderUrl },
       },
       MCP_INVENTORY_TIMEOUT_MS,
@@ -159,17 +143,17 @@ export class SynvoMcpClient {
     return this.#parseResult(
       inventoryResultSchema,
       result.structuredContent,
-    ) as DriveFolderInventoryResult;
+    );
   }
 
   async analyze(
     folderUrl: string,
-    fileName: string,
+    relativePath: string,
   ): Promise<AnalyzeDriveFileResult> {
     const result = await this.#callTool(
       {
         name: "analyze_drive_file",
-        arguments: { folder_url: folderUrl, file_name: fileName },
+        arguments: { folder_url: folderUrl, relative_path: relativePath },
       },
       MCP_ANALYSIS_TIMEOUT_MS,
     );

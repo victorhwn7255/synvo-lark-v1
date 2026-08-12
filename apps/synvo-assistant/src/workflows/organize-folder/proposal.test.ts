@@ -4,209 +4,166 @@ import test from "node:test";
 import type { DriveInventory } from "./contracts.js";
 import {
   buildOrganizeFolderProposal,
-  type ContentDecision,
-  organizeFolderProposalAssociatedData,
   ProposalBuildError,
+  type ContentDecision,
+  type ProposedTaxonomyFolder,
 } from "./proposal.js";
 
-const RUN_ID = "4d872758-1f71-4ed8-b141-a2d193ceea91";
-const IDENTITY_DIGEST = "a".repeat(64);
-const FILE_NAMES = [
-  "document-01.pdf",
-  "document-02.pdf",
-  "document-03.pdf",
-  "document-04.pdf",
-] as const;
+const RUN_ID = "93e2548b-8f12-45a2-be12-cd7009341b17";
 
-function inventory(fileNames: readonly string[] = FILE_NAMES): DriveInventory {
+function inventory(count: number, options: { alreadyInEngineering?: boolean } = {}): DriveInventory {
   return {
     run_id: RUN_ID,
+    workspace_identity_digest: "workspace-digest",
     complete: true,
-    baseline_matches: true,
-    root: {
-      ref: "root",
-      identity_digest: IDENTITY_DIGEST,
-      name: "Test_Synvo_AI_Assistant",
-      parent_ref: null,
-      owner_verification: "matched",
-      child_count: 6,
-    },
-    destinations: [
-      {
-        ref: "d001",
-        identity_digest: "b".repeat(64),
-        name: "Product",
-        parent_ref: "root",
-        owner_verification: "matched",
-        child_count: 0,
-      },
-      {
-        ref: "d002",
-        identity_digest: "c".repeat(64),
-        name: "Research",
-        parent_ref: "root",
-        owner_verification: "matched",
-        child_count: 0,
-      },
-    ],
-    files: fileNames.map((name, index) => ({
-      ref: `f${String(index + 1).padStart(3, "0")}`,
-      identity_digest: String(index + 1).repeat(64),
-      name,
-      type: "file",
+    folders: [{
+      ref: "folder-engineering",
+      identity_digest: "folder-digest",
+      name: "Engineering",
+      relative_path: "Engineering",
       parent_ref: "root",
-      owner_verification: "matched" as const,
-    })),
-    skipped: [],
-    issues: [],
-    summary: {
-      root_folder_count: 2,
-      root_file_count: fileNames.length,
-      root_skipped_count: 0,
-      destination_child_count: 0,
-    },
+      depth: 1,
+      owned_by_requester: true,
+    }],
+    files: Array.from({ length: count }, (_, index) => {
+      const number = index + 1;
+      const parentPath = options.alreadyInEngineering && index === 0 ? "Engineering" : "Inbox";
+      return {
+        ref: `file-${number}`,
+        identity_digest: `digest-${number}`,
+        name: `document-${number}.pdf`,
+        relative_path: `${parentPath} / document-${number}.pdf`,
+        parent_ref: parentPath === "Engineering" ? "folder-engineering" : "folder-inbox",
+        parent_path: parentPath,
+        version: "1",
+      };
+    }),
   };
 }
 
-function decisions(): ContentDecision[] {
-  return FILE_NAMES.map((fileName, index) => ({
-    file_name: fileName,
-    destination: index < 2 ? "Research" : "Product",
-    rationale: index < 2 ? "Research evidence." : "Product documentation evidence.",
+const taxonomy: ProposedTaxonomyFolder[] = [
+  { name: "Engineering", description: "Product and implementation material." },
+  { name: "Research", description: "Research reports and external evidence." },
+];
+
+function decisions(count: number): ContentDecision[] {
+  return Array.from({ length: count }, (_, index) => ({
+    file_ref: `file-${index + 1}`,
+    destination: index % 2 === 0 ? "Engineering" : "Research",
+    rationale: "The document content matches this destination.",
   }));
 }
 
-test("builds the exact content-based four-file proposal", () => {
-  const proposal = buildOrganizeFolderProposal(inventory(), RUN_ID, decisions());
-
-  assert.equal(proposal.proposal_id, RUN_ID);
-  assert.deepEqual(
-    proposal.moves.map((move) => [
-      move.file_name,
-      move.destination_name,
-      move.rationale,
-    ]),
-    [
-      ["document-03.pdf", "Product", "Product documentation evidence."],
-      ["document-04.pdf", "Product", "Product documentation evidence."],
-      ["document-01.pdf", "Research", "Research evidence."],
-      ["document-02.pdf", "Research", "Research evidence."],
-    ],
+test("builds a complete dynamic proposal and reuses an owned folder", () => {
+  const result = buildOrganizeFolderProposal(
+    inventory(15, { alreadyInEngineering: true }),
+    RUN_ID,
+    taxonomy,
+    decisions(15),
   );
-  assert.deepEqual(proposal.needs_review, []);
-});
-
-test("builds a non-approvable report when one file needs review", () => {
-  const input = decisions();
-  input[0] = {
-    file_name: FILE_NAMES[0],
-    destination: "Needs review",
-    rationale: "The document evidence is ambiguous.",
-  };
-
-  const proposal = buildOrganizeFolderProposal(inventory(), RUN_ID, input);
-
-  assert.equal(proposal.moves.length, 3);
-  assert.deepEqual(proposal.needs_review, [
-    {
-      file_name: FILE_NAMES[0],
-      rationale: "The document evidence is ambiguous.",
-    },
+  assert.equal(result.files.length, 15);
+  assert.deepEqual(result.taxonomy.map((folder) => [folder.name, folder.action]), [
+    ["Engineering", "REUSE"],
+    ["Research", "CREATE"],
   ]);
+  assert.equal(result.files.find((file) => file.file_ref === "file-1")?.decision, "PRESERVE");
+  assert.equal(result.files.filter((file) => file.decision === "MOVE").length, 14);
 });
 
-test("rejects missing, unknown, and duplicate content decisions", () => {
-  assert.throws(
-    () => buildOrganizeFolderProposal(inventory(), RUN_ID, decisions().slice(1)),
-    (error) =>
-      error instanceof ProposalBuildError && error.code === "MISSING_DECISION",
+test("preserves a correctly classified PDF inside a nested destination", () => {
+  const nested = inventory(1);
+  nested.files[0] = {
+    ...nested.files[0]!,
+    relative_path: "Engineering / Guides / document-1.pdf",
+    parent_ref: "folder-guides",
+    parent_path: "Engineering / Guides",
+  };
+  const result = buildOrganizeFolderProposal(
+    nested,
+    RUN_ID,
+    [{ name: "Engineering", description: "Product and implementation material." }],
+    [{ file_ref: "file-1", destination: "Engineering", rationale: "Implementation guide." }],
   );
-  assert.throws(
-    () =>
-      buildOrganizeFolderProposal(inventory(), RUN_ID, [
-        ...decisions(),
-        {
-          file_name: "unknown.pdf",
-          destination: "Research",
-          rationale: "Unknown input.",
-        },
-      ]),
-    (error) =>
-      error instanceof ProposalBuildError && error.code === "UNKNOWN_DECISION",
-  );
-  assert.throws(
-    () =>
-      buildOrganizeFolderProposal(inventory(), RUN_ID, [
-        ...decisions(),
-        decisions()[0]!,
-      ]),
-    (error) =>
-      error instanceof ProposalBuildError && error.code === "DUPLICATE_DECISION",
-  );
+  assert.equal(result.files[0]?.decision, "PRESERVE");
+  assert.equal(result.files[0]?.original_parent_ref, "folder-guides");
 });
 
-test("rejects duplicate files and an unverified inventory", () => {
-  const duplicate = inventory();
-  duplicate.files[1] = { ...duplicate.files[0]! };
-  assert.throws(
-    () => buildOrganizeFolderProposal(duplicate, RUN_ID, decisions()),
-    (error) =>
-      error instanceof ProposalBuildError && error.code === "DUPLICATE_FILE",
+test("supports the accepted 1, 15, and 99 PDF boundaries", () => {
+  const one = buildOrganizeFolderProposal(
+    inventory(1),
+    RUN_ID,
+    [{ name: "Reference", description: "The only useful category." }],
+    [{ file_ref: "file-1", destination: "Reference", rationale: "One document." }],
   );
-
-  const unverified = inventory();
-  unverified.baseline_matches = false;
-  assert.throws(
-    () => buildOrganizeFolderProposal(unverified, RUN_ID, decisions()),
-    (error) =>
-      error instanceof ProposalBuildError && error.code === "INVENTORY_NOT_READY",
-  );
+  assert.equal(one.files.length, 1);
+  assert.equal(buildOrganizeFolderProposal(inventory(15), RUN_ID, taxonomy, decisions(15)).files.length, 15);
+  assert.equal(buildOrganizeFolderProposal(inventory(99), RUN_ID, taxonomy, decisions(99)).files.length, 99);
 });
 
-test("rejects an unexpected folder, nonempty destination, or wrong split", () => {
-  const unexpectedFolder = inventory();
-  unexpectedFolder.issues.push("Found one unexpected root folder.");
-  assert.throws(
-    () => buildOrganizeFolderProposal(unexpectedFolder, RUN_ID, decisions()),
-    (error) =>
-      error instanceof ProposalBuildError && error.code === "INVENTORY_NOT_READY",
+test("accepts a planner-validated single-folder homogeneous workspace", () => {
+  const result = buildOrganizeFolderProposal(
+    inventory(15),
+    RUN_ID,
+    [{ name: "Engineering", description: "One genuinely homogeneous collection." }],
+    Array.from({ length: 15 }, (_, index) => ({
+      file_ref: `file-${index + 1}`,
+      destination: "Engineering",
+      rationale: "The document belongs to the shared engineering theme.",
+    })),
   );
+  assert.equal(result.taxonomy.length, 1);
+  assert.equal(result.files.length, 15);
+});
 
-  const nonemptyDestination = inventory();
-  nonemptyDestination.destinations[0]!.child_count = 1;
+test("rejects 100 PDFs and invalid taxonomy", () => {
   assert.throws(
-    () => buildOrganizeFolderProposal(nonemptyDestination, RUN_ID, decisions()),
-    (error) =>
-      error instanceof ProposalBuildError && error.code === "INVENTORY_NOT_READY",
+    () => buildOrganizeFolderProposal(inventory(100), RUN_ID, taxonomy, decisions(100)),
+    (error: unknown) => error instanceof ProposalBuildError && error.code === "INVENTORY_NOT_READY",
   );
-
-  const wrongSplit = decisions().map((decision) => ({
-    ...decision,
-    destination: "Research" as const,
-  }));
   assert.throws(
-    () => buildOrganizeFolderProposal(inventory(), RUN_ID, wrongSplit),
-    (error) =>
-      error instanceof ProposalBuildError && error.code === "UNEXPECTED_PROPOSAL",
+    () => buildOrganizeFolderProposal(inventory(4), RUN_ID, [
+      { name: "Research", description: "One." },
+      { name: "research", description: "Duplicate." },
+    ], decisions(4)),
+    (error: unknown) => error instanceof ProposalBuildError && error.code === "INVALID_TAXONOMY",
   );
 });
 
-test("rejects an inventory from another workflow run", () => {
+test("requires exactly one known decision for every PDF", () => {
   assert.throws(
-    () =>
-      buildOrganizeFolderProposal(
-        inventory(),
-        "5f982758-1f71-4ed8-b141-a2d193ceea92",
-        decisions(),
-      ),
-    (error) =>
-      error instanceof ProposalBuildError && error.code === "INVENTORY_NOT_READY",
+    () => buildOrganizeFolderProposal(inventory(3), RUN_ID, taxonomy, decisions(2)),
+    (error: unknown) => error instanceof ProposalBuildError && error.code === "MISSING_DECISION",
+  );
+  assert.throws(
+    () => buildOrganizeFolderProposal(inventory(3), RUN_ID, taxonomy, [
+      ...decisions(3),
+      { file_ref: "file-1", destination: "Engineering", rationale: "Duplicate." },
+    ]),
+    (error: unknown) => error instanceof ProposalBuildError && error.code === "DUPLICATE_DECISION",
   );
 });
 
-test("binds encrypted proposal contents to the workflow run", () => {
+test("keeps Needs review out of the taxonomy and blocks empty destinations", () => {
+  const withReview = buildOrganizeFolderProposal(inventory(3), RUN_ID, [
+    { name: "Engineering", description: "Implementation." },
+    { name: "Research", description: "Research." },
+  ], [
+    { file_ref: "file-1", destination: "Engineering", rationale: "Implementation." },
+    { file_ref: "file-2", destination: "Research", rationale: "Research." },
+    { file_ref: "file-3", destination: "Needs review", rationale: "Ambiguous evidence." },
+  ]);
   assert.equal(
-    organizeFolderProposalAssociatedData(RUN_ID),
-    `organize-folder-run:${RUN_ID}:proposal:v1`,
+    withReview.files.find((file) => file.file_ref === "file-3")?.decision,
+    "NEEDS_REVIEW",
+  );
+  assert.equal(withReview.taxonomy.some((folder) => folder.name === "Needs review"), false);
+
+  assert.throws(
+    () => buildOrganizeFolderProposal(inventory(3), RUN_ID, taxonomy, [
+      { file_ref: "file-1", destination: "Engineering", rationale: "Engineering." },
+      { file_ref: "file-2", destination: "Engineering", rationale: "Engineering." },
+      { file_ref: "file-3", destination: "Needs review", rationale: "Ambiguous." },
+    ]),
+    (error: unknown) => error instanceof ProposalBuildError && error.code === "INVALID_TAXONOMY",
   );
 });

@@ -1,10 +1,5 @@
-import type {
-  DriveReader,
-  NativeDriveItem,
-} from "../../lark/drive/index.js";
-import { listFolderCompletely } from "../../lark/drive/index.js";
 import type { DriveInventory } from "./contracts.js";
-import type { AllowlistedFolderObservation } from "../../lark/drive/index.js";
+import { workspaceSnapshotMatches } from "./contracts.js";
 import type { OrganizeFolderProposal } from "./proposal.js";
 
 export type ExecutionStatus =
@@ -24,30 +19,32 @@ export type UndoStatus =
   | "FAILED"
   | "UNKNOWN";
 
-export type FileOperationStatus =
+export type OperationStatus =
   | "PENDING"
   | "REQUESTING"
   | "VERIFIED"
   | "FAILED"
   | "UNKNOWN";
 
-export type ObservedParent =
-  | "ROOT"
-  | "DESTINATION"
-  | "OTHER_DESTINATION"
-  | "MISSING"
-  | "MULTIPLE";
+export type DestinationOperation = {
+  name: string;
+  action: "REUSE" | "CREATE";
+  folderToken?: string;
+  createdByExecution: boolean;
+  status: OperationStatus;
+  attemptedAt?: string;
+  verifiedAt?: string;
+  errorCode?: string;
+};
 
 export type ExecutionMove = {
   fileRef: string;
   fileName: string;
-  fileToken: string;
   originalFolderToken: string;
-  destinationRef: string;
-  destinationName: "Product" | "Research";
-  destinationFolderToken: string;
-  status: FileOperationStatus;
-  observedParent?: ObservedParent;
+  originalRelativePath: string;
+  destinationName: string;
+  destinationFolderToken?: string;
+  status: OperationStatus;
   attemptedAt?: string;
   verifiedAt?: string;
   errorCode?: string;
@@ -55,8 +52,7 @@ export type ExecutionMove = {
 
 export type UndoMove = {
   fileRef: string;
-  status: FileOperationStatus;
-  observedParent?: ObservedParent;
+  status: OperationStatus;
   attemptedAt?: string;
   verifiedAt?: string;
   errorCode?: string;
@@ -64,10 +60,16 @@ export type UndoMove = {
 
 export type OrganizeFolderExecutionRecord = {
   proposalId: string;
+  rootFolderToken: string;
   startedAt: string;
   finishedAt?: string;
   errorCode?: string;
+  destinations: DestinationOperation[];
   moves: ExecutionMove[];
+  preservedCount: number;
+  needsReviewCount: number;
+  knowledgePathsUpdated?: number;
+  knowledgeReconciliationError?: string;
   undo?: {
     requestedByOpenId: string;
     requestedAt: string;
@@ -75,23 +77,69 @@ export type OrganizeFolderExecutionRecord = {
     finishedAt?: string;
     errorCode?: string;
     moves: UndoMove[];
+    knowledgePathsUpdated?: number;
+    knowledgeReconciliationError?: string;
   };
 };
 
 export function executionAssociatedData(runId: string): string {
-  return `organize-folder-run:${runId}:execution:v1`;
+  return `organize-workspace-run:${runId}:execution:v2`;
 }
 
-function comparableInventory(inventory: DriveInventory): unknown {
+export function createExecutionRecord(
+  proposal: OrganizeFolderProposal,
+  inventory: DriveInventory,
+  rootFolderToken: string,
+  now: Date,
+): OrganizeFolderExecutionRecord {
+  const files = new Map(inventory.files.map((file) => [file.ref, file]));
+  const destinations = proposal.taxonomy.map(
+    (folder): DestinationOperation => ({
+      name: folder.name,
+      action: folder.action,
+      folderToken:
+        folder.action === "REUSE" ? folder.existing_folder_ref : undefined,
+      createdByExecution: false,
+      status: folder.action === "REUSE" ? "VERIFIED" : "PENDING",
+    }),
+  );
+  const moves = proposal.files
+    .filter((file) => file.decision === "MOVE")
+    .map((file): ExecutionMove => {
+      const source = files.get(file.file_ref);
+      if (
+        !source ||
+        !file.destination_name ||
+        source.identity_digest !== file.file_identity_digest ||
+        source.relative_path !== file.original_relative_path ||
+        source.parent_ref !== file.original_parent_ref
+      ) {
+        throw new Error("EXECUTION_PREFLIGHT_IDENTITY_MISMATCH");
+      }
+      return {
+        fileRef: source.ref,
+        fileName: source.name,
+        originalFolderToken: source.parent_ref,
+        originalRelativePath: source.relative_path,
+        destinationName: file.destination_name,
+        destinationFolderToken: destinations.find(
+          (destination) => destination.name === file.destination_name,
+        )?.folderToken,
+        status: "PENDING",
+      };
+    });
   return {
-    complete: inventory.complete,
-    baseline_matches: inventory.baseline_matches,
-    root: inventory.root,
-    destinations: inventory.destinations,
-    files: inventory.files,
-    skipped: inventory.skipped,
-    issues: inventory.issues,
-    summary: inventory.summary,
+    proposalId: proposal.proposal_id,
+    rootFolderToken,
+    startedAt: now.toISOString(),
+    destinations,
+    moves,
+    preservedCount: proposal.files.filter(
+      (file) => file.decision === "PRESERVE",
+    ).length,
+    needsReviewCount: proposal.files.filter(
+      (file) => file.decision === "NEEDS_REVIEW",
+    ).length,
   };
 }
 
@@ -99,230 +147,149 @@ export function inventoryMatchesApprovedSnapshot(
   approved: DriveInventory,
   observed: DriveInventory,
 ): boolean {
-  return (
-    observed.baseline_matches &&
-    JSON.stringify(comparableInventory(approved)) ===
-      JSON.stringify(comparableInventory(observed))
-  );
+  return workspaceSnapshotMatches(approved, observed);
 }
 
 export function inventoryMatchesExecutionTarget(
   record: OrganizeFolderExecutionRecord,
+  approved: DriveInventory,
   observed: DriveInventory,
 ): boolean {
-  const expectedByDestination = new Map<string, number>();
-  for (const move of record.moves) {
-    expectedByDestination.set(
-      move.destinationRef,
-      (expectedByDestination.get(move.destinationRef) ?? 0) + 1,
-    );
+  if (
+    !observed.complete ||
+    approved.files.length !== observed.files.length
+  ) {
+    return false;
   }
-
-  return (
-    observed.complete &&
-    observed.files.length === 0 &&
-    observed.skipped.length === 0 &&
-    observed.summary.root_file_count === 0 &&
-    observed.summary.root_skipped_count === 0 &&
-    observed.summary.root_folder_count === expectedByDestination.size &&
-    observed.root.child_count === expectedByDestination.size &&
-    observed.destinations.length === expectedByDestination.size &&
-    observed.summary.destination_child_count === record.moves.length &&
-    observed.destinations.every(
-      (destination) =>
-        expectedByDestination.get(destination.ref) === destination.child_count,
-    )
-  );
-}
-
-export function createExecutionRecord(
-  proposal: OrganizeFolderProposal,
-  observation: AllowlistedFolderObservation,
-  now: Date,
-): OrganizeFolderExecutionRecord {
-  const files = new Map(observation.native.files.map((item) => [item.ref, item]));
-  const destinations = new Map(
-    observation.native.destinations.map((item) => [item.ref, item]),
-  );
-  const moves = proposal.moves.map((move): ExecutionMove => {
-    const file = files.get(move.file_ref);
-    const destination = destinations.get(move.destination_ref);
-    const observedFile = observation.inventory.files.find(
-      (item) => item.ref === move.file_ref,
+  const observedByRef = new Map(observed.files.map((file) => [file.ref, file]));
+  const moveByRef = new Map(record.moves.map((move) => [move.fileRef, move]));
+  return approved.files.every((file) => {
+    const current = observedByRef.get(file.ref);
+    const move = moveByRef.get(file.ref);
+    const expectedParent = move?.destinationFolderToken ?? file.parent_ref;
+    return (
+      current?.identity_digest === file.identity_digest &&
+      current.version === file.version &&
+      current.parent_ref === expectedParent
     );
-    const observedDestination = observation.inventory.destinations.find(
-      (item) => item.ref === move.destination_ref,
-    );
-    if (
-      !file ||
-      !destination ||
-      !observedFile ||
-      !observedDestination ||
-      file.name !== move.file_name ||
-      destination.name !== move.destination_name ||
-      observedFile.identity_digest !== move.file_identity_digest ||
-      observedDestination.identity_digest !== move.destination_identity_digest
-    ) {
-      throw new Error("EXECUTION_PREFLIGHT_IDENTITY_MISMATCH");
-    }
-    return {
-      fileRef: move.file_ref,
-      fileName: move.file_name,
-      fileToken: file.token,
-      originalFolderToken: observation.native.rootToken,
-      destinationRef: move.destination_ref,
-      destinationName: move.destination_name,
-      destinationFolderToken: destination.token,
-      status: "PENDING",
-    };
   });
-  return {
-    proposalId: proposal.proposal_id,
-    startedAt: now.toISOString(),
-    moves,
-  };
 }
 
-function locationForFile(
-  move: ExecutionMove,
-  root: readonly NativeDriveItem[],
-  destinations: ReadonlyMap<string, readonly NativeDriveItem[]>,
-): ObservedParent {
-  const locations: ObservedParent[] = [];
-  if (root.some((item) => item.token === move.fileToken)) {
-    locations.push("ROOT");
+export function inventoryMatchesUndoTarget(
+  approved: DriveInventory,
+  observed: DriveInventory,
+): boolean {
+  if (!observed.complete || approved.files.length !== observed.files.length) {
+    return false;
   }
-  for (const [token, items] of destinations) {
-    if (!items.some((item) => item.token === move.fileToken)) {
-      continue;
-    }
-    locations.push(
-      token === move.destinationFolderToken
-        ? "DESTINATION"
-        : "OTHER_DESTINATION",
+  const observedByRef = new Map(observed.files.map((file) => [file.ref, file]));
+  return approved.files.every((file) => {
+    const current = observedByRef.get(file.ref);
+    return (
+      current?.identity_digest === file.identity_digest &&
+      current.version === file.version &&
+      current.parent_ref === file.parent_ref
     );
-  }
-  if (locations.length === 0) {
-    return "MISSING";
-  }
-  return locations.length === 1 ? locations[0]! : "MULTIPLE";
-}
-
-export async function observeExecutionParents(
-  reader: DriveReader,
-  input: {
-    accessToken: string;
-    record: OrganizeFolderExecutionRecord;
-  },
-): Promise<Map<string, ObservedParent>> {
-  const rootToken = input.record.moves[0]?.originalFolderToken;
-  if (!rootToken) {
-    throw new Error("EXECUTION_RECORD_EMPTY");
-  }
-  const destinationTokens = [
-    ...new Set(input.record.moves.map((move) => move.destinationFolderToken)),
-  ];
-  const [rootItems, ...destinationItems] = await Promise.all([
-    listFolderCompletely(reader, {
-      accessToken: input.accessToken,
-      folderToken: rootToken,
-    }),
-    ...destinationTokens.map((folderToken) =>
-      listFolderCompletely(reader, {
-        accessToken: input.accessToken,
-        folderToken,
-      }),
-    ),
-  ]);
-  const destinations = new Map(
-    destinationTokens.map((token, index) => [
-      token,
-      destinationItems[index] ?? [],
-    ]),
-  );
-  return new Map(
-    input.record.moves.map((move) => [
-      move.fileRef,
-      locationForFile(move, rootItems, destinations),
-    ]),
-  );
-}
-
-function operationCounts(moves: readonly { status: FileOperationStatus }[]): {
-  verified: number;
-  failed: number;
-  unknown: number;
-  pending: number;
-} {
-  return {
-    verified: moves.filter((move) => move.status === "VERIFIED").length,
-    failed: moves.filter((move) => move.status === "FAILED").length,
-    unknown: moves.filter((move) => move.status === "UNKNOWN").length,
-    pending: moves.filter((move) => move.status === "REQUESTING").length,
-  };
+  });
 }
 
 export function finalExecutionStatus(
   record: OrganizeFolderExecutionRecord,
-): Exclude<ExecutionStatus, "QUEUED" | "RUNNING" | "STALE"> {
-  const counts = operationCounts(record.moves);
-  if (record.errorCode) {
-    return counts.verified > 0 ? "PARTIAL" : "UNKNOWN";
-  }
-  if (counts.verified === record.moves.length) {
+): ExecutionStatus {
+  if (record.errorCode) return "UNKNOWN";
+  const operations = [...record.destinations, ...record.moves];
+  if (operations.every((operation) => operation.status === "VERIFIED")) {
     return "COMPLETED";
   }
-  if (counts.verified > 0) {
+  if (operations.some((operation) => operation.status === "UNKNOWN")) {
+    return "UNKNOWN";
+  }
+  const hasVerifiedMutation =
+    record.destinations.some(
+      (destination) =>
+        destination.action === "CREATE" &&
+        destination.createdByExecution &&
+        destination.status === "VERIFIED",
+    ) || record.moves.some((move) => move.status === "VERIFIED");
+  if (hasVerifiedMutation) {
     return "PARTIAL";
   }
-  return counts.unknown > 0 || counts.pending > 0 ? "UNKNOWN" : "FAILED";
+  return "FAILED";
 }
 
 export function finalUndoStatus(
   record: OrganizeFolderExecutionRecord,
-): Exclude<UndoStatus, "REQUESTED" | "RUNNING"> {
-  const moves = record.undo?.moves ?? [];
-  const counts = operationCounts(moves);
-  if (record.undo?.errorCode) {
-    return counts.verified > 0 ? "PARTIAL" : "UNKNOWN";
-  }
-  if (moves.length > 0 && counts.verified === moves.length) {
+): UndoStatus {
+  const undo = record.undo;
+  if (!undo) return "FAILED";
+  if (undo.errorCode) return "UNKNOWN";
+  if (undo.moves.every((move) => move.status === "VERIFIED")) {
     return "COMPLETED";
   }
-  if (counts.verified > 0) {
-    return "PARTIAL";
-  }
-  return counts.unknown > 0 || counts.pending > 0 ? "UNKNOWN" : "FAILED";
+  if (undo.moves.some((move) => move.status === "UNKNOWN")) return "UNKNOWN";
+  if (undo.moves.some((move) => move.status === "VERIFIED")) return "PARTIAL";
+  return "FAILED";
 }
 
 export function formatExecutionResult(
   record: OrganizeFolderExecutionRecord,
   status: ExecutionStatus,
 ): string {
-  const lines = [`Execution ${status.toLowerCase()} for proposal ${record.proposalId}.`, ""];
-  for (const move of record.moves) {
-    lines.push(
-      `- ${move.fileName}: ${move.status === "PENDING" ? "untouched" : move.status.toLowerCase()}`,
-    );
-  }
-  if (record.moves.some((move) => move.status === "VERIFIED")) {
-    lines.push("", `Undo: /undo-folder ${record.proposalId}`);
-  }
-  return lines.join("\n");
+  const created = record.destinations
+    .filter((folder) => folder.createdByExecution && folder.status === "VERIFIED")
+    .map((folder) => folder.name);
+  const verified = record.moves.filter((move) => move.status === "VERIFIED");
+  const errorCode = [...record.destinations, ...record.moves].find(
+    (operation) => operation.errorCode,
+  )?.errorCode ?? record.errorCode;
+  const attention = errorCode === "REAUTHORIZATION_REQUIRED"
+    ? "Lark Drive needs fresh authorization before it can create folders. Reconnect Lark Drive, then request a new proposal."
+    : "";
+  return [
+    status === "COMPLETED"
+      ? `Workspace organization completed for proposal ${record.proposalId}.`
+      : `Workspace organization stopped for proposal ${record.proposalId}.`,
+    "",
+    `Moved and verified: ${verified.length} files`,
+    `Already organized: ${record.preservedCount} files`,
+    `Needs review: ${record.needsReviewCount} files`,
+    created.length > 0 ? `Folders created: ${created.join(", ")}` : "",
+    attention,
+    record.knowledgeReconciliationError
+      ? "Knowledge paths need a refresh; the Drive changes remain verified."
+      : `Knowledge paths updated without re-embedding: ${record.knowledgePathsUpdated ?? 0}`,
+    status === "COMPLETED" && verified.length > 0
+      ? `\nUndo: /undo-workspace ${record.proposalId}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function formatUndoResult(
   record: OrganizeFolderExecutionRecord,
   status: UndoStatus,
 ): string {
-  const undoByRef = new Map(
-    (record.undo?.moves ?? []).map((move) => [move.fileRef, move]),
-  );
-  const lines = [`Undo ${status.toLowerCase()} for proposal ${record.proposalId}.`, ""];
-  for (const move of record.moves.filter((item) => item.status === "VERIFIED")) {
-    lines.push(
-      `- ${move.fileName}: ${undoByRef.get(move.fileRef)?.status.toLowerCase() ?? "untouched"}`,
-    );
-  }
-  return lines.join("\n");
+  const createdFolders = record.destinations
+    .filter((folder) => folder.createdByExecution)
+    .map((folder) => folder.name);
+  return [
+    status === "COMPLETED"
+      ? `Workspace undo completed for proposal ${record.proposalId}.`
+      : `Workspace undo stopped for proposal ${record.proposalId}.`,
+    "",
+    `Restored and verified: ${
+      record.undo?.moves.filter((move) => move.status === "VERIFIED").length ?? 0
+    } files`,
+    createdFolders.length > 0
+      ? `Created folders were left in place: ${createdFolders.join(", ")}`
+      : "",
+    record.undo?.knowledgeReconciliationError
+      ? "Knowledge paths need a refresh; restored Drive parents remain verified."
+      : `Knowledge paths updated without re-embedding: ${
+          record.undo?.knowledgePathsUpdated ?? 0
+        }`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

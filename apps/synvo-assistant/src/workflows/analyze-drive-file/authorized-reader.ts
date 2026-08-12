@@ -6,15 +6,16 @@ import {
   listFolderCompletely,
   withReadOnlyDriveTokenRecovery,
 } from "../../lark/drive/index.js";
+import type { DriveFileDeleter } from "../../lark/drive/move-client.js";
+import { DriveMoveError } from "../../lark/drive/move-client.js";
 import { ANALYZE_ATTACHMENT_MAX_BYTES } from "../analyze-attachment/policy.js";
 import { sanitizeDisplayValue } from "../organize-folder/inventory-message.js";
-import { organizeFolderPilotPolicy } from "../organize-folder/pilot-policy.js";
 import {
   KNOWLEDGE_MAX_DESCENDANT_DEPTH,
-  KNOWLEDGE_MAX_DISCOVERED_PDFS,
   KNOWLEDGE_MAX_RELATIVE_PATH_CODE_POINTS,
   KNOWLEDGE_MAX_VISITED_FOLDERS,
 } from "../knowledge/policy.js";
+import { workspaceOrganizationPolicy } from "../organize-folder/policy.js";
 
 type AccessTokenProvider = {
   getAccessToken(openId: string, tenantKey: string): Promise<string>;
@@ -36,6 +37,29 @@ export type KnowledgeDriveFile = {
   version: string;
 };
 
+export type WorkspaceDriveFolder = {
+  token: string;
+  name: string;
+  relativePath: string;
+  parentToken: string;
+  depth: number;
+  ownedByRequester: boolean;
+};
+
+export type WorkspaceDriveFile = KnowledgeDriveFile & {
+  fileName: string;
+  relativePath: string;
+  parentToken: string;
+  parentPath: string;
+  depth: number;
+};
+
+export type WorkspaceDriveInventory = {
+  rootToken: string;
+  folders: WorkspaceDriveFolder[];
+  files: WorkspaceDriveFile[];
+};
+
 export type KnowledgeDrivePdf = KnowledgeDriveFile & {
   bytes: Buffer;
 };
@@ -49,6 +73,7 @@ export class AuthorizedDrivePdfReader {
   readonly #tokenBroker: AccessTokenProvider;
   readonly #driveReader: DriveReader;
   readonly #downloader: DriveFileDownloader;
+  readonly #deleter: DriveFileDeleter;
   readonly #rootToken: string;
   readonly #requesterOpenId: string;
   readonly #tenantKey: string;
@@ -57,6 +82,7 @@ export class AuthorizedDrivePdfReader {
     tokenBroker: AccessTokenProvider;
     driveReader: DriveReader;
     downloader: DriveFileDownloader;
+    deleter: DriveFileDeleter;
     rootToken: string;
     requesterOpenId: string;
     tenantKey: string;
@@ -64,6 +90,7 @@ export class AuthorizedDrivePdfReader {
     this.#tokenBroker = options.tokenBroker;
     this.#driveReader = options.driveReader;
     this.#downloader = options.downloader;
+    this.#deleter = options.deleter;
     this.#rootToken = options.rootToken;
     this.#requesterOpenId = options.requesterOpenId;
     this.#tenantKey = options.tenantKey;
@@ -83,7 +110,7 @@ export class AuthorizedDrivePdfReader {
       listFolderCompletely(this.#driveReader, {
         accessToken,
         folderToken: this.#rootToken,
-        maxItems: organizeFolderPilotPolicy.maxRootItems,
+        maxItems: 200,
       }),
     );
   }
@@ -95,19 +122,38 @@ export class AuthorizedDrivePdfReader {
   }
 
   async listKnowledgeFiles(input: PilotIdentity): Promise<KnowledgeDriveFile[]> {
+    const inventory = await this.inspectWorkspace(input, {
+      maxPdfs: 200,
+    });
+    return inventory.files.map(({ token, relativePath, version }) => ({
+      token,
+      name: relativePath,
+      version,
+    }));
+  }
+
+  async inspectWorkspace(
+    input: PilotIdentity,
+    options: { maxPdfs?: number } = {},
+  ): Promise<WorkspaceDriveInventory> {
     this.#requirePilotIdentity(input);
+    const maxPdfs = options.maxPdfs ?? workspaceOrganizationPolicy.maxEligiblePdfs;
+    if (!Number.isSafeInteger(maxPdfs) || maxPdfs < 1) {
+      throw driveToolError("LIMIT_EXCEEDED", "The workspace PDF limit is invalid.");
+    }
     return this.#withAccessToken(async (accessToken) => {
       const folders = [{ token: this.#rootToken, path: [] as string[], depth: 0 }];
       const seenFolders = new Set([this.#rootToken]);
       const seenItems = new Set<string>();
-      const files: KnowledgeDriveFile[] = [];
+      const discoveredFolders: WorkspaceDriveFolder[] = [];
+      const files: WorkspaceDriveFile[] = [];
 
       for (let index = 0; index < folders.length; index += 1) {
         const folder = folders[index]!;
         const items = await listFolderCompletely(this.#driveReader, {
           accessToken,
           folderToken: folder.token,
-          maxItems: organizeFolderPilotPolicy.maxRootItems,
+          maxItems: 200,
         });
         items.sort(
           (left, right) =>
@@ -159,6 +205,14 @@ export class AuthorizedDrivePdfReader {
             ];
             this.#safeRelativePath(path);
             seenFolders.add(item.token);
+            discoveredFolders.push({
+              token: item.token,
+              name: path.at(-1)!,
+              relativePath: this.#safeRelativePath(path),
+              parentToken: folder.token,
+              depth,
+              ownedByRequester: item.ownerId === this.#requesterOpenId,
+            });
             folders.push({
               token: item.token,
               path,
@@ -175,32 +229,50 @@ export class AuthorizedDrivePdfReader {
           ) {
             continue;
           }
-          if (files.length >= KNOWLEDGE_MAX_DISCOVERED_PDFS) {
+          if (files.length >= maxPdfs) {
             throw driveToolError(
               "LIMIT_EXCEEDED",
               "The workspace contains too many PDFs for one safe scan.",
             );
           }
+          const fileName = sanitizeDisplayValue(
+            item.name,
+            "[unnamed]",
+            KNOWLEDGE_MAX_RELATIVE_PATH_CODE_POINTS,
+          );
+          const parentPath = folder.path.join(" / ");
+          const relativePath = this.#safeRelativePath([
+            ...folder.path,
+            fileName,
+          ]);
           files.push({
             token: item.token,
-            name: this.#safeRelativePath([
-              ...folder.path,
-              sanitizeDisplayValue(
-                item.name,
-                "[unnamed]",
-                KNOWLEDGE_MAX_RELATIVE_PATH_CODE_POINTS,
-              ),
-            ]),
+            name: relativePath,
+            fileName,
+            relativePath,
+            parentToken: folder.token,
+            parentPath,
+            depth: folder.depth,
             version: item.modifiedTime,
           });
         }
       }
 
-      return files.sort(
+      files.sort(
         (left, right) =>
-          left.name.localeCompare(right.name) ||
+          left.relativePath.localeCompare(right.relativePath) ||
           left.token.localeCompare(right.token),
       );
+      discoveredFolders.sort(
+        (left, right) =>
+          left.relativePath.localeCompare(right.relativePath) ||
+          left.token.localeCompare(right.token),
+      );
+      return {
+        rootToken: this.#rootToken,
+        folders: discoveredFolders,
+        files,
+      };
     });
   }
 
@@ -223,6 +295,57 @@ export class AuthorizedDrivePdfReader {
       input.expectedName,
     );
     return { ...after, bytes };
+  }
+
+  async deleteKnowledgeFile(input: PilotIdentity & {
+    fileToken: string;
+    expectedVersion: string;
+    expectedName: string;
+  }): Promise<void> {
+    this.#requirePilotIdentity(input);
+    const before = (await this.listKnowledgeFiles(input)).find(
+      (candidate) => candidate.token === input.fileToken,
+    );
+    if (!before) {
+      throw driveToolError(
+        "INCOMPLETE_SCAN",
+        "The approved Drive PDF is no longer present in the workspace.",
+      );
+    }
+    if (
+      before.version !== input.expectedVersion ||
+      before.name !== input.expectedName
+    ) {
+      throw driveToolError(
+        "INCOMPLETE_SCAN",
+        "The Drive PDF no longer matches the approved deletion snapshot.",
+      );
+    }
+
+    try {
+      await this.#withMutationAccessToken((accessToken) =>
+        this.#deleter.deleteFile({ accessToken, fileToken: before.token }),
+      );
+    } catch (error) {
+      if (
+        !(
+          error instanceof DriveMoveError &&
+          (error.ambiguous || error.code === "NOT_FOUND")
+        )
+      ) {
+        throw error;
+      }
+    }
+    if (
+      (await this.listKnowledgeFiles(input)).some(
+        (candidate) => candidate.token === input.fileToken,
+      )
+    ) {
+      throw driveToolError(
+        "INCOMPLETE_SCAN",
+        "The Drive PDF was still present after the deletion request.",
+      );
+    }
   }
 
   #requirePilotIdentity(input: PilotIdentity): void {
@@ -327,5 +450,32 @@ export class AuthorizedDrivePdfReader {
       operation,
     );
     return recovered.result;
+  }
+
+  async #withMutationAccessToken<Result>(
+    operation: (accessToken: string) => Promise<Result>,
+  ): Promise<Result> {
+    let accessToken = await this.#tokenBroker.getAccessToken(
+      this.#requesterOpenId,
+      this.#tenantKey,
+    );
+    try {
+      return await operation(accessToken);
+    } catch (error) {
+      if (!(error instanceof DriveMoveError && error.code === "UNAUTHORIZED")) {
+        throw error;
+      }
+      await this.#tokenBroker.markAccessTokenRejected(
+        this.#requesterOpenId,
+        this.#tenantKey,
+        accessToken,
+      );
+      accessToken = await this.#tokenBroker.recoverAccessToken(
+        this.#requesterOpenId,
+        this.#tenantKey,
+        accessToken,
+      );
+      return operation(accessToken);
+    }
   }
 }

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildKnowledgeAnswerCard,
   buildKnowledgeConsentCard,
+  buildDriveKnowledgeDeletionConfirmationCard,
   buildKnowledgeProgressCard,
   buildKnowledgeRefreshProposalCard,
   parseKnowledgeCardAction,
@@ -56,6 +57,30 @@ test("knowledge card actions accept only bounded exact values", () => {
       jobId: "ca55f05b-f138-41a1-8a73-7cf609866d79",
     },
   );
+  assert.deepEqual(
+    parseKnowledgeCardAction({
+      knowledge_action: "delete_source_confirm",
+      source_reference: "v1.opaque.ciphertext.tag",
+      source_name: "Finance / Q2 Summary.pdf",
+    }),
+    {
+      type: "delete_source_confirm",
+      sourceReference: "v1.opaque.ciphertext.tag",
+      sourceName: "Finance / Q2 Summary.pdf",
+    },
+  );
+});
+
+test("Drive deletion card is explicit, recoverable, and requires one danger action", () => {
+  const rendered = JSON.stringify(buildDriveKnowledgeDeletionConfirmationCard({
+    sourceReference: "v1.opaque.ciphertext.tag",
+    sourceName: "Finance / Q2 Summary.pdf",
+  }));
+  assert.match(rendered, /Delete this file from Synvo_Wiki/u);
+  assert.match(rendered, /recycle bin/u);
+  assert.match(rendered, /chunks and embeddings/u);
+  assert.match(rendered, /Delete file and knowledge/u);
+  assert.equal((rendered.match(/delete_source_confirm/gu) ?? []).length, 1);
 });
 
 test("refresh progress shows one stop button and a monotonic file and batch bar", () => {
@@ -74,9 +99,38 @@ test("refresh progress shows one stop button and a monotonic file and batch bar"
   assert.match(rendered, /2 of 5 files/u);
   assert.match(rendered, /Guide\.pdf/u);
   assert.match(rendered, /12 chunks created/u);
-  assert.match(rendered, /3 of 4 batches/u);
+  assert.match(rendered, /Embedding batch 4 of 4/u);
   assert.match(rendered, /Stop update/u);
   assert.equal((rendered.match(/refresh_stop/gu) ?? []).length, 1);
+});
+
+test("refresh progress describes an active first batch instead of looking stuck at zero", () => {
+  const active = JSON.stringify(buildKnowledgeProgressCard({
+    stage: "refreshing",
+    message: "Embedding chunks",
+    completedFiles: 0,
+    totalFiles: 1,
+    currentFile: "Guide.pdf",
+    chunkCount: 2,
+    completedBatches: 0,
+    totalBatches: 1,
+  }));
+  assert.match(active, /2 chunks created/u);
+  assert.match(active, /Embedding batch 1 of 1/u);
+  assert.doesNotMatch(active, /0 of 1 batches/u);
+
+  const complete = JSON.stringify(buildKnowledgeProgressCard({
+    stage: "refreshing",
+    message: "Embedding chunks",
+    completedFiles: 0,
+    totalFiles: 1,
+    currentFile: "Guide.pdf",
+    chunkCount: 2,
+    completedBatches: 1,
+    totalBatches: 1,
+  }));
+  assert.match(complete, /Embeddings ready/u);
+  assert.match(complete, /1 of 1 batch complete/u);
 });
 
 test("stopping and stopped cards cannot request another cancellation", () => {

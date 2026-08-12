@@ -12,17 +12,18 @@ import {
   buildCardCallbackResponse,
   buildCurrentWorkspaceCard,
   buildFolderLinkRequiredCard,
+  buildWorkspaceConnectedCard,
 } from "./assistant-card.js";
 
 test("welcomes the authorized employee by first name", () => {
   const serialized = JSON.stringify(buildAssistantOnlineCard("Victor"));
   assert.match(serialized, /Welcome to Synvo AI, Victor/u);
   assert.match(serialized, /Here are a few things I can do for you/u);
-  assert.match(serialized, /Analyze a File/u);
-  assert.match(serialized, /Organize a Folder/u);
-  assert.match(serialized, /Nested-folder and multi-format knowledge/u);
-  assert.match(serialized, /Lark Docs and Wiki/u);
-  assert.match(serialized, /Engineering workflows/u);
+  assert.match(serialized, /Analyze Files/u);
+  assert.match(serialized, /Strategize Business/u);
+  assert.match(serialized, /Organize Workspace/u);
+  assert.match(serialized, /more to come/u);
+  assert.doesNotMatch(serialized, /On the roadmap/u);
   assert.doesNotMatch(serialized, /Understand a PDF|Explore a Drive file/u);
   assert.doesNotMatch(serialized, /always ask before moving or changing files/u);
 });
@@ -53,6 +54,42 @@ test("welcome card shows verified My Folders context and one workspace URL", () 
   assert.equal(card.elements?.at(-1)?.tag, "note");
   assert.equal(serialized.match(/private-root-token/gu)?.length, 1);
   assert.doesNotMatch(serialized, /"value"[^}]*private-root-token/u);
+});
+
+test("welcome card offers one secure Synvo_Wiki authorization when Drive is disconnected", () => {
+  const authorizationUrl = new URL(
+    "http://localhost:3000/oauth/lark/start?request=safe-inline-token",
+  );
+  const serialized = JSON.stringify(
+    buildAssistantOnlineCard("Victor", undefined, authorizationUrl),
+  );
+
+  assert.match(serialized, /Connect the Synvo_Wiki workspace/u);
+  assert.match(serialized, /Authorize Synvo_Wiki/u);
+  assert.match(serialized, /safe-inline-token/u);
+  assert.match(serialized, /expires in 10 minutes/u);
+  assert.doesNotMatch(serialized, /Current workspace|Open workspace/u);
+});
+
+test("celebrates a verified Synvo_Wiki connection with useful next steps", () => {
+  const serialized = JSON.stringify(
+    buildWorkspaceConnectedCard("Victor", {
+      activeWorkspaceName: "Synvo_Wiki",
+      otherFolderNames: [],
+      workspaceUrl: new URL(
+        "https://larksuite.com/drive/folder/private-root-token?from=space",
+      ),
+    }),
+  );
+
+  assert.match(serialized, /Synvo_Wiki is connected/u);
+  assert.match(serialized, /You’re all set, Victor/u);
+  assert.match(serialized, /My Folders \/ \*\*Synvo_Wiki/u);
+  assert.match(serialized, /Open Synvo_Wiki/u);
+  assert.match(serialized, /Refresh workspace knowledge/u);
+  assert.match(serialized, /Please organize my workspace/u);
+  assert.match(serialized, /"template":"green"/u);
+  assert.doesNotMatch(serialized, /quick heads-up|provider-consent/u);
 });
 
 test("workspace cards sanitize provider names and degrade safely", () => {
@@ -87,11 +124,12 @@ test("welcome card bounds the number of visible folder names", () => {
   assert.doesNotMatch(serialized, /folder-8|folder-9/u);
 });
 
-test("help card shows only the two current employee-facing functions", () => {
+test("help card shows the current employee-facing capabilities", () => {
   const serialized = JSON.stringify(buildAssistantHelpCard());
-  assert.match(serialized, /Analyze a File/u);
-  assert.match(serialized, /Organize a Folder/u);
-  assert.match(serialized, /Many more features to come/u);
+  assert.match(serialized, /Analyze Files/u);
+  assert.match(serialized, /Strategize Business/u);
+  assert.match(serialized, /Organize Workspace/u);
+  assert.match(serialized, /more to come/u);
   assert.doesNotMatch(serialized, /Check connection|check_connection/u);
   assert.doesNotMatch(serialized, /Analyze a PDF|Analyze a Drive file/u);
   assert.doesNotMatch(serialized, /\/organize-folder/u);

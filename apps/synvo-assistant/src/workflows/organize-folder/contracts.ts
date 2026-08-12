@@ -1,43 +1,35 @@
+import { createHash } from "node:crypto";
+
 export function driveFolderInventoryResultAssociatedData(runId: string): string {
-  return `organize-folder-run:${runId}:scan-result:v1`;
+  return `organize-workspace-run:${runId}:snapshot:v2`;
 }
 
-export type OwnerVerification = "matched" | "missing" | "mismatched";
-
-export type DriveInventoryItem = {
+export type WorkspaceFolderSnapshot = {
   ref: string;
   identity_digest: string;
   name: string;
-  type: string;
+  relative_path: string;
   parent_ref: string;
-  modified_time?: string;
-  owner_verification: OwnerVerification;
+  depth: number;
+  owned_by_requester: boolean;
 };
 
-export type DriveInventoryFolder = {
+export type WorkspaceFileSnapshot = {
   ref: string;
   identity_digest: string;
   name: string;
-  parent_ref: string | null;
-  owner_verification: OwnerVerification;
-  child_count: number;
+  relative_path: string;
+  parent_ref: string;
+  parent_path: string;
+  version: string;
 };
 
 export type DriveInventory = {
   run_id: string;
-  complete: boolean;
-  baseline_matches: boolean;
-  root: DriveInventoryFolder;
-  destinations: DriveInventoryFolder[];
-  files: DriveInventoryItem[];
-  skipped: DriveInventoryItem[];
-  issues: string[];
-  summary: {
-    root_folder_count: number;
-    root_file_count: number;
-    root_skipped_count: number;
-    destination_child_count: number;
-  };
+  workspace_identity_digest: string;
+  complete: true;
+  folders: WorkspaceFolderSnapshot[];
+  files: WorkspaceFileSnapshot[];
 };
 
 export type DriveInventoryErrorCode =
@@ -55,7 +47,7 @@ export type DriveInventoryErrorCode =
   | "MALFORMED_RESPONSE"
   | "RUN_NOT_FOUND"
   | "RUN_NOT_READY"
-  | "UNEXPECTED_SANDBOX_STATE"
+  | "UNEXPECTED_WORKSPACE_STATE"
   | "INTERNAL";
 
 export type DriveInventorySafeError = {
@@ -65,13 +57,29 @@ export type DriveInventorySafeError = {
 };
 
 export type DriveFolderInventoryResult =
-  | {
-      ok: true;
-      inventory: DriveInventory;
-      error?: never;
-    }
-  | {
-      ok: false;
-      error: DriveInventorySafeError;
-      inventory?: never;
-    };
+  | { ok: true; inventory: DriveInventory; error?: never }
+  | { ok: false; error: DriveInventorySafeError; inventory?: never };
+
+function comparableInventory(inventory: DriveInventory): unknown {
+  return {
+    workspace_identity_digest: inventory.workspace_identity_digest,
+    complete: inventory.complete,
+    folders: inventory.folders,
+    files: inventory.files,
+  };
+}
+
+export function workspaceSnapshotDigest(inventory: DriveInventory): string {
+  // Defends exact provider consent against a changed Drive snapshot between review and confirmation.
+  return createHash("sha256")
+    .update(JSON.stringify(comparableInventory(inventory)))
+    .digest("hex");
+}
+
+export function workspaceSnapshotMatches(
+  approved: DriveInventory,
+  observed: DriveInventory,
+): boolean {
+  return JSON.stringify(comparableInventory(approved)) ===
+    JSON.stringify(comparableInventory(observed));
+}

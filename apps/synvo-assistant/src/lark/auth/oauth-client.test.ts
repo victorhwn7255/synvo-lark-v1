@@ -33,7 +33,7 @@ test("builds a PKCE S256 authorization URL with the exact Drive PDF scopes", () 
   assert.equal(url.searchParams.get("state"), "state-value");
   assert.equal(
     url.searchParams.get("scope"),
-    "drive:drive.metadata:readonly drive:file:download offline_access space:document:move space:document:retrieve",
+    "drive:drive drive:drive.metadata:readonly drive:file:download offline_access space:document:delete space:document:move space:document:retrieve space:folder:create",
   );
 });
 
@@ -53,7 +53,7 @@ test("exchanges a code through Lark's documented browser OAuth endpoint", async 
       refresh_token_expires_in: 2_592_000,
       token_type: "Bearer",
       scope:
-        "space:document:retrieve space:document:move drive:drive.metadata:readonly drive:file:download offline_access",
+        "space:document:retrieve space:document:move space:document:delete space:folder:create drive:drive drive:drive.metadata:readonly drive:file:download offline_access",
     });
   };
   const client = new LarkOAuthHttpClient({ fetch: fakeFetch });
@@ -73,11 +73,14 @@ test("exchanges a code through Lark's documented browser OAuth endpoint", async 
   assert.equal(observedBody.code_verifier, "v".repeat(43));
   assert.equal(observedBody.redirect_uri, "http://localhost:3000/oauth/lark/callback");
   assert.deepEqual(token.scopes, [
+    "drive:drive",
     "drive:drive.metadata:readonly",
     "drive:file:download",
     "offline_access",
+    "space:document:delete",
     "space:document:move",
     "space:document:retrieve",
+    "space:folder:create",
   ]);
 });
 
@@ -221,10 +224,15 @@ test("accepts only the exact Drive PDF scope set", () => {
     hasExactScopes(["offline_access", "space:document:retrieve"]),
     false,
   );
+  assert.equal(
+    hasExactScopes(
+      ORGANIZE_FOLDER_USER_SCOPES.filter((scope) => scope !== "drive:drive"),
+    ),
+    false,
+  );
   for (const extraScope of [
-    "drive:drive",
     "docx:document",
-    "space:document:delete",
+    "space:document:shortcut",
   ]) {
     assert.equal(
       hasExactScopes([...ORGANIZE_FOLDER_USER_SCOPES, extraScope]),

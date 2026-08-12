@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { AppConfig } from "../../config.js";
 import {
   ORGANIZE_FOLDER_USER_SCOPES,
   TokenCipher,
@@ -12,14 +13,12 @@ import {
 import {
   digestFolderToken,
   DriveMoveError,
-  observeAllowlistedFolder,
-  type DriveListPage,
+  type DriveFolderCreator,
   type DriveMover,
-  type DriveReader,
-  type NativeDriveItem,
-  type NativeDriveMetadata,
 } from "../../lark/drive/index.js";
-import type { AppConfig } from "../../config.js";
+import type { WorkspaceDriveInventory } from "../analyze-drive-file/authorized-reader.js";
+import { snapshotWorkspaceInventory, type ContentPlanResult } from "./content-planner.js";
+import type { ExecutionStatus, UndoStatus } from "./execution.js";
 import type {
   InventoryRun,
   OAuthSession,
@@ -27,35 +26,11 @@ import type {
   ProposalDecisionStoreResult,
   StoreInventoryResultInput,
 } from "./repository.js";
-import {
-  driveFolderInventoryResultAssociatedData,
-  type DriveFolderInventoryResult,
-} from "./contracts.js";
 import { OrganizeFolderWorkflow } from "./workflow.js";
-import {
-  buildOrganizeFolderProposal,
-  type ContentDecision,
-  organizeFolderProposalAssociatedData,
-  type OrganizeFolderProposal,
-} from "./proposal.js";
-import type { ContentPlanResult } from "./content-planner.js";
-import {
-  createExecutionRecord,
-  executionAssociatedData,
-  type ExecutionStatus,
-  type UndoStatus,
-} from "./execution.js";
 
-const runId = "4d872758-1f71-4ed8-b141-a2d193ceea91";
-const fileIdentityDigest = "a".repeat(64);
-const productIdentityDigest = "b".repeat(64);
-const researchIdentityDigest = "c".repeat(64);
-const neutralFileNames = [
-  "document-01.pdf",
-  "document-02.pdf",
-  "document-03.pdf",
-  "document-04.pdf",
-] as const;
+const rootToken = "fldcnRoot123";
+const folderLink = `https://synvo-ai.sg.larksuite.com/drive/folder/${rootToken}`;
+const identity = { requesterOpenId: "ou_victor", tenantKey: "tenant_synvo" };
 const config: AppConfig = {
   appId: "cli_0123456789abcdef",
   appSecret: "app-secret",
@@ -64,346 +39,22 @@ const config: AppConfig = {
   httpPort: 3000,
   larkOAuthRedirectUri: "http://localhost:3000/oauth/lark/callback",
   oauthTokenEncryptionKey: Buffer.alloc(32, 1).toString("base64url"),
-  authorizedOpenId: "ou_victor",
-  authorizedTenantKey: "tenant_synvo",
-  organizeFolderRootToken: "fldcnRoot123",
+  authorizedOpenId: identity.requesterOpenId,
+  authorizedTenantKey: identity.tenantKey,
+  organizeFolderRootToken: rootToken,
   organizeFolderWriteEnabled: false,
   llmApiKey: "nvapi-test-key-that-is-long-enough",
   voyageApiKey: "voyage-test-key-with-safe-length",
 };
 
-class StubGrantStore implements OAuthGrantStore {
-  grant: StoredOAuthGrant | null = null;
-
-  async findBySubject(): Promise<StoredOAuthGrant | null> {
-    return this.grant;
-  }
-  async save(input: SaveOAuthGrantInput): Promise<StoredOAuthGrant> {
-    return input;
-  }
-  async withLockedGrant<T>(
-    _openId: string,
-    _tenantKey: string,
-    operation: (grant: StoredOAuthGrant) => Promise<LockedGrantResult<T>>,
-  ): Promise<T> {
-    if (!this.grant) throw new Error("No grant");
-    return (await operation(this.grant)).result;
-  }
-}
-
-class StubRepository implements OrganizeFolderRepository {
-  existingRun = false;
-  readyRunId: string | null = null;
-  inventoryRun: InventoryRun | null = null;
-  storedResult: string | null = null;
-  storedInput: StoreInventoryResultInput | null = null;
-  decisionResult: ProposalDecisionStoreResult = { kind: "not_found" };
-  decisionInput: {
-    proposalId: string;
-    requesterOpenId: string;
-    tenantKey: string;
-    decision: "APPROVED" | "REJECTED";
-    decidedAt: Date;
-    executionJobId?: string;
-  } | null = null;
-  staleCalls = 0;
-
-  async hasRunForMessage(): Promise<boolean> {
-    return this.existingRun;
-  }
-  async findInventoryRunById(): Promise<InventoryRun | null> {
-    return this.inventoryRun;
-  }
-  async createReadyRun(input: { id: string }): Promise<boolean> {
-    this.readyRunId = input.id;
-    return true;
-  }
-  async createAwaitingOAuthRun(): Promise<boolean> { return true; }
-  async startOAuthSession(): Promise<OAuthSession | null> { return null; }
-  async consumeOAuthSession(): Promise<OAuthSession | null> { return null; }
-  async bindGrantToRun(): Promise<void> {}
-  async markRunFailed(): Promise<void> {}
-  async storeInventoryResult(input: StoreInventoryResultInput): Promise<boolean> {
-    this.storedResult = input.resultCiphertext;
-    this.storedInput = input;
-    return true;
-  }
-  async recordProposalDecision(input: {
-    proposalId: string;
-    requesterOpenId: string;
-    tenantKey: string;
-    decision: "APPROVED" | "REJECTED";
-    decidedAt: Date;
-    executionJobId?: string;
-  }): Promise<ProposalDecisionStoreResult> {
-    this.decisionInput = input;
-    return this.decisionResult;
-  }
-  async markProposalStale(): Promise<boolean> {
-    if (!this.inventoryRun) return false;
-    this.staleCalls += 1;
-    this.inventoryRun.proposalStatus = "STALE";
-    this.inventoryRun.executionStatus = "STALE";
-    return true;
-  }
-  async startExecution(): Promise<boolean> {
-    if (!this.inventoryRun) return false;
-    this.inventoryRun.executionStatus = "RUNNING";
-    return true;
-  }
-  async storeExecution(input: {
-    status: ExecutionStatus;
-    ciphertext: string | null;
-  }): Promise<boolean> {
-    if (!this.inventoryRun) return false;
-    this.inventoryRun.executionStatus = input.status;
-    this.inventoryRun.executionCiphertext = input.ciphertext;
-    return true;
-  }
-  async requestUndo(input: { executionCiphertext: string }) {
-    if (!this.inventoryRun?.executionCiphertext) {
-      return { kind: "not_ready" } as const;
-    }
-    if (this.inventoryRun.undoStatus) {
-      return {
-        kind: "existing",
-        status: this.inventoryRun.undoStatus,
-      } as const;
-    }
-    this.inventoryRun.executionCiphertext = input.executionCiphertext;
-    this.inventoryRun.undoStatus = "REQUESTED";
-    return { kind: "recorded" } as const;
-  }
-  async startUndo(): Promise<boolean> {
-    if (!this.inventoryRun) return false;
-    this.inventoryRun.undoStatus = "RUNNING";
-    return true;
-  }
-  async storeUndo(input: {
-    status: UndoStatus;
-    ciphertext: string;
-  }): Promise<boolean> {
-    if (!this.inventoryRun) return false;
-    this.inventoryRun.undoStatus = input.status;
-    this.inventoryRun.executionCiphertext = input.ciphertext;
-    return true;
-  }
-}
-
-const noOpReader: DriveReader = {
-  async listFolderPage() { throw new Error("unused"); },
-  async getMetadata() { throw new Error("unused"); },
-};
-const noOpMover: DriveMover = {
-  async moveFile() { throw new Error("unused"); },
-};
-
-class MutablePilotDrive implements DriveReader, DriveMover {
-  readonly items: NativeDriveItem[] = [
-    {
-      token: "folder-product",
-      name: "Product",
-      type: "folder",
-      parentToken: "fldcnRoot123",
-      ownerId: "ou_victor",
-    },
-    {
-      token: "folder-research",
-      name: "Research",
-      type: "folder",
-      parentToken: "fldcnRoot123",
-      ownerId: "ou_victor",
-    },
-    {
-      token: "file-product-one",
-      name: neutralFileNames[0],
-      type: "file",
-      parentToken: "fldcnRoot123",
-      ownerId: "ou_victor",
-      modifiedTime: "2026-08-07T00:00:00.000Z",
-    },
-    {
-      token: "file-product-two",
-      name: neutralFileNames[1],
-      type: "file",
-      parentToken: "fldcnRoot123",
-      ownerId: "ou_victor",
-      modifiedTime: "2026-08-07T00:00:00.000Z",
-    },
-    {
-      token: "file-research-one",
-      name: neutralFileNames[2],
-      type: "file",
-      parentToken: "fldcnRoot123",
-      ownerId: "ou_victor",
-      modifiedTime: "2026-08-07T00:00:00.000Z",
-    },
-    {
-      token: "file-research-two",
-      name: neutralFileNames[3],
-      type: "file",
-      parentToken: "fldcnRoot123",
-      ownerId: "ou_victor",
-      modifiedTime: "2026-08-07T00:00:00.000Z",
-    },
-  ];
-  readonly moveCalls: Array<{
-    fileToken: string;
-    destinationFolderToken: string;
-  }> = [];
-  failure: {
-    call: number;
-    error: DriveMoveError;
-    moveBeforeThrow?: boolean;
-  } | null = null;
-  skipMoveOnCall: number | null = null;
-  leaveRootDuplicates = false;
-
-  async listFolderPage(input: {
-    folderToken: string;
-  }): Promise<DriveListPage> {
-    return {
-      items: this.items
-        .filter((item) => item.parentToken === input.folderToken)
-        .map((item) => ({ ...item })),
-      hasMore: false,
-    };
-  }
-
-  async getMetadata(): Promise<NativeDriveMetadata> {
-    return {
-      token: "fldcnRoot123",
-      type: "folder",
-      title: "Test_Synvo_AI_Assistant",
-      ownerId: "ou_victor",
-      createdTime: "2026-08-07T00:00:00.000Z",
-      modifiedTime: "2026-08-07T00:00:00.000Z",
-    };
-  }
-
-  async moveFile(input: {
-    fileToken: string;
-    destinationFolderToken: string;
-  }): Promise<void> {
-    this.moveCalls.push({
-      fileToken: input.fileToken,
-      destinationFolderToken: input.destinationFolderToken,
-    });
-    const failure = this.failure?.call === this.moveCalls.length
-      ? this.failure
-      : null;
-    if (
-      (!failure || failure.moveBeforeThrow) &&
-      this.skipMoveOnCall !== this.moveCalls.length
-    ) {
-      const original = this.items.find((item) => item.token === input.fileToken);
-      this.relocate(input.fileToken, input.destinationFolderToken);
-      if (this.leaveRootDuplicates && original) {
-        this.items.push({
-          ...original,
-          token: `duplicate-${original.token}`,
-          parentToken: "fldcnRoot123",
-        });
-      }
-    }
-    if (failure) {
-      throw failure.error;
-    }
-  }
-
-  relocate(fileToken: string, destinationFolderToken: string): void {
-    const file = this.items.find((item) => item.token === fileToken);
-    if (!file) throw new Error("Unknown test file");
-    file.parentToken = destinationFolderToken;
-  }
-
-  rename(fileToken: string, name: string): void {
-    const file = this.items.find((item) => item.token === fileToken);
-    if (!file) throw new Error("Unknown test file");
-    file.name = name;
-  }
-
-  countFiles(folderToken: string): number {
-    return this.items.filter(
-      (item) => item.type === "file" && item.parentToken === folderToken,
-    ).length;
-  }
-}
-
-async function approvedExecutionFixture(options: {
-  writeEnabled?: boolean;
-} = {}) {
-  const drive = new MutablePilotDrive();
-  const repository = new StubRepository();
-  const cipher = new TokenCipher(Buffer.alloc(32, 7));
-  const observation = await observeAllowlistedFolder(drive, {
-    runId,
-    requesterOpenId: "ou_victor",
-    rootToken: config.organizeFolderRootToken,
-    accessToken: "access-token",
-    async recoverAccessToken() { return "recovered-token"; },
-    async markAccessTokenRejected() {},
-  });
-  const proposal = buildOrganizeFolderProposal(
-    observation.inventory,
-    runId,
-    decisionsFor(observation.inventory.files.map((file) => file.name)),
-  );
-  const result: DriveFolderInventoryResult = {
-    ok: true,
-    inventory: observation.inventory,
-  };
-  repository.inventoryRun = {
-    id: runId,
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
-    state: "COMPLETED",
-    rootTokenDigest: digestFolderToken(config.organizeFolderRootToken),
-    oauthGrantId: "grant-id",
-    oauthGrantMatchesSubject: true,
-    resultCiphertext: cipher.encrypt(
-      JSON.stringify(result),
-      driveFolderInventoryResultAssociatedData(runId),
-    ),
-    proposalCiphertext: cipher.encrypt(
-      JSON.stringify(proposal),
-      organizeFolderProposalAssociatedData(runId),
-    ),
-    proposalStatus: "APPROVED",
-    executionCiphertext: null,
-    executionStatus: "QUEUED",
-    undoStatus: null,
-  };
-  const fixture = createWorkflow({
-    repository,
-    cipher,
-    driveReader: drive,
-    driveMover: drive,
-    configOverride: {
-      organizeFolderWriteEnabled: options.writeEnabled ?? true,
-    },
-  });
-  return { ...fixture, drive, observation, proposal };
-}
-
-function request(folderLink: string) {
-  return {
-    messageId: "om_message",
-    chatId: "oc_chat",
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
-    folderLink,
-  };
-}
-
-function grant(scopes: readonly string[] = ORGANIZE_FOLDER_USER_SCOPES): StoredOAuthGrant {
+function grant(): StoredOAuthGrant {
   return {
     id: "4e41b888-b1b9-46cf-aac8-3e0f35e0d266",
-    openId: "ou_victor",
-    tenantKey: "tenant_synvo",
+    openId: identity.requesterOpenId,
+    tenantKey: identity.tenantKey,
     accessTokenCiphertext: "ciphertext",
     refreshTokenCiphertext: "ciphertext",
-    grantedScopes: [...scopes],
+    grantedScopes: [...ORGANIZE_FOLDER_USER_SCOPES],
     accessExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
     refreshExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
     refreshVersion: 1,
@@ -411,897 +62,621 @@ function grant(scopes: readonly string[] = ORGANIZE_FOLDER_USER_SCOPES): StoredO
   };
 }
 
-function createWorkflow(options: {
-  grant?: StoredOAuthGrant | null;
-  configOverride?: Partial<AppConfig>;
-  repository?: StubRepository;
-  cipher?: TokenCipher;
-  driveReader?: DriveReader;
-  driveMover?: DriveMover;
-  contentPlan?: ContentPlanResult;
-  contentPlannerEnabled?: boolean;
+class StubGrantStore implements OAuthGrantStore {
+  stored: StoredOAuthGrant | null = grant();
+  async findBySubject() { return this.stored; }
+  async save(input: SaveOAuthGrantInput) { return input; }
+  async withLockedGrant<T>(
+    _openId: string,
+    _tenantKey: string,
+    operation: (value: StoredOAuthGrant) => Promise<LockedGrantResult<T>>,
+  ): Promise<T> {
+    if (!this.stored) throw new Error("No grant");
+    return (await operation(this.stored)).result;
+  }
+}
+
+class StubRepository implements OrganizeFolderRepository {
+  run: InventoryRun | null = null;
+  createdInput: Parameters<OrganizeFolderRepository["createReadyRun"]>[0] | null = null;
+  decisionInput: Parameters<OrganizeFolderRepository["recordProposalDecision"]>[0] | null = null;
+  decisionResult: ProposalDecisionStoreResult | null = null;
+  staleCalls = 0;
+
+  async hasRunForMessage() { return this.run !== null; }
+  async findInventoryRunById(runId: string) {
+    return this.run?.id === runId ? this.run : null;
+  }
+  async createReadyRun(input: Parameters<OrganizeFolderRepository["createReadyRun"]>[0]) {
+    this.createdInput = input;
+    this.run = {
+      id: input.id,
+      chatId: input.chatId,
+      requesterOpenId: input.requesterOpenId,
+      tenantKey: input.tenantKey,
+      state: "READY_TO_SCAN",
+      rootTokenDigest: input.rootTokenDigest,
+      oauthGrantId: input.oauthGrantId,
+      oauthGrantMatchesSubject: true,
+      resultCiphertext: input.consentSnapshotCiphertext,
+      proposalCiphertext: null,
+      proposalStatus: null,
+      executionCiphertext: null,
+      executionStatus: null,
+      undoStatus: null,
+      operationMessageId: null,
+    };
+    return true;
+  }
+  async createAwaitingOAuthRun() { return true; }
+  async startOAuthSession(): Promise<OAuthSession | null> { return null; }
+  async consumeOAuthSession(): Promise<OAuthSession | null> { return null; }
+  async bindGrantToRun() {}
+  async markRunFailed() {}
+  async storeInventoryResult(input: StoreInventoryResultInput) {
+    if (!this.run || this.run.id !== input.runId) return false;
+    this.run.state = input.state;
+    this.run.resultCiphertext = input.resultCiphertext;
+    this.run.proposalCiphertext = input.proposalCiphertext;
+    this.run.proposalStatus = input.proposalStatus;
+    return true;
+  }
+  async recordProposalDecision(
+    input: Parameters<OrganizeFolderRepository["recordProposalDecision"]>[0],
+  ): Promise<ProposalDecisionStoreResult> {
+    this.decisionInput = input;
+    if (this.decisionResult) return this.decisionResult;
+    if (
+      !this.run ||
+      this.run.id !== input.proposalId ||
+      this.run.chatId !== input.chatId
+    ) return { kind: "not_found" };
+    this.run.proposalStatus = input.decision;
+    if (input.operationMessageId) {
+      this.run.operationMessageId = input.operationMessageId;
+    }
+    if (input.executionJobId) this.run.executionStatus = "QUEUED";
+    return {
+      kind: "recorded",
+      status: input.decision,
+      executionQueued: Boolean(input.executionJobId),
+    };
+  }
+  async markProposalStale() {
+    if (!this.run) return false;
+    this.staleCalls += 1;
+    this.run.proposalStatus = "STALE";
+    this.run.executionStatus = "STALE";
+    return true;
+  }
+  async startExecution() {
+    if (!this.run) return false;
+    this.run.executionStatus = "RUNNING";
+    return true;
+  }
+  async storeExecution(input: { status: ExecutionStatus; ciphertext: string | null }) {
+    if (!this.run) return false;
+    this.run.executionStatus = input.status;
+    this.run.executionCiphertext = input.ciphertext;
+    return true;
+  }
+  async requestUndo(input: {
+    executionCiphertext: string;
+    operationMessageId?: string;
+  }) {
+    if (!this.run?.executionCiphertext) return { kind: "not_ready" } as const;
+    if (this.run.undoStatus) return { kind: "existing", status: this.run.undoStatus } as const;
+    this.run.executionCiphertext = input.executionCiphertext;
+    this.run.undoStatus = "REQUESTED";
+    if (input.operationMessageId) {
+      this.run.operationMessageId = input.operationMessageId;
+    }
+    return { kind: "recorded" } as const;
+  }
+  async startUndo() {
+    if (!this.run) return false;
+    this.run.undoStatus = "RUNNING";
+    return true;
+  }
+  async storeUndo(input: { status: UndoStatus; ciphertext: string }) {
+    if (!this.run) return false;
+    this.run.undoStatus = input.status;
+    this.run.executionCiphertext = input.ciphertext;
+    return true;
+  }
+}
+
+class MutableWorkspace implements DriveMover, DriveFolderCreator {
+  readonly rootToken = rootToken;
+  readonly folders = [
+    { token: "folder-inbox", name: "Inbox", relativePath: "Inbox", parentToken: rootToken, depth: 1, ownedByRequester: true },
+    { token: "folder-engineering", name: "Engineering", relativePath: "Engineering", parentToken: rootToken, depth: 1, ownedByRequester: true },
+  ];
+  readonly files = Array.from({ length: 15 }, (_, index) => ({
+    token: `file-${index + 1}`,
+    name: `document-${String(index + 1).padStart(2, "0")}.pdf`,
+    fileName: `document-${String(index + 1).padStart(2, "0")}.pdf`,
+    relativePath: `Inbox / document-${String(index + 1).padStart(2, "0")}.pdf`,
+    parentToken: "folder-inbox",
+    parentPath: "Inbox",
+    depth: 2,
+    version: "1",
+  }));
+  createCalls: string[] = [];
+  moveCalls: Array<{ fileToken: string; destinationFolderToken: string }> = [];
+  createAmbiguously = false;
+  createFailure: DriveMoveError | null = null;
+  moveAmbiguously = false;
+  interruptAfterFirstMoveObservation = false;
+  interruptionTriggered = false;
+  failMoveCallNumber: number | null = null;
+  collisionAfterInspections: number | null = null;
+  readonly events: string[] = [];
+
+  async inspectWorkspace(): Promise<WorkspaceDriveInventory> {
+    if (this.collisionAfterInspections !== null) {
+      this.collisionAfterInspections -= 1;
+      if (this.collisionAfterInspections === 0) {
+        this.collisionAfterInspections = null;
+        this.folders.push({
+          token: "folder-unapproved-research",
+          name: "Research",
+          relativePath: "Research",
+          parentToken: rootToken,
+          depth: 1,
+          ownedByRequester: true,
+        });
+      }
+    }
+    if (
+      this.interruptAfterFirstMoveObservation &&
+      !this.interruptionTriggered &&
+      this.moveCalls.length === 1
+    ) {
+      this.interruptionTriggered = true;
+      throw new Error("Simulated process interruption");
+    }
+    return {
+      rootToken: this.rootToken,
+      folders: this.folders.map((folder) => ({ ...folder })),
+      files: this.files.map((file) => ({ ...file })),
+    };
+  }
+  async createFolder(input: { parentFolderToken: string; name: string }) {
+    assert.equal(input.parentFolderToken, rootToken);
+    this.createCalls.push(input.name);
+    this.events.push(`create:${input.name}`);
+    if (this.createFailure) throw this.createFailure;
+    const folderToken = `folder-${input.name.toLowerCase()}`;
+    if (!this.folders.some((folder) => folder.token === folderToken)) {
+      this.folders.push({
+        token: folderToken,
+        name: input.name,
+        relativePath: input.name,
+        parentToken: rootToken,
+        depth: 1,
+        ownedByRequester: true,
+      });
+    }
+    if (this.createAmbiguously) {
+      this.createAmbiguously = false;
+      throw new DriveMoveError("TIMEOUT", true);
+    }
+    return { folderToken };
+  }
+  async moveFile(input: { fileToken: string; destinationFolderToken: string }) {
+    this.moveCalls.push(input);
+    this.events.push(`move:${input.fileToken}`);
+    if (this.failMoveCallNumber === this.moveCalls.length) {
+      throw new DriveMoveError("PERMANENT", false);
+    }
+    const file = this.files.find((candidate) => candidate.token === input.fileToken);
+    const destination = this.folders.find(
+      (candidate) => candidate.token === input.destinationFolderToken,
+    );
+    if (!file || !destination) throw new DriveMoveError("NOT_FOUND", false);
+    file.parentToken = destination.token;
+    file.parentPath = destination.name;
+    file.relativePath = `${destination.name} / ${file.fileName}`;
+    if (this.moveAmbiguously) {
+      this.moveAmbiguously = false;
+      throw new DriveMoveError("TIMEOUT", true);
+    }
+  }
+}
+
+function buildPlan(runId: string, workspace: MutableWorkspace): ContentPlanResult {
+  const inventory = snapshotWorkspaceInventory(runId, {
+    rootToken: workspace.rootToken,
+    folders: workspace.folders,
+    files: workspace.files,
+  });
+  return {
+    kind: "ready",
+    inventoryResult: { ok: true, inventory },
+    taxonomy: [
+      { name: "Engineering", description: "Technical product documentation." },
+      { name: "Research", description: "Research and analytical documents." },
+    ],
+    decisions: inventory.files.map((file, index) => ({
+      file_ref: file.ref,
+      destination: index % 2 === 0 ? "Engineering" : "Research",
+      rationale: "The indexed evidence supports this destination.",
+    })),
+  };
+}
+
+function fixture(options: {
+  writeEnabled?: boolean;
+  workspace?: MutableWorkspace;
+  grantAvailable?: boolean;
 } = {}) {
+  const workspace = options.workspace ?? new MutableWorkspace();
+  const repository = new StubRepository();
   const grantStore = new StubGrantStore();
-  grantStore.grant = options.grant ?? null;
-  const repository = options.repository ?? new StubRepository();
-  const cipher = options.cipher ?? new TokenCipher(Buffer.alloc(32, 2));
+  if (options.grantAvailable === false) grantStore.stored = null;
+  const cipher = new TokenCipher(Buffer.alloc(32, 7));
+  let reconciliations = 0;
+  let recoveredTokens = 0;
+  let rejectedTokens = 0;
+  let authorizationDelivery: "queued" | "inline" | undefined;
   const workflow = new OrganizeFolderWorkflow({
-    config: { ...config, ...options.configOverride },
+    config: {
+      ...config,
+      organizeFolderWriteEnabled: options.writeEnabled ?? false,
+    },
     grantStore,
     repository,
     oauthService: {
-      async createPendingAuthorization() {
-        return true;
+      async createPendingAuthorization(input) {
+        authorizationDelivery = input.delivery;
+        return {
+          created: true,
+          startUrl: new URL(
+            "http://localhost:3000/oauth/lark/start?request=test-token",
+          ),
+        };
       },
     },
     tokenBroker: {
       async getAccessToken() { return "access-token"; },
-      async recoverAccessToken() { return "recovered-token"; },
-      async markAccessTokenRejected() {},
+      async recoverAccessToken() { recoveredTokens += 1; return "recovered-token"; },
+      async markAccessTokenRejected() { rejectedTokens += 1; },
     },
     cipher,
-    driveReader: options.driveReader ?? noOpReader,
-    driveMover: options.driveMover ?? noOpMover,
-    contentPlanner:
-      options.contentPlannerEnabled === false
-        ? undefined
-        : {
-            async plan() {
-              if (!options.contentPlan) {
-                throw new Error("unused content planner");
-              }
-              return options.contentPlan;
-            },
-          },
-  });
-  return { workflow, repository, cipher };
-}
-
-function decisionsFor(fileNames: string[]): ContentDecision[] {
-  return fileNames.map((fileName, index) => ({
-    file_name: fileName,
-    destination: index < 2 ? "Product" : "Research",
-    rationale: index < 2
-      ? `UNTRUSTED_RATIONALE_${index + 1}: Product documentation evidence.`
-      : `UNTRUSTED_RATIONALE_${index + 1}: Research evidence.`,
-  }));
-}
-
-async function contentPlanFixture(): Promise<
-  Extract<ContentPlanResult, { kind: "ready" }>
-> {
-  const drive = new MutablePilotDrive();
-  const observation = await observeAllowlistedFolder(drive, {
-    runId: "mcp-inventory-run",
-    requesterOpenId: "ou_victor",
-    rootToken: config.organizeFolderRootToken,
-    accessToken: "access-token",
-    async recoverAccessToken() { return "recovered-token"; },
-    async markAccessTokenRejected() {},
+    workspaceReader: workspace,
+    driveMover: workspace,
+    folderCreator: workspace,
+    knowledge: { async reconcileWorkspacePaths() { reconciliations += 1; return 15; } },
+    contentPlanner: { async plan(runId) { return buildPlan(runId, workspace); } },
   });
   return {
-    kind: "ready",
-    inventoryResult: {
-      ok: true,
-      inventory: observation.inventory,
-    },
-    decisions: decisionsFor(
-      observation.inventory.files.map((file) => file.name),
-    ),
+    workflow,
+    repository,
+    workspace,
+    reconciliations: () => reconciliations,
+    recoveredTokens: () => recoveredTokens,
+    rejectedTokens: () => rejectedTokens,
+    authorizationDelivery: () => authorizationDelivery,
   };
 }
 
-function readyInventoryRun(): InventoryRun {
-  return {
-    id: runId,
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
-    state: "READY_TO_SCAN",
-    rootTokenDigest: digestFolderToken(config.organizeFolderRootToken),
-    oauthGrantId: "grant-id",
-    oauthGrantMatchesSubject: true,
-    resultCiphertext: null,
-    proposalCiphertext: null,
-    proposalStatus: null,
-    executionCiphertext: null,
-    executionStatus: null,
-    undoStatus: null,
-  };
+function request(messageId = "om_message") {
+  return { messageId, chatId: "oc_chat", ...identity, folderLink };
 }
 
-test("rejects external and unallowlisted folder links", async () => {
-  const { workflow } = createWorkflow();
-  for (const link of [
-    "https://example.com/drive/folder/fldcnRoot123",
-    "https://synvo-ai.larksuite.com/drive/folder/fldcnSibling",
-  ]) {
-    assert.equal((await workflow.start(request(link))).kind, "rejected");
-  }
-});
+async function prepareProposal(testFixture: ReturnType<typeof fixture>) {
+  const consent = await testFixture.workflow.prepareConsent(request());
+  assert.equal(consent.kind, "ready");
+  if (consent.kind !== "ready") throw new Error("Consent was not ready");
+  assert.equal((await testFixture.workflow.start({
+    ...request(),
+    consentSnapshotDigest: consent.snapshotDigest,
+    consentExpiresAt: consent.expiresAt,
+  })).kind, "inventory_ready");
+  const proposalId = testFixture.repository.run!.id;
+  const message = await testFixture.workflow.buildProposalMessage(proposalId);
+  return { proposalId, message };
+}
 
-test("applies the same pilot boundaries to direct inventory consumers", async () => {
-  const { workflow } = createWorkflow({
-    configOverride: {
-      authorizedOpenId: "ou_victor",
-      authorizedTenantKey: "tenant_synvo",
-    },
-  });
-
-  const wrongUser = await workflow.readInventory({
-    requesterOpenId: "ou_other",
-    tenantKey: "tenant_synvo",
-    folderLink:
-      "https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123",
-  });
-  assert.equal(wrongUser.ok, false);
-  assert.equal(wrongUser.error?.code, "UNAUTHORIZED");
-
-  const wrongRoot = await workflow.readInventory({
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
-    folderLink:
-      "https://synvo-ai.larksuite.com/drive/folder/fldcnSibling",
-  });
-  assert.equal(wrongRoot.ok, false);
-  assert.equal(wrongRoot.error?.code, "ROOT_NOT_ALLOWLISTED");
-});
-
-test("starts authorization when no usable grant exists", async () => {
-  const { workflow } = createWorkflow();
-  const result = await workflow.start(
-    request("https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123"),
-  );
-  assert.equal(result.kind, "authorization_required");
-});
-
-test("fails safely before creating a run when content-aware MCP is disabled", async () => {
-  const { workflow, repository } = createWorkflow({
-    grant: grant(),
-    contentPlannerEnabled: false,
-  });
-
-  const result = await workflow.start(
-    request("https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123"),
-  );
-
-  assert.deepEqual(result, {
-    kind: "rejected",
-    replyText: "Content-aware folder organization isn’t available right now.",
-  });
-  assert.equal(repository.readyRunId, null);
-});
-
-test("creates an inventory run only for the exact Drive PDF grant", async () => {
-  const accepted = createWorkflow({ grant: grant() });
+test("consents to an exact recursive 15-PDF snapshot and stores only encrypted provider consent", async () => {
+  const testFixture = fixture();
+  const consent = await testFixture.workflow.prepareConsent(request());
+  assert.equal(consent.kind, "ready");
+  if (consent.kind !== "ready") return;
+  assert.equal(consent.inventory.inventory.files.length, 15);
+  assert.match(consent.snapshotDigest, /^[0-9a-f]{64}$/u);
+  assert.equal((await testFixture.workflow.start({
+    ...request(),
+    consentSnapshotDigest: consent.snapshotDigest,
+    consentExpiresAt: consent.expiresAt,
+  })).kind, "inventory_ready");
+  assert.ok(testFixture.repository.createdInput?.consentSnapshotCiphertext);
   assert.equal(
-    (await accepted.workflow.start(
-      request("https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123"),
-    )).kind,
-    "inventory_ready",
-  );
-  assert.ok(accepted.repository.readyRunId);
-
-  const broader = createWorkflow({
-    grant: grant([...ORGANIZE_FOLDER_USER_SCOPES, "space:document:delete"]),
-  });
-  assert.equal(
-    (await broader.workflow.start(
-      request("https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123"),
-    )).kind,
-    "authorization_required",
+    testFixture.repository.createdInput!.consentSnapshotCiphertext.includes("document-01.pdf"),
+    false,
   );
 });
 
-test("does not create another run for a duplicate Lark command", async () => {
-  const repository = new StubRepository();
-  repository.existingRun = true;
-  const { workflow } = createWorkflow({ repository, grant: grant() });
-
-  const result = await workflow.start(
-    request("https://synvo-ai.larksuite.com/drive/folder/fldcnRoot123"),
-  );
-  assert.equal(result.kind, "duplicate");
-  assert.equal(repository.readyRunId, null);
-});
-
-test("uses a stored terminal result without scanning again", async () => {
-  const repository = new StubRepository();
-  const cipher = new TokenCipher(Buffer.alloc(32, 3));
-  const result: DriveFolderInventoryResult = {
-    ok: false,
-    error: {
-      code: "OAUTH_REVOKED",
-      message: "The Lark authorization is no longer usable.",
-      retryable: false,
-    },
-  };
-  repository.inventoryRun = {
-    id: runId,
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
-    state: "FAILED_NO_CHANGE",
-    rootTokenDigest: digestFolderToken(config.organizeFolderRootToken),
-    oauthGrantId: null,
-    oauthGrantMatchesSubject: false,
-    resultCiphertext: cipher.encrypt(
-      JSON.stringify(result),
-      driveFolderInventoryResultAssociatedData(runId),
-    ),
-    proposalCiphertext: null,
-    proposalStatus: null,
-    executionCiphertext: null,
-    executionStatus: null,
-    undoStatus: null,
-  };
-  const { workflow } = createWorkflow({ repository, cipher });
-  assert.equal(
-    await workflow.buildProposalMessage(runId),
-    "The Lark authorization is no longer usable.\n\nNo files were changed.",
-  );
-});
-
-test("stores a content-aware proposal with grounded rationales", async () => {
-  const repository = new StubRepository();
-  repository.inventoryRun = readyInventoryRun();
-  const cipher = new TokenCipher(Buffer.alloc(32, 8));
-  const contentPlan = await contentPlanFixture();
-  const { workflow } = createWorkflow({ repository, cipher, contentPlan });
-
-  const message = await workflow.buildProposalMessage(runId);
-
-  assert.equal(repository.storedInput?.state, "COMPLETED");
-  assert.equal(repository.storedInput?.proposalStatus, "PROPOSED");
-  assert.match(message, /Product documentation evidence/);
-  assert.match(message, /Research evidence/);
-  assert.match(message, new RegExp(`/approve-folder ${runId}`));
-  const storedResult = JSON.parse(
-    cipher.decrypt(
-      repository.storedInput!.resultCiphertext,
-      driveFolderInventoryResultAssociatedData(runId),
-    ),
-  ) as DriveFolderInventoryResult;
-  assert.equal(storedResult.ok, true);
-  assert.equal(storedResult.ok && storedResult.inventory.run_id, runId);
-});
-
-test("stores a non-approvable result when content needs review", async () => {
-  const repository = new StubRepository();
-  repository.inventoryRun = readyInventoryRun();
-  const contentPlan = await contentPlanFixture();
-  contentPlan.decisions[0] = {
-    ...contentPlan.decisions[0]!,
-    destination: "Needs review",
-    rationale: "The evidence does not fit either approved destination.",
-  };
-  const { workflow } = createWorkflow({ repository, contentPlan });
-
-  const message = await workflow.buildProposalMessage(runId);
-
-  assert.equal(repository.storedInput?.state, "FAILED_NO_CHANGE");
-  assert.equal(repository.storedInput?.errorCode, "NEEDS_REVIEW");
-  assert.equal(repository.storedInput?.proposalStatus, null);
-  assert.match(message, /Needs review \(1 file\)/);
-  assert.doesNotMatch(message, /approve-folder/);
-  assert.match(message, /No changes have been made/);
-});
-
-test("reuses the stored proposal on a delivery retry", async () => {
-  const repository = new StubRepository();
-  const cipher = new TokenCipher(Buffer.alloc(32, 4));
-  const proposal: OrganizeFolderProposal = {
-    proposal_id: runId,
-    moves: [
-      {
-        file_ref: "f1",
-        file_identity_digest: fileIdentityDigest,
-        file_name: "[product] - One.pdf",
-        destination_ref: "d1",
-        destination_identity_digest: productIdentityDigest,
-        destination_name: "Product",
-      },
-      {
-        file_ref: "f2",
-        file_identity_digest: fileIdentityDigest,
-        file_name: "[product] - Two.pdf",
-        destination_ref: "d1",
-        destination_identity_digest: productIdentityDigest,
-        destination_name: "Product",
-      },
-      {
-        file_ref: "f3",
-        file_identity_digest: fileIdentityDigest,
-        file_name: "[research] - Three.pdf",
-        destination_ref: "d2",
-        destination_identity_digest: researchIdentityDigest,
-        destination_name: "Research",
-      },
-      {
-        file_ref: "f4",
-        file_identity_digest: fileIdentityDigest,
-        file_name: "[research] - Four.pdf",
-        destination_ref: "d2",
-        destination_identity_digest: researchIdentityDigest,
-        destination_name: "Research",
-      },
-    ],
-  };
-  repository.inventoryRun = {
-    id: runId,
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
-    state: "COMPLETED",
-    rootTokenDigest: digestFolderToken(config.organizeFolderRootToken),
-    oauthGrantId: "grant-id",
-    oauthGrantMatchesSubject: true,
-    resultCiphertext: null,
-    proposalCiphertext: cipher.encrypt(
-      JSON.stringify(proposal),
-      organizeFolderProposalAssociatedData(runId),
-    ),
-    proposalStatus: "PROPOSED",
-    executionCiphertext: null,
-    executionStatus: null,
-    undoStatus: null,
-  };
-  const { workflow } = createWorkflow({ repository, cipher });
-
-  const first = await workflow.buildProposalMessage(runId);
-  const retry = await workflow.buildProposalMessage(runId);
-  assert.equal(first, retry);
-  assert.match(first, /Product \(2 files\)/);
-  assert.match(first, /Research \(2 files\)/);
-  assert.equal(repository.storedInput, null);
-});
-
-test("records approval and rejection intent without a Drive mutation", async () => {
-  for (const decision of ["APPROVED", "REJECTED"] as const) {
-    const repository = new StubRepository();
-    repository.decisionResult = {
-      kind: "recorded",
-      status: decision,
-      executionQueued: false,
-    };
-    const { workflow } = createWorkflow({
-      repository,
-      configOverride: {
-        authorizedOpenId: "ou_victor",
-        authorizedTenantKey: "tenant_synvo",
-      },
-    });
-
-    const reply = await workflow.decideProposal({
-      proposalId: runId,
-      requesterOpenId: "ou_victor",
-      tenantKey: "tenant_synvo",
-      decision,
-    });
-    assert.equal(repository.decisionInput?.decision, decision);
-    assert.match(reply, new RegExp(decision.toLowerCase()));
-    assert.match(
-      reply,
-      /No files were moved|approval is saved|Execution is queued/,
-    );
-  }
-});
-
-test("allows only the configured pilot actor and tenant to decide", async () => {
-  const repository = new StubRepository();
-  const { workflow } = createWorkflow({
-    repository,
-    configOverride: {
-      authorizedOpenId: "ou_victor",
-      authorizedTenantKey: "tenant_synvo",
-    },
+test("returns the inline welcome-card OAuth link when the user grant is unavailable", async () => {
+  const testFixture = fixture({ grantAvailable: false });
+  const consent = await testFixture.workflow.prepareConsent({
+    ...request("om_welcome"),
+    authorizationDelivery: "inline",
   });
 
-  assert.match(
-    await workflow.decideProposal({
-      proposalId: runId,
-      requesterOpenId: "ou_other",
-      tenantKey: "tenant_synvo",
-      decision: "APPROVED",
-    }),
-    /not authorized/,
-  );
-  assert.match(
-    await workflow.decideProposal({
-      proposalId: runId,
-      requesterOpenId: "ou_victor",
-      tenantKey: "other_tenant",
-      decision: "APPROVED",
-    }),
-    /tenant is not authorized/,
-  );
-  assert.equal(repository.decisionInput, null);
+  assert.equal(consent.kind, "authorization_required");
+  if (consent.kind !== "authorization_required") return;
+  assert.equal(consent.authorizationUrl.pathname, "/oauth/lark/start");
+  assert.equal(consent.authorizationUrl.searchParams.get("request"), "test-token");
+  assert.equal(testFixture.authorizationDelivery(), "inline");
+  assert.equal(testFixture.repository.run, null);
 });
 
-test("handles duplicate, conflicting, stale, malformed, missing, and unknown decisions safely", async () => {
-  const cases: Array<{
-    result: ProposalDecisionStoreResult;
-    decision?: "APPROVED" | "REJECTED";
-    proposalId?: string;
-    expected: RegExp;
-  }> = [
-    {
-      result: {
-        kind: "existing",
-        status: "APPROVED",
-      },
-      expected: /already approved/,
-    },
-    {
-      result: {
-        kind: "existing",
-        status: "REJECTED",
-      },
-      expected: /kept the original decision/,
-    },
-    {
-      result: {
-        kind: "existing",
-        status: "STALE",
-      },
-      expected: /proposal is out of date/,
-    },
-    {
-      result: { kind: "not_found" },
-      expected: /couldn’t find that proposal/,
-    },
-    {
-      result: { kind: "not_found" },
-      proposalId: "not-a-uuid",
-      expected: /couldn’t recognize that proposal/,
-    },
-  ];
-
-  for (const testCase of cases) {
-    const repository = new StubRepository();
-    repository.decisionResult = testCase.result;
-    const { workflow } = createWorkflow({ repository });
-    const reply = await workflow.decideProposal({
-      proposalId: testCase.proposalId ?? runId,
-      requesterOpenId: "ou_victor",
-      tenantKey: "tenant_synvo",
-      decision: testCase.decision ?? "APPROVED",
-    });
-    assert.match(reply, testCase.expected);
-    assert.match(
-      reply,
-      /No files were changed|No files were moved|approval is saved|No execution was queued/,
-    );
-  }
-});
-
-test("rejects a stored proposal encrypted for another run", async () => {
-  const repository = new StubRepository();
-  const cipher = new TokenCipher(Buffer.alloc(32, 5));
-  const proposal = {
-    proposal_id: runId,
-    moves: [],
-  } satisfies OrganizeFolderProposal;
-  repository.inventoryRun = {
-    id: runId,
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
-    state: "COMPLETED",
-    rootTokenDigest: digestFolderToken(config.organizeFolderRootToken),
-    oauthGrantId: "grant-id",
-    oauthGrantMatchesSubject: true,
-    resultCiphertext: null,
-    proposalCiphertext: cipher.encrypt(
-      JSON.stringify(proposal),
-      organizeFolderProposalAssociatedData(
-        "5f982758-1f71-4ed8-b141-a2d193ceea92",
-      ),
-    ),
-    proposalStatus: "PROPOSED",
-    executionCiphertext: null,
-    executionStatus: null,
-    undoStatus: null,
-  };
-  const { workflow } = createWorkflow({ repository, cipher });
-  await assert.rejects(
-    workflow.buildProposalMessage(runId),
-    /stored organization proposal is invalid/,
-  );
-});
-
-test("queues execution only for a newly approved proposal while writes are enabled", async () => {
-  const repository = new StubRepository();
-  repository.decisionResult = {
-    kind: "recorded",
-    status: "APPROVED",
-    executionQueued: true,
-  };
-  const { workflow } = createWorkflow({
-    repository,
-    configOverride: { organizeFolderWriteEnabled: true },
+test("rejects expired consent, changed snapshots, external links, and wrong actors before providers", async (t) => {
+  await t.test("expired", async () => {
+    const testFixture = fixture();
+    assert.equal((await testFixture.workflow.start({
+      ...request(),
+      consentSnapshotDigest: "a".repeat(64),
+      consentExpiresAt: Date.now() - 1,
+    })).kind, "rejected");
   });
+  await t.test("changed", async () => {
+    const testFixture = fixture();
+    const consent = await testFixture.workflow.prepareConsent(request());
+    assert.equal(consent.kind, "ready");
+    if (consent.kind !== "ready") return;
+    testFixture.workspace.files[0]!.version = "2";
+    assert.equal((await testFixture.workflow.start({
+      ...request(),
+      consentSnapshotDigest: consent.snapshotDigest,
+      consentExpiresAt: consent.expiresAt,
+    })).kind, "rejected");
+    assert.equal(testFixture.repository.run, null);
+  });
+  await t.test("boundary", async () => {
+    const testFixture = fixture();
+    assert.equal((await testFixture.workflow.prepareConsent({
+      ...request(), folderLink: "https://example.com/drive/folder/fldcnRoot123",
+    })).kind, "rejected");
+    assert.equal((await testFixture.workflow.prepareConsent({
+      ...request(), requesterOpenId: "ou_other",
+    })).kind, "rejected");
+  });
+});
 
-  const reply = await workflow.decideProposal({
-    proposalId: runId,
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
+test("builds one dynamic proposal with complete file coverage and no writes", async () => {
+  const testFixture = fixture();
+  const { proposalId, message } = await prepareProposal(testFixture);
+  assert.match(message, /Engineering/u);
+  assert.match(message, /Research/u);
+  assert.match(message, /15 PDFs/u);
+  assert.equal(testFixture.workspace.createCalls.length, 0);
+  assert.equal(testFixture.workspace.moveCalls.length, 0);
+  const reread = await testFixture.workflow.readProposalMessage({ proposalId, chatId: "oc_chat", ...identity });
+  assert.equal(reread, message);
+});
+
+test("approval queues execution only while the operator write switch is enabled", async () => {
+  const disabled = fixture();
+  const disabledProposal = await prepareProposal(disabled);
+  assert.match(await disabled.workflow.decideProposal({
+    proposalId: disabledProposal.proposalId,
+    chatId: "oc_chat",
+    ...identity,
     decision: "APPROVED",
-  });
+  }), /paused/u);
+  assert.equal(disabled.repository.decisionInput?.executionJobId, undefined);
 
-  assert.ok(repository.decisionInput?.executionJobId);
-  assert.match(reply, /Execution is queued/);
-});
-
-test("describes a duplicate approval accurately while writes are enabled", async () => {
-  const repository = new StubRepository();
-  repository.decisionResult = {
-    kind: "existing",
-    status: "APPROVED",
-  };
-  const { workflow } = createWorkflow({
-    repository,
-    configOverride: { organizeFolderWriteEnabled: true },
-  });
-
-  const reply = await workflow.decideProposal({
-    proposalId: runId,
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
+  const enabled = fixture({ writeEnabled: true });
+  const enabledProposal = await prepareProposal(enabled);
+  assert.match(await enabled.workflow.decideProposal({
+    proposalId: enabledProposal.proposalId,
+    chatId: "oc_chat",
+    ...identity,
     decision: "APPROVED",
-  });
-
-  assert.match(reply, /approval was already recorded/);
-  assert.doesNotMatch(reply, /write switch is disabled/);
-});
-
-test("refuses execution without any Drive mutation when the write switch is disabled", async () => {
-  const fixture = await approvedExecutionFixture({ writeEnabled: false });
-
-  const reply = await fixture.workflow.buildExecutionMessage(runId);
-
-  assert.match(reply, /operator safety switch/u);
-  assert.equal(fixture.drive.moveCalls.length, 0);
-  assert.equal(fixture.repository.inventoryRun?.executionStatus, "FAILED");
-  assert.equal(fixture.drive.countFiles("fldcnRoot123"), 4);
-});
-
-test("rechecks the configured pilot boundary when queued execution runs", async () => {
-  for (const configOverride of [
-    { authorizedOpenId: "ou_other" },
-    { authorizedTenantKey: "tenant_other" },
-    { organizeFolderRootToken: "fldcnOtherRoot" },
-  ]) {
-    const fixture = await approvedExecutionFixture();
-    const { workflow } = createWorkflow({
-      repository: fixture.repository,
-      cipher: fixture.cipher,
-      driveReader: fixture.drive,
-      driveMover: fixture.drive,
-      configOverride: {
-        organizeFolderWriteEnabled: true,
-        ...configOverride,
-      },
-    });
-
-    const reply = await workflow.buildExecutionMessage(runId);
-
-    assert.match(reply, /no longer matches the approved folder/u);
-    assert.equal(fixture.drive.moveCalls.length, 0);
-    assert.equal(fixture.repository.inventoryRun?.executionStatus, "FAILED");
-  }
-});
-
-test("marks a changed snapshot stale before the first Drive mutation", async () => {
-  const fixture = await approvedExecutionFixture();
-  fixture.drive.rename("file-product-one", "changed-document.pdf");
-
-  const reply = await fixture.workflow.buildExecutionMessage(runId);
-
-  assert.match(reply, /Drive folder changed/u);
-  assert.equal(fixture.repository.staleCalls, 1);
-  assert.equal(fixture.repository.inventoryRun?.proposalStatus, "STALE");
-  assert.equal(fixture.drive.moveCalls.length, 0);
-  assert.match(
-    await fixture.workflow.buildExecutionMessage(runId),
-    /folder changed after this proposal/u,
-  );
-});
-
-test("does not execute proposed or rejected runs", async () => {
-  for (const status of ["PROPOSED", "REJECTED"] as const) {
-    const fixture = await approvedExecutionFixture();
-    fixture.repository.inventoryRun!.proposalStatus = status;
-    fixture.repository.inventoryRun!.executionStatus = null;
-
-    await assert.rejects(
-      fixture.workflow.buildExecutionMessage(runId),
-      /approved proposal is unavailable/,
-    );
-    assert.equal(fixture.drive.moveCalls.length, 0);
-  }
-});
-
-test("does not execute a missing proposal", async () => {
-  const drive = new MutablePilotDrive();
-  const { workflow } = createWorkflow({
-    configOverride: { organizeFolderWriteEnabled: true },
-    driveReader: drive,
-    driveMover: drive,
-  });
-
-  await assert.rejects(
-    workflow.buildExecutionMessage(runId),
-    /approved proposal is unavailable/,
-  );
-  assert.equal(drive.moveCalls.length, 0);
-});
-
-test("moves and verifies exactly four content-aware neutral-name files without persisting rationale as mutation input", async () => {
-  const fixture = await approvedExecutionFixture();
-
-  const first = await fixture.workflow.buildExecutionMessage(runId);
-  const retry = await fixture.workflow.buildExecutionMessage(runId);
-
-  assert.deepEqual(
-    fixture.proposal.moves.map((move) => move.file_name).sort(),
-    [...neutralFileNames].sort(),
-  );
+    operationMessageId: "om_approval_progress",
+  }), /queued/u);
+  assert.ok(enabled.repository.decisionInput?.executionJobId);
   assert.equal(
-    fixture.proposal.moves.every((move) =>
-      move.rationale?.startsWith("UNTRUSTED_RATIONALE_")),
+    await enabled.workflow.getOperationMessageId(enabledProposal.proposalId),
+    "om_approval_progress",
+  );
+});
+
+test("proposal reads and decisions are bound to the originating chat", async () => {
+  const testFixture = fixture({ writeEnabled: true });
+  const { proposalId } = await prepareProposal(testFixture);
+
+  assert.match(await testFixture.workflow.readProposalMessage({
+    proposalId,
+    chatId: "oc_other",
+    ...identity,
+  }), /couldn’t find/u);
+  assert.match(await testFixture.workflow.decideProposal({
+    proposalId,
+    chatId: "oc_other",
+    ...identity,
+    decision: "APPROVED",
+  }), /couldn’t find/u);
+  assert.equal(testFixture.repository.run?.proposalStatus, "PROPOSED");
+});
+
+test("expires an old proposal before it can queue execution", async () => {
+  const testFixture = fixture({ writeEnabled: true });
+  const { proposalId } = await prepareProposal(testFixture);
+  testFixture.repository.decisionResult = { kind: "existing", status: "STALE" };
+  const beforeDecision = Date.now();
+
+  assert.match(await testFixture.workflow.decideProposal({
+    proposalId,
+    chatId: "oc_chat",
+    ...identity,
+    decision: "APPROVED",
+  }), /out of date/u);
+  assert.ok(
+    testFixture.repository.decisionInput!.proposalNotBefore!.getTime() <= beforeDecision,
+  );
+  assert.equal(testFixture.repository.decisionInput?.executionJobId !== undefined, true);
+  assert.equal(testFixture.workspace.createCalls.length, 0);
+  assert.equal(testFixture.workspace.moveCalls.length, 0);
+});
+
+test("creates approved folders, moves and verifies all PDFs, reconciles RAG paths, then undoes", async () => {
+  const testFixture = fixture({ writeEnabled: true });
+  testFixture.workspace.createAmbiguously = true;
+  testFixture.workspace.moveAmbiguously = true;
+  const { proposalId } = await prepareProposal(testFixture);
+  await testFixture.workflow.decideProposal({ proposalId, chatId: "oc_chat", ...identity, decision: "APPROVED" });
+  const execution = await testFixture.workflow.buildExecutionMessage(proposalId);
+  assert.match(execution, /completed/iu);
+  assert.equal(testFixture.workspace.createCalls.length, 1);
+  assert.equal(testFixture.workspace.moveCalls.length, 15);
+  assert.equal(testFixture.workspace.events[0], "create:Research");
+  assert.equal(
+    testFixture.workspace.events.slice(1).every((event) => event.startsWith("move:")),
     true,
   );
-  assert.equal(first, retry);
-  assert.match(first, /Execution completed/);
-  assert.equal(fixture.drive.moveCalls.length, 4);
-  assert.equal(fixture.drive.countFiles("fldcnRoot123"), 0);
-  assert.equal(fixture.drive.countFiles("folder-product"), 2);
-  assert.equal(fixture.drive.countFiles("folder-research"), 2);
-  assert.equal(fixture.repository.inventoryRun?.executionStatus, "COMPLETED");
+  assert.equal(testFixture.workspace.files.every((file) => file.parentPath !== "Inbox"), true);
+  assert.equal(testFixture.reconciliations(), 1);
+
+  assert.match(await testFixture.workflow.requestUndo({
+    proposalId,
+    chatId: "oc_chat",
+    ...identity,
+    operationMessageId: "om_undo_progress",
+  }), /queued/u);
   assert.equal(
-    fixture.cipher.decrypt(
-      fixture.repository.inventoryRun!.executionCiphertext!,
-      executionAssociatedData(runId),
-    ).includes("UNTRUSTED_RATIONALE_"),
+    await testFixture.workflow.getOperationMessageId(proposalId),
+    "om_undo_progress",
+  );
+  const undo = await testFixture.workflow.buildUndoMessage(proposalId);
+  assert.match(undo, /completed/iu);
+  assert.equal(testFixture.workspace.files.every((file) => file.parentToken === "folder-inbox"), true);
+  assert.equal(testFixture.workspace.folders.some((folder) => folder.name === "Research"), true);
+  assert.equal(testFixture.reconciliations(), 2);
+  assert.match(
+    await testFixture.workflow.requestUndo({ proposalId, chatId: "oc_chat", ...identity }),
+    /already completed/u,
+  );
+  assert.equal(testFixture.workspace.moveCalls.length, 30);
+});
+
+test("stops once and requests fresh authorization when Lark denies folder creation scope", async () => {
+  const testFixture = fixture({ writeEnabled: true });
+  testFixture.workspace.createFailure = new DriveMoveError(
+    "REAUTHORIZATION_REQUIRED",
     false,
   );
-  assert.equal(first.includes("folder-product"), false);
-  assert.equal(first.includes("file-product-one"), false);
-});
-
-test("does not report completion when unexpected duplicate files remain in the root", async () => {
-  const fixture = await approvedExecutionFixture();
-  fixture.drive.leaveRootDuplicates = true;
-
-  const reply = await fixture.workflow.buildExecutionMessage(runId);
-
-  assert.match(reply, /Execution partial/u);
-  assert.equal(fixture.drive.countFiles("fldcnRoot123"), 4);
-  assert.equal(fixture.repository.inventoryRun?.executionStatus, "PARTIAL");
-  const stored = JSON.parse(
-    fixture.cipher.decrypt(
-      fixture.repository.inventoryRun!.executionCiphertext!,
-      executionAssociatedData(runId),
-    ),
-  ) as { errorCode?: string };
-  assert.equal(stored.errorCode, "FINAL_TARGET_MISMATCH");
-});
-
-test("reconciles a move recorded as requesting after a crash without repeating it", async () => {
-  const fixture = await approvedExecutionFixture();
-  const record = createExecutionRecord(
-    fixture.proposal,
-    fixture.observation,
-    new Date("2026-08-08T00:00:00.000Z"),
-  );
-  const firstMove = record.moves[0]!;
-  firstMove.status = "REQUESTING";
-  fixture.drive.relocate(firstMove.fileToken, firstMove.destinationFolderToken);
-  fixture.repository.inventoryRun!.executionCiphertext = fixture.cipher.encrypt(
-    JSON.stringify(record),
-    executionAssociatedData(runId),
-  );
-  fixture.repository.inventoryRun!.executionStatus = "RUNNING";
-
-  const reply = await fixture.workflow.buildExecutionMessage(runId);
-
-  assert.match(reply, /Execution completed/);
-  assert.equal(fixture.drive.moveCalls.length, 3);
-  assert.equal(
-    fixture.drive.moveCalls.some((call) => call.fileToken === firstMove.fileToken),
-    false,
-  );
-});
-
-test("does not claim an unrequested destination move as its own", async () => {
-  const fixture = await approvedExecutionFixture();
-  const record = createExecutionRecord(
-    fixture.proposal,
-    fixture.observation,
-    new Date("2026-08-08T00:00:00.000Z"),
-  );
-  const firstMove = record.moves[0]!;
-  fixture.drive.relocate(firstMove.fileToken, firstMove.destinationFolderToken);
-  fixture.repository.inventoryRun!.executionCiphertext = fixture.cipher.encrypt(
-    JSON.stringify(record),
-    executionAssociatedData(runId),
-  );
-  fixture.repository.inventoryRun!.executionStatus = "RUNNING";
-
-  const reply = await fixture.workflow.buildExecutionMessage(runId);
-
-  assert.match(reply, /Execution unknown/);
-  assert.equal(fixture.drive.moveCalls.length, 0);
-  assert.equal(fixture.repository.inventoryRun?.executionStatus, "UNKNOWN");
-});
-
-test("stops on an unexpected parent during recovery without issuing a move", async () => {
-  const fixture = await approvedExecutionFixture();
-  const record = createExecutionRecord(
-    fixture.proposal,
-    fixture.observation,
-    new Date("2026-08-08T00:00:00.000Z"),
-  );
-  const firstMove = record.moves[0]!;
-  const otherDestination = record.moves.find(
-    (move) => move.destinationFolderToken !== firstMove.destinationFolderToken,
-  )!.destinationFolderToken;
-  fixture.drive.relocate(firstMove.fileToken, otherDestination);
-  fixture.repository.inventoryRun!.executionCiphertext = fixture.cipher.encrypt(
-    JSON.stringify(record),
-    executionAssociatedData(runId),
-  );
-  fixture.repository.inventoryRun!.executionStatus = "RUNNING";
-
-  const reply = await fixture.workflow.buildExecutionMessage(runId);
-
-  assert.match(reply, /Execution unknown/);
-  assert.equal(fixture.drive.moveCalls.length, 0);
-  assert.equal(fixture.repository.inventoryRun?.executionStatus, "UNKNOWN");
-});
-
-test("reconciles an ambiguous provider response from observed Drive state", async () => {
-  const fixture = await approvedExecutionFixture();
-  fixture.drive.failure = {
-    call: 1,
-    error: new DriveMoveError("TEMPORARY", true),
-    moveBeforeThrow: true,
-  };
-
-  const reply = await fixture.workflow.buildExecutionMessage(runId);
-
-  assert.match(reply, /Execution completed/);
-  assert.equal(fixture.drive.moveCalls.length, 4);
-  assert.equal(fixture.repository.inventoryRun?.executionStatus, "COMPLETED");
-});
-
-test("reports unknown and never repeats a successful response that cannot be observed", async () => {
-  const fixture = await approvedExecutionFixture();
-  fixture.drive.skipMoveOnCall = 1;
-
-  const first = await fixture.workflow.buildExecutionMessage(runId);
-  const retry = await fixture.workflow.buildExecutionMessage(runId);
-
-  assert.equal(first, retry);
-  assert.match(first, /Execution unknown/);
-  assert.match(first, /untouched/);
-  assert.equal(fixture.drive.moveCalls.length, 1);
-  assert.equal(fixture.repository.inventoryRun?.executionStatus, "UNKNOWN");
-  assert.equal(fixture.drive.countFiles("fldcnRoot123"), 4);
-});
-
-test("marks only an in-flight request unknown when worker attempts are exhausted", async () => {
-  const fixture = await approvedExecutionFixture();
-  const record = createExecutionRecord(
-    fixture.proposal,
-    fixture.observation,
-    new Date("2026-08-08T00:00:00.000Z"),
-  );
-  record.moves[0]!.status = "REQUESTING";
-  fixture.repository.inventoryRun!.executionCiphertext = fixture.cipher.encrypt(
-    JSON.stringify(record),
-    executionAssociatedData(runId),
-  );
-  fixture.repository.inventoryRun!.executionStatus = "RUNNING";
-
-  const reply = await fixture.workflow.finalizeExhaustedOperation(
-    runId,
-    "ORGANIZE_FOLDER_EXECUTE",
-  );
-
-  assert.match(reply, /Execution unknown/);
-  assert.match(reply, /unknown/);
-  assert.match(reply, /untouched/);
-  assert.equal(fixture.drive.moveCalls.length, 0);
-});
-
-test("stops after a verified partial execution and reports untouched files", async () => {
-  const fixture = await approvedExecutionFixture();
-  fixture.drive.failure = {
-    call: 2,
-    error: new DriveMoveError("FORBIDDEN", false),
-  };
-
-  const reply = await fixture.workflow.buildExecutionMessage(runId);
-
-  assert.match(reply, /Execution partial/);
-  assert.match(reply, /failed/);
-  assert.match(reply, /untouched/);
-  assert.equal(fixture.drive.moveCalls.length, 2);
-  assert.equal(fixture.repository.inventoryRun?.executionStatus, "PARTIAL");
-  assert.equal(fixture.drive.countFiles("fldcnRoot123"), 3);
-});
-
-test("requires a separate undo command, restores the exact baseline, and is idempotent", async () => {
-  const fixture = await approvedExecutionFixture();
-  await fixture.workflow.buildExecutionMessage(runId);
-  const callsAfterExecution = fixture.drive.moveCalls.length;
-
-  const queued = await fixture.workflow.requestUndo({
-    proposalId: runId,
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
-  });
-  assert.match(queued, /Undo is queued/);
-  assert.equal(fixture.drive.moveCalls.length, callsAfterExecution);
-
-  const first = await fixture.workflow.buildUndoMessage(runId);
-  const retry = await fixture.workflow.buildUndoMessage(runId);
-  const duplicateRequest = await fixture.workflow.requestUndo({
-    proposalId: runId,
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
+  const { proposalId } = await prepareProposal(testFixture);
+  await testFixture.workflow.decideProposal({
+    proposalId,
+    chatId: "oc_chat",
+    ...identity,
+    decision: "APPROVED",
   });
 
-  assert.equal(first, retry);
-  assert.match(first, /Undo completed/);
-  assert.match(duplicateRequest, /already completed/);
-  assert.equal(fixture.drive.moveCalls.length, 8);
-  assert.equal(fixture.drive.countFiles("fldcnRoot123"), 4);
-  assert.equal(fixture.drive.countFiles("folder-product"), 0);
-  assert.equal(fixture.drive.countFiles("folder-research"), 0);
-  assert.equal(fixture.repository.inventoryRun?.undoStatus, "COMPLETED");
+  const execution = await testFixture.workflow.buildExecutionMessage(proposalId);
+
+  assert.match(execution, /fresh authorization/iu);
+  assert.equal(testFixture.workspace.createCalls.length, 1);
+  assert.equal(testFixture.workspace.moveCalls.length, 0);
+  assert.equal(testFixture.recoveredTokens(), 0);
+  assert.equal(testFixture.rejectedTokens(), 0);
+  assert.equal(testFixture.repository.run?.executionStatus, "FAILED");
 });
 
-test("rechecks the configured pilot boundary when queued undo runs", async () => {
-  const fixture = await approvedExecutionFixture();
-  await fixture.workflow.buildExecutionMessage(runId);
-  await fixture.workflow.requestUndo({
-    proposalId: runId,
-    requesterOpenId: "ou_victor",
-    tenantKey: "tenant_synvo",
+test("stops on a top-level folder-name collision before creating or moving anything", async () => {
+  const testFixture = fixture({ writeEnabled: true });
+  const { proposalId } = await prepareProposal(testFixture);
+  await testFixture.workflow.decideProposal({
+    proposalId,
+    chatId: "oc_chat",
+    ...identity,
+    decision: "APPROVED",
   });
-  const callsAfterExecution = fixture.drive.moveCalls.length;
-  const { workflow } = createWorkflow({
-    repository: fixture.repository,
-    cipher: fixture.cipher,
-    driveReader: fixture.drive,
-    driveMover: fixture.drive,
-    configOverride: {
-      organizeFolderWriteEnabled: true,
-      organizeFolderRootToken: "fldcnOtherRoot",
-    },
-  });
+  testFixture.workspace.collisionAfterInspections = 2;
 
-  const reply = await workflow.buildUndoMessage(runId);
-
-  assert.match(reply, /no longer matches the approved folder/u);
-  assert.equal(fixture.drive.moveCalls.length, callsAfterExecution);
-  assert.equal(fixture.repository.inventoryRun?.undoStatus, "FAILED");
+  assert.match(await testFixture.workflow.buildExecutionMessage(proposalId), /stopped/u);
+  assert.equal(testFixture.workspace.createCalls.length, 0);
+  assert.equal(testFixture.workspace.moveCalls.length, 0);
+  assert.equal(testFixture.repository.run?.executionStatus, "UNKNOWN");
 });
 
-test("rejects undo from another actor or tenant before queueing or moving files", async () => {
-  const fixture = await approvedExecutionFixture();
-  await fixture.workflow.buildExecutionMessage(runId);
-  const callsAfterExecution = fixture.drive.moveCalls.length;
+test("records verified partial work after an unambiguous provider failure", async () => {
+  const testFixture = fixture({ writeEnabled: true });
+  const { proposalId } = await prepareProposal(testFixture);
+  await testFixture.workflow.decideProposal({ proposalId, chatId: "oc_chat", ...identity, decision: "APPROVED" });
+  testFixture.workspace.failMoveCallNumber = 2;
 
-  for (const requester of [
-    { requesterOpenId: "ou_other", tenantKey: "tenant_synvo" },
-    { requesterOpenId: "ou_victor", tenantKey: "tenant_other" },
-  ]) {
-    const reply = await fixture.workflow.requestUndo({
-      proposalId: runId,
-      ...requester,
-    });
-    assert.match(reply, /not authorized/);
-  }
-  assert.equal(fixture.drive.moveCalls.length, callsAfterExecution);
-  assert.equal(fixture.repository.inventoryRun?.undoStatus, null);
+  const result = await testFixture.workflow.buildExecutionMessage(proposalId);
+  assert.match(result, /stopped/iu);
+  assert.match(result, /Moved and verified: 1 files/u);
+  assert.equal(testFixture.repository.run?.executionStatus, "PARTIAL");
+  assert.equal(testFixture.workspace.moveCalls.length, 2);
+  assert.equal(testFixture.workspace.files[0]!.parentPath, "Engineering");
+  assert.equal(testFixture.workspace.files[1]!.parentPath, "Inbox");
+
+  const repeated = await testFixture.workflow.buildExecutionMessage(proposalId);
+  assert.equal(repeated, result);
+  assert.equal(testFixture.workspace.moveCalls.length, 2);
+});
+
+test("resumes safely after an interruption without repeating an applied move", async () => {
+  const testFixture = fixture({ writeEnabled: true });
+  const { proposalId } = await prepareProposal(testFixture);
+  await testFixture.workflow.decideProposal({ proposalId, chatId: "oc_chat", ...identity, decision: "APPROVED" });
+  testFixture.workspace.interruptAfterFirstMoveObservation = true;
+
+  await assert.rejects(
+    testFixture.workflow.buildExecutionMessage(proposalId),
+    /Simulated process interruption/u,
+  );
+  assert.equal(testFixture.workspace.moveCalls.length, 1);
+  assert.equal(testFixture.workspace.files[0]!.parentPath, "Engineering");
+  assert.equal(testFixture.repository.run?.executionStatus, "RUNNING");
+
+  const resumed = await testFixture.workflow.buildExecutionMessage(proposalId);
+  assert.match(resumed, /completed/iu);
+  assert.equal(testFixture.workspace.moveCalls.length, 15);
+  assert.equal(testFixture.workspace.files.every((file) => file.parentPath !== "Inbox"), true);
+  assert.equal(testFixture.repository.run?.executionStatus, "COMPLETED");
+});
+
+test("revalidates the approved snapshot immediately before writes and marks drift stale", async () => {
+  const testFixture = fixture({ writeEnabled: true });
+  const { proposalId } = await prepareProposal(testFixture);
+  await testFixture.workflow.decideProposal({ proposalId, chatId: "oc_chat", ...identity, decision: "APPROVED" });
+  testFixture.workspace.files[0]!.version = "changed";
+  assert.match(await testFixture.workflow.buildExecutionMessage(proposalId), /changed/u);
+  assert.equal(testFixture.repository.staleCalls, 1);
+  assert.equal(testFixture.workspace.createCalls.length, 0);
+  assert.equal(testFixture.workspace.moveCalls.length, 0);
+});
+
+test("rejecting a proposal is idempotent and never changes Drive", async () => {
+  const testFixture = fixture({ writeEnabled: true });
+  const { proposalId } = await prepareProposal(testFixture);
+  const first = await testFixture.workflow.decideProposal({
+    proposalId, chatId: "oc_chat", ...identity, decision: "REJECTED",
+  });
+  testFixture.repository.decisionResult = { kind: "existing", status: "REJECTED" };
+  const second = await testFixture.workflow.decideProposal({
+    proposalId, chatId: "oc_chat", ...identity, decision: "REJECTED",
+  });
+  assert.match(first, /No files or folders were changed/u);
+  assert.match(second, /already rejected/u);
+  assert.equal(testFixture.workspace.createCalls.length, 0);
+  assert.equal(testFixture.workspace.moveCalls.length, 0);
+});
+
+test("read-only inventory remains available without provider calls or mutations", async () => {
+  const testFixture = fixture();
+  const result = await testFixture.workflow.readInventory({ ...identity, folderLink });
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.inventory.files.length, 15);
+  assert.equal(testFixture.workspace.createCalls.length, 0);
+  assert.equal(testFixture.workspace.moveCalls.length, 0);
+  assert.equal(digestFolderToken(rootToken).length, 64);
 });

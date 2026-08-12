@@ -81,6 +81,9 @@ class FakeRepository {
   async listSources() { return this.sources; }
   async deleteSource(_scope: unknown, kind: string, key: string) {
     this.deletions.push({ kind, key });
+    this.sources = this.sources.filter(
+      (source) => source.sourceKind !== kind || source.sourceKey !== key,
+    );
     return true;
   }
   async updateSourceName(input: {
@@ -112,6 +115,18 @@ class FakeRepository {
       minimumSimilarity: input.minimumSimilarity,
     });
     return this.hits;
+  }
+  async listRepresentativeEvidence(input: { sourceKeys: string[] }) {
+    return input.sourceKeys.map((sourceKey) => {
+      const source = this.sources.find((candidate) => candidate.sourceKey === sourceKey);
+      return {
+        sourceKey,
+        sourceName: source?.sourceName ?? `${sourceKey}.pdf`,
+        sourceVersionOrHash: source?.sourceVersionOrHash ?? "1",
+        pageNumber: 1,
+        text: `Evidence for ${sourceKey}`,
+      };
+    });
   }
 }
 
@@ -145,6 +160,14 @@ function makeWorkflow(options: {
   observeDocuments?: (texts: string[]) => void;
   observeEvidence?: (evidence: Array<{ label: string; text: string }>) => void;
   answerCitations?: string[];
+  driveDeleteEnabled?: boolean;
+  onDeleteDriveFile?: (input: {
+    requesterOpenId: string;
+    tenantKey: string;
+    fileToken: string;
+    expectedName: string;
+    expectedVersion: string;
+  }) => void;
 } = {}) {
   const repository = options.repository ?? new FakeRepository();
   const queue = options.queue ?? new FakeQueue();
@@ -171,6 +194,20 @@ function makeWorkflow(options: {
       },
     },
     driveReader: {
+      async inspectWorkspace() {
+        return {
+          rootToken: "fldcnRoot123",
+          folders: [],
+          files: driveFiles.map((file) => ({
+            ...file,
+            fileName: file.name,
+            relativePath: file.name,
+            parentToken: "fldcnRoot123",
+            parentPath: "",
+            depth: 1,
+          })),
+        };
+      },
       async listKnowledgeFiles() {
         driveListCalls += 1;
         const response = options.driveFileResponses?.[driveListCalls - 1];
@@ -191,6 +228,9 @@ function makeWorkflow(options: {
         }
         return { ...file, bytes: Buffer.from("pdf") };
       },
+      async deleteKnowledgeFile(input) {
+        options.onDeleteDriveFile?.(input);
+      },
     },
     answerer: {
       async answerGrounded(input) {
@@ -209,6 +249,7 @@ function makeWorkflow(options: {
       workspaceFolderToken: "fldcnRoot123",
     },
     verifyWorkspace: options.verifyWorkspace ?? (async () => true),
+    driveDeleteEnabled: options.driveDeleteEnabled,
     now: () => new Date("2026-08-11T00:00:00Z"),
     extractPdf: async () => ({
       text: "Architecture evidence.",
@@ -285,6 +326,133 @@ test("queues only encrypted attachment identity and indexes after consent", asyn
   assert.deepEqual(repository.deletions, [
     { kind: "chat_attachment", key: "om_source" },
   ]);
+});
+
+test("deletes one exactly approved Drive PDF before purging its knowledge", async () => {
+  const repository = new FakeRepository();
+  repository.sources = [{
+    sourceKind: "drive_file",
+    sourceKey: "file_finance",
+    sourceName: "Finance / Q2 Summary.pdf",
+    sourceVersionOrHash: "v2",
+  }];
+  const observedDeletions: Array<{
+    requesterOpenId: string;
+    tenantKey: string;
+    fileToken: string;
+    expectedName: string;
+    expectedVersion: string;
+  }> = [];
+  const { workflow, queue, messenger } = makeWorkflow({
+    repository,
+    driveDeleteEnabled: true,
+    driveFiles: [{
+      token: "file_finance",
+      name: "Finance / Q2 Summary.pdf",
+      version: "v2",
+    }],
+    onDeleteDriveFile: (input) => observedDeletions.push(input),
+  });
+
+  const proposal = await workflow.proposeSourceRemoval(
+    "Please delete Q2 Summary.pdf from Synvo_Wiki",
+  );
+  assert.equal(proposal.kind, "drive_delete");
+  if (proposal.kind !== "drive_delete") throw new Error("expected Drive deletion");
+  const enqueued = await workflow.enqueueDriveSourceDeletion({
+    sourceReference: proposal.sourceReference,
+    cardMessageId: "om_delete_card",
+    chatId: "oc_chat",
+  });
+  assert.equal(enqueued.queued, true);
+  const input = queue.inputs[0]!;
+  const job = queuedJob(input);
+  await workflow.process(
+    job,
+    decryptDeliveryMessage(cipher, job.id, input.payloadCiphertext!),
+    async () => true,
+    false,
+  );
+
+  assert.deepEqual(observedDeletions, [{
+    requesterOpenId: "ou_victor",
+    tenantKey: "tenant_synvo",
+    fileToken: "file_finance",
+    expectedName: "Finance / Q2 Summary.pdf",
+    expectedVersion: "v2",
+  }]);
+  assert.deepEqual(repository.deletions, [
+    { kind: "drive_file", key: "file_finance" },
+  ]);
+  assert.equal(messenger.updates.at(-1)?.stage, "deleted");
+});
+
+test("does not delete a Drive PDF when its approved knowledge source no longer exists", async () => {
+  const repository = new FakeRepository();
+  repository.sources = [
+    {
+      sourceKind: "drive_file",
+      sourceKey: "file-1",
+      sourceName: "document.pdf",
+      sourceVersionOrHash: "1700000000",
+    },
+  ];
+  const deletedDriveFiles: string[] = [];
+  const { workflow, queue, messenger } = makeWorkflow({
+    repository,
+    driveDeleteEnabled: true,
+    onDeleteDriveFile: (input) => deletedDriveFiles.push(input.fileToken),
+  });
+  const proposal = await workflow.proposeSourceRemoval(
+    "Please remove document.pdf from the knowledge base",
+  );
+  assert.equal(proposal.kind, "drive_delete");
+  if (proposal.kind !== "drive_delete") {
+    return;
+  }
+  repository.sources.length = 0;
+  await workflow.enqueueDriveSourceDeletion({
+    sourceReference: proposal.sourceReference,
+    cardMessageId: "card-1",
+    chatId: "chat-1",
+  });
+  const input = queue.inputs[0]!;
+  const job = queuedJob(input);
+
+  await workflow.process(
+    job,
+    decryptDeliveryMessage(cipher, job.id, input.payloadCiphertext!),
+    async () => true,
+    true,
+  );
+
+  assert.equal(deletedDriveFiles.length, 0);
+  assert.match(messenger.updates.at(-1)?.message ?? "", /couldn’t verify/u);
+});
+
+test("does not queue Drive deletion while the operator write switch is disabled", async () => {
+  const repository = new FakeRepository();
+  repository.sources = [{
+    sourceKind: "drive_file",
+    sourceKey: "file_finance",
+    sourceName: "Finance / Q2 Summary.pdf",
+    sourceVersionOrHash: "v2",
+  }];
+  const { workflow } = makeWorkflow({ repository });
+  const proposal = await workflow.proposeSourceRemoval(
+    "Remove Finance / Q2 Summary.pdf",
+  );
+  assert.equal(proposal.kind, "drive_delete");
+  if (proposal.kind !== "drive_delete") throw new Error("expected Drive deletion");
+  assert.equal(proposal.driveDeleteEnabled, false);
+  await assert.rejects(
+    workflow.enqueueDriveSourceDeletion({
+      sourceReference: proposal.sourceReference,
+      cardMessageId: "om_delete_card",
+      chatId: "oc_chat",
+    }),
+    /Drive deletion is disabled/u,
+  );
 });
 
 test("does not ingest an attachment after active workspace verification is lost", async () => {

@@ -215,7 +215,7 @@ export class AnalyzeDriveFileWorkflow {
     requesterOpenId: string;
     tenantKey: string;
     folderLink: string;
-    fileName: string;
+    relativePath: string;
   }): Promise<AnalyzeDriveFileResult> {
     if (
       input.requesterOpenId !== this.#requesterOpenId ||
@@ -233,23 +233,32 @@ export class AnalyzeDriveFileWorkflow {
     try {
       const folderToken = parseLarkDriveFolderLink(input.folderLink);
       requireAllowlistedRoot(folderToken, this.#rootToken);
-      const items = await this.#pdfReader.listRootItems(input);
-      const matches = items.filter((item) => item.name === input.fileName);
+      const inventory = await this.#pdfReader.inspectWorkspace(input);
+      const matches = inventory.files.filter(
+        (file) => file.relativePath === input.relativePath,
+      );
       if (matches.length === 0) {
         throw driveToolError(
           "INVALID_FILE_LINK",
-          "No file with that exact name exists in the approved folder root.",
+          "No PDF with that exact path exists in the approved workspace.",
         );
       }
       if (matches.length > 1) {
         throw driveToolError(
           "INVALID_FILE_LINK",
-          "More than one root item has that exact name; select an unambiguous PDF.",
+          "More than one PDF has that exact path; select an unambiguous PDF.",
         );
       }
+      const file = matches[0]!;
+      const downloaded = await this.#pdfReader.readKnowledgeFile({
+        ...input,
+        fileToken: file.token,
+        expectedVersion: file.version,
+        expectedName: file.relativePath,
+      });
       return {
         ok: true,
-        analysis: await this.#analyzeResolvedFile(matches[0]),
+        analysis: await this.#analyzePdfBytes(file.fileName, downloaded.bytes),
       };
     } catch (error) {
       const safeMessage = safeDriveFailureMessage(error);
@@ -338,14 +347,22 @@ export class AnalyzeDriveFileWorkflow {
       tenantKey: this.#tenantKey,
       file,
     });
+    return this.#analyzePdfBytes(file.name, bytes, beforeModelCall);
+  }
+
+  async #analyzePdfBytes(
+    fileName: string,
+    bytes: Buffer,
+    beforeModelCall?: () => Promise<void>,
+  ): Promise<Extract<AnalyzeDriveFileResult, { ok: true }>["analysis"]> {
     const pdf = await this.#extractPdf(bytes);
     await beforeModelCall?.();
     const analysis = await this.#analyzer.analyze({
-      filename: file.name,
+      filename: fileName,
       text: pdf.text,
     });
     return {
-      filename: file.name,
+      filename: fileName,
       page_count: pdf.pageCount,
       text: analysis.text,
       input_truncated: pdf.truncated,

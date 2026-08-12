@@ -8,14 +8,17 @@ export const LARK_USER_INFO_URL =
   "https://open.larksuite.com/open-apis/authen/v1/user_info";
 
 export const ORGANIZE_FOLDER_USER_SCOPES = [
+  "drive:drive",
   "drive:drive.metadata:readonly",
   "drive:file:download",
   "offline_access",
   "space:document:retrieve",
+  "space:document:delete",
   "space:document:move",
+  "space:folder:create",
 ] as const;
 
-export const ORGANIZE_FOLDER_SCOPE_PROFILE = "phase7_drive_pdf";
+export const ORGANIZE_FOLDER_SCOPE_PROFILE = "phase15_workspace_organizer";
 
 export type LarkTokenResponse = {
   accessToken: string;

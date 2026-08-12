@@ -29,6 +29,14 @@ export type KnowledgeSearchHit = {
   text: string;
 };
 
+export type KnowledgeRepresentativeEvidence = {
+  sourceKey: string;
+  sourceName: string;
+  sourceVersionOrHash: string;
+  pageNumber: number;
+  text: string;
+};
+
 function vectorLiteral(embedding: number[]): string {
   return `[${embedding.join(",")}]`;
 }
@@ -215,6 +223,56 @@ export class KnowledgeRepository {
     );
     return result.rows.map((row) => ({
       sourceName: row.source_name,
+      pageNumber: row.page_number,
+      text: row.chunk_text,
+    }));
+  }
+
+  async listRepresentativeEvidence(input: {
+    scope: KnowledgeScope;
+    sourceKeys: string[];
+    chunksPerSource: number;
+  }): Promise<KnowledgeRepresentativeEvidence[]> {
+    if (input.sourceKeys.length === 0) {
+      return [];
+    }
+    const result = await this.#pool.query<{
+      source_key: string;
+      source_name: string;
+      source_version_or_hash: string;
+      page_number: number;
+      chunk_text: string;
+    }>(
+      `SELECT source_key, source_name, source_version_or_hash,
+              page_number, chunk_text
+         FROM (
+           SELECT source_key, source_name, source_version_or_hash,
+                  page_number, chunk_index, chunk_text,
+                  row_number() OVER (
+                    PARTITION BY source_key
+                    ORDER BY page_number, chunk_index
+                  ) AS source_rank
+             FROM workspace_chunks
+            WHERE tenant_key = $1
+              AND user_open_id = $2
+              AND workspace_folder_token = $3
+              AND source_kind = 'drive_file'
+              AND source_key = ANY($4::text[])
+         ) AS ranked
+        WHERE source_rank <= $5
+        ORDER BY source_name, source_key, page_number, chunk_index`,
+      [
+        input.scope.tenantKey,
+        input.scope.userOpenId,
+        input.scope.workspaceFolderToken,
+        input.sourceKeys,
+        input.chunksPerSource,
+      ],
+    );
+    return result.rows.map((row) => ({
+      sourceKey: row.source_key,
+      sourceName: row.source_name,
+      sourceVersionOrHash: row.source_version_or_hash,
       pageNumber: row.page_number,
       text: row.chunk_text,
     }));

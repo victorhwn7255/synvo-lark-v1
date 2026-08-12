@@ -25,7 +25,10 @@ import type {
   OAuthSession,
   OrganizeFolderRepository,
 } from "./repository.js";
-import { LarkOAuthService } from "./authorization.js";
+import {
+  LarkOAuthService,
+  WORKSPACE_AUTHORIZATION_COMPLETE_MESSAGE,
+} from "./authorization.js";
 
 class MemoryGrantStore implements OAuthGrantStore {
   grant: StoredOAuthGrant | null = null;
@@ -62,6 +65,8 @@ class MemoryOrganizeFolderRepository implements OrganizeFolderRepository {
   boundGrantId: string | null = null;
   deliveryJobId: string | null = null;
   authorizationMessageCiphertext: string | null = null;
+  completionMessageCiphertext: string | null = null;
+  completionJobId: string | null = null;
 
   async hasRunForMessage(): Promise<boolean> { return false; }
 
@@ -71,19 +76,9 @@ class MemoryOrganizeFolderRepository implements OrganizeFolderRepository {
     return true;
   }
 
-  async createAwaitingOAuthRun(input: {
-    runId: string;
-    sessionId: string;
-    chatId: string;
-    requesterOpenId: string;
-    tenantKey: string;
-    requestTokenDigest: string;
-    redirectUri: string;
-    requestedScopes: string[];
-    expiresAt: Date;
-    deliveryJobId: string;
-    authorizationMessageCiphertext: string;
-  }): Promise<boolean> {
+  async createAwaitingOAuthRun(
+    input: Parameters<OrganizeFolderRepository["createAwaitingOAuthRun"]>[0],
+  ): Promise<boolean> {
     this.session = {
       runId: input.runId,
       requestTokenDigest: input.requestTokenDigest,
@@ -134,8 +129,15 @@ class MemoryOrganizeFolderRepository implements OrganizeFolderRepository {
     return structuredClone(this.session);
   }
 
-  async bindGrantToRun(_runId: string, grantId: string): Promise<void> {
+  async bindGrantToRun(
+    _runId: string,
+    grantId: string,
+    deliveryJobId: string,
+    completionMessageCiphertext: string,
+  ): Promise<void> {
     this.boundGrantId = grantId;
+    this.completionJobId = deliveryJobId;
+    this.completionMessageCiphertext = completionMessageCiphertext;
   }
 
   async markRunFailed(_runId: string, errorCode: string): Promise<void> {
@@ -230,7 +232,7 @@ async function startAuthorization(fixture: ReturnType<typeof createFixture>) {
     tenantKey: "tenant_synvo",
     rootTokenDigest: "root-digest",
   });
-  assert.equal(created, true);
+  assert.equal(created.created, true);
   const requestToken = pendingStartUrl(fixture).searchParams.get("request");
   assert.ok(requestToken);
   const authorizationUrl = await fixture.service.beginAuthorization(requestToken);
@@ -238,6 +240,28 @@ async function startAuthorization(fixture: ReturnType<typeof createFixture>) {
   assert.ok(state);
   return { authorizationUrl, state };
 }
+
+test("creates an inline one-time OAuth link without queuing a duplicate message", async () => {
+  const fixture = createFixture();
+  const created = await fixture.service.createPendingAuthorization({
+    messageId: "om_welcome",
+    chatId: "oc_chat",
+    requesterOpenId: "ou_victor",
+    tenantKey: "tenant_synvo",
+    rootTokenDigest: "root-digest",
+    delivery: "inline",
+  });
+
+  assert.equal(created.created, true);
+  assert.equal(created.startUrl.pathname, "/oauth/lark/start");
+  assert.equal(fixture.repository.deliveryJobId, null);
+  assert.equal(fixture.repository.authorizationMessageCiphertext, null);
+
+  const requestToken = created.startUrl.searchParams.get("request");
+  assert.ok(requestToken);
+  const authorizationUrl = await fixture.service.beginAuthorization(requestToken);
+  assert.equal(authorizationUrl.searchParams.get("code_challenge_method"), "S256");
+});
 
 test("binds a single-use PKCE OAuth grant to the initiating actor and tenant", async () => {
   const fixture = createFixture();
@@ -251,6 +275,16 @@ test("binds a single-use PKCE OAuth grant to the initiating actor and tenant", a
 
   assert.ok(fixture.oauthClient.exchangedVerifier.length >= 43);
   assert.equal(fixture.repository.boundGrantId, fixture.grantStore.grant?.id);
+  assert.ok(fixture.repository.completionJobId);
+  assert.ok(fixture.repository.completionMessageCiphertext);
+  assert.equal(
+    decryptDeliveryMessage(
+      fixture.cipher,
+      fixture.repository.completionJobId,
+      fixture.repository.completionMessageCiphertext,
+    ),
+    WORKSPACE_AUTHORIZATION_COMPLETE_MESSAGE,
+  );
   const serializedGrant = JSON.stringify(fixture.grantStore.grant);
   assert.equal(serializedGrant.includes("access-secret"), false);
   assert.equal(serializedGrant.includes("refresh-secret"), false);
@@ -282,7 +316,7 @@ test("rejects expired OAuth start and callback sessions", async () => {
     tenantKey: "tenant_synvo",
     rootTokenDigest: "root-digest",
   });
-  assert.equal(created, true);
+  assert.equal(created.created, true);
   assert.ok(expiredStart.repository.session);
   expiredStart.repository.session.expiresAt = new Date(
     "2026-08-07T00:00:00.000Z",
@@ -317,7 +351,7 @@ test("rejects a persisted redirect mismatch before building authorization", asyn
     tenantKey: "tenant_synvo",
     rootTokenDigest: "root-digest",
   });
-  assert.equal(created, true);
+  assert.equal(created.created, true);
   assert.ok(fixture.repository.session);
   fixture.repository.session.redirectUri = "https://attacker.example/callback";
   const requestToken = pendingStartUrl(fixture).searchParams.get("request");
@@ -450,9 +484,8 @@ test("rejects a grant missing offline access", async () => {
 
 test("rejects callback tokens with any scope outside the Drive PDF policy", async (t) => {
   for (const extraScope of [
-    "drive:drive",
     "docx:document",
-    "space:document:delete",
+    "space:document:shortcut",
   ]) {
     await t.test(extraScope, async () => {
       const fixture = createFixture();

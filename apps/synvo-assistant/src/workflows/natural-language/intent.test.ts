@@ -10,8 +10,9 @@ function classifier(
     | "help"
     | "current_workspace"
     | "refresh_workspace"
+    | "remove_knowledge_source"
     | "ask_workspace"
-    | "organize_folder"
+    | "organize_workspace"
     | "analyze_drive_file"
     | "unknown",
   calls: string[] = [],
@@ -27,6 +28,18 @@ function classifier(
     },
   };
 }
+
+test("recognizes an explicit natural-language source deletion request", async () => {
+  const calls: string[] = [];
+  const text = "Please delete finance-q2-2026-summary.pdf from the workspace";
+  const result = await understandNaturalLanguage(
+    { text },
+    classifier("remove_knowledge_source", calls),
+  );
+
+  assert.equal(result.intent, "remove_knowledge_source");
+  assert.deepEqual(calls, [text]);
+});
 
 for (const text of [
   "Hello",
@@ -77,10 +90,10 @@ test("gives an actionable organize request precedence over its greeting", async 
   const calls: string[] = [];
   const result = await understandNaturalLanguage(
     { text: "Hello, could you organize my messy folder?" },
-    classifier("organize_folder", calls, "active_workspace"),
+    classifier("organize_workspace", calls, "active_workspace"),
   );
 
-  assert.equal(result.intent, "organize_folder");
+  assert.equal(result.intent, "organize_workspace");
   assert.equal(result.folder_reference, "active_workspace");
   assert.deepEqual(calls, ["Hello, could you organize my messy folder?"]);
 });
@@ -119,9 +132,9 @@ for (const text of [
   test(`recognizes a natural folder request: ${text}`, async () => {
     const result = await understandNaturalLanguage(
       { text },
-      classifier("organize_folder", [], "active_workspace"),
+      classifier("organize_workspace", [], "active_workspace"),
     );
-    assert.equal(result.intent, "organize_folder");
+    assert.equal(result.intent, "organize_workspace");
     assert.equal(result.folder_reference, "active_workspace");
   });
 }
@@ -170,10 +183,10 @@ test("removes links, mentions, controls, and Lark identifiers before NVIDIA", as
       text: `@_user_1 Could you handle this? ${folderLink}, om_privateNativeId XtyXfTy1vli5YYd3dIclpdMDg1f\u0000`,
       mentionKeys: ["@_user_1"],
     },
-    classifier("organize_folder", calls, "active_workspace"),
+    classifier("organize_workspace", calls, "active_workspace"),
   );
 
-  assert.equal(result.intent, "organize_folder");
+  assert.equal(result.intent, "organize_workspace");
   assert.deepEqual(result.links, [folderLink]);
   assert.deepEqual(calls, ["Could you handle this?"]);
 });
@@ -251,14 +264,14 @@ test("fails safely when NVIDIA is unavailable", async () => {
 test("uses the bounded semantic folder reference instead of phrase matching", async () => {
   const named = await understandNaturalLanguage(
     { text: "Please organize the Finance folder" },
-    classifier("organize_folder", [], "named_or_other_folder"),
+    classifier("organize_workspace", [], "named_or_other_folder"),
   );
   const generic = await understandNaturalLanguage(
     { text: "Please straighten out the workspace we are using" },
-    classifier("organize_folder", [], "active_workspace"),
+    classifier("organize_workspace", [], "active_workspace"),
   );
 
-  assert.equal(named.intent, "organize_folder");
+  assert.equal(named.intent, "organize_workspace");
   assert.equal(named.folder_reference, "named_or_other_folder");
   assert.equal(generic.folder_reference, "active_workspace");
 });
@@ -267,7 +280,7 @@ test("does not call NVIDIA for an overlong request", async () => {
   const calls: string[] = [];
   const result = await understandNaturalLanguage(
     { text: "x".repeat(601) },
-    classifier("organize_folder", calls),
+    classifier("organize_workspace", calls),
   );
 
   assert.equal(result.intent, "unknown");

@@ -45,7 +45,7 @@ function assertExactScopes(
   if (!hasExactScopes(grantedScopes, expectedScopes)) {
     throw new LarkAuthError(
       "WRONG_SCOPE",
-      "The Lark authorization scope set does not match the read-only policy.",
+      "The Lark authorization scope set does not match the approved Drive workflow.",
     );
   }
 }

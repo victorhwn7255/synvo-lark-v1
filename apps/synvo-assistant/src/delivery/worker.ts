@@ -29,6 +29,7 @@ type DeliveryWorkerOptions = {
     chatId: string,
     text: string,
     idempotencyKey: string,
+    operation?: Pick<DeliveryJob, "kind" | "runId">,
   ) => Promise<void>;
   handleAnalyzeAttachment?: StatefulDeliveryHandler;
   handleAnalyzeDriveFile?: StatefulDeliveryHandler;
@@ -60,6 +61,7 @@ export class DeliveryWorker {
     chatId: string,
     text: string,
     idempotencyKey: string,
+    operation?: Pick<DeliveryJob, "kind" | "runId">,
   ) => Promise<void>;
   readonly #handleAnalyzeAttachment?: DeliveryWorkerOptions["handleAnalyzeAttachment"];
   readonly #handleAnalyzeDriveFile?: DeliveryWorkerOptions["handleAnalyzeDriveFile"];
@@ -161,7 +163,7 @@ export class DeliveryWorker {
       } catch {
         throw new PermanentDeliveryError("Delivery payload is invalid");
       }
-      await this.#sendText(job.chatId, message, job.id);
+      await this.#sendText(job.chatId, message, job.id, job);
       if (!(await this.#queue.complete(job))) {
         throw new Error("Delivery lease was lost before completion");
       }

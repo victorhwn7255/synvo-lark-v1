@@ -1,51 +1,38 @@
 export type BotCommand =
   | { type: "ping" }
-  | { type: "organize-folder"; folderLink: string }
+  | { type: "organize-workspace"; folderLink?: string }
   | { type: "analyze-file"; fileLink: string }
   | {
-      type: "decide-folder";
+      type: "decide-workspace";
       proposalId: string;
       decision: "APPROVED" | "REJECTED";
     }
-  | { type: "undo-folder"; proposalId: string }
+  | { type: "undo-workspace"; proposalId: string }
   | { type: "unknown" };
 
 export function parseCommand(text: string): BotCommand {
   const normalized = text.trim();
-  if (normalized.toLowerCase() === "/ping") {
-    return { type: "ping" };
-  }
+  if (normalized.toLowerCase() === "/ping") return { type: "ping" };
 
-  const match = normalized.match(
-    /^\/organize-folder\s+(\S+)$/i,
-  );
-  if (match?.[1]) {
-    return { type: "organize-folder", folderLink: match[1] };
+  const organize = /^\/organize-workspace(?:\s+(\S+))?$/iu.exec(normalized);
+  if (organize) {
+    return organize[1]
+      ? { type: "organize-workspace", folderLink: organize[1] }
+      : { type: "organize-workspace" };
   }
+  const analyze = /^\/analyze-file\s+(\S+)$/iu.exec(normalized);
+  if (analyze?.[1]) return { type: "analyze-file", fileLink: analyze[1] };
 
-  const analyzeFileMatch = normalized.match(
-    /^\/analyze-file\s+(\S+)$/i,
-  );
-  if (analyzeFileMatch?.[1]) {
-    return { type: "analyze-file", fileLink: analyzeFileMatch[1] };
-  }
-
-  const decisionMatch = normalized.match(
-    /^\/(approve|reject)-folder\s+(\S+)$/i,
-  );
-  if (decisionMatch?.[1] && decisionMatch[2]) {
+  const decision = /^\/(approve|reject)-workspace\s+(\S+)$/iu.exec(normalized);
+  if (decision?.[1] && decision[2]) {
     return {
-      type: "decide-folder",
-      proposalId: decisionMatch[2],
-      decision:
-        decisionMatch[1].toLowerCase() === "approve"
-          ? "APPROVED"
-          : "REJECTED",
+      type: "decide-workspace",
+      proposalId: decision[2],
+      decision: decision[1].toLowerCase() === "approve" ? "APPROVED" : "REJECTED",
     };
   }
-  const undoMatch = normalized.match(/^\/undo-folder\s+(\S+)$/i);
-  if (undoMatch?.[1]) {
-    return { type: "undo-folder", proposalId: undoMatch[1] };
-  }
-  return { type: "unknown" };
+  const undo = /^\/undo-workspace\s+(\S+)$/iu.exec(normalized);
+  return undo?.[1]
+    ? { type: "undo-workspace", proposalId: undo[1] }
+    : { type: "unknown" };
 }

@@ -52,7 +52,12 @@ function createWorker(
   options: {
     prepareMessage?: () => Promise<string>;
     prepareExhaustedMessage?: () => Promise<string>;
-    sendText?: (chatId: string, text: string, key: string) => Promise<void>;
+    sendText?: (
+      chatId: string,
+      text: string,
+      key: string,
+      operation?: Pick<DeliveryJob, "kind" | "runId">,
+    ) => Promise<void>;
     maxAttempts?: number;
   } = {},
 ) {
@@ -164,6 +169,7 @@ test("uses the existing worker for execution and forwards the job kind", async (
     kind: "ORGANIZE_FOLDER_EXECUTE",
   });
   const observed: string[] = [];
+  const deliveries: Array<Pick<DeliveryJob, "kind" | "runId"> | undefined> = [];
   const worker = new DeliveryWorker({
     queue,
     cipher: new TokenCipher(Buffer.alloc(32, 3)),
@@ -172,12 +178,17 @@ test("uses the existing worker for execution and forwards the job kind", async (
       return "verified execution";
     },
     prepareExhaustedMessage: async () => "unused",
-    sendText: async () => {},
+    sendText: async (_chatId, _text, _key, operation) => {
+      deliveries.push(operation);
+    },
   });
 
   await worker.processOne();
 
   assert.deepEqual(observed, ["ORGANIZE_FOLDER_EXECUTE"]);
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0]?.kind, "ORGANIZE_FOLDER_EXECUTE");
+  assert.equal(deliveries[0]?.runId, scanJob().runId);
   assert.equal(queue.completed, 1);
 });
 

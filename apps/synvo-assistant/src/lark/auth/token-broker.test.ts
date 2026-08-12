@@ -366,16 +366,18 @@ test("rejects a grant that is missing offline access", async () => {
       "tenant-synvo",
     ),
     (error: unknown) =>
-      error instanceof LarkAuthError && error.code === "WRONG_SCOPE",
+      error instanceof LarkAuthError &&
+      error.code === "WRONG_SCOPE" &&
+      error.message ===
+        "The Lark authorization scope set does not match the approved Drive workflow.",
   );
 });
 
 test("rejects stored grants with any scope outside the Drive PDF policy", async (t) => {
   const now = new Date("2026-08-07T00:00:00.000Z");
   for (const extraScope of [
-    "drive:drive",
     "docx:document",
-    "space:document:delete",
+    "space:document:shortcut",
   ]) {
     await t.test(extraScope, async () => {
       const grant = createEncryptedOAuthGrant(cipher, {
@@ -405,9 +407,8 @@ test("rejects a refresh response with any scope outside the Drive PDF policy", a
   const issuedAt = new Date("2026-08-07T00:00:00.000Z");
   const now = new Date("2026-08-07T00:10:00.000Z");
   for (const extraScope of [
-    "drive:drive",
     "docx:document",
-    "space:document:delete",
+    "space:document:shortcut",
   ]) {
     await t.test(extraScope, async () => {
       const grant = createEncryptedOAuthGrant(cipher, {

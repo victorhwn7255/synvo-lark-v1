@@ -82,10 +82,10 @@ function sendAuthorizationConfirmation(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Authorize read-only Lark Drive access</title>
+  <title>Authorize Synvo AI Lark Drive access</title>
   <style>body{font:16px system-ui,sans-serif;max-width:42rem;margin:4rem auto;padding:0 1.5rem;color:#17202a}main{border:1px solid #dfe6e9;border-radius:12px;padding:2rem}h1{font-size:1.5rem}button{font:inherit;padding:.7rem 1rem;border:0;border-radius:8px;background:#1456f0;color:white;cursor:pointer}</style>
 </head>
-<body><main><h1>Authorize read-only Lark Drive access</h1><p>Continue only if you started this request in the Synvo AI Assistant conversation.</p><form method="post" action="${action}"><button type="submit">Continue with Lark</button></form></main></body>
+<body><main><h1>Authorize Synvo AI Lark Drive access</h1><p>Continue only if you started this request in the Synvo AI Assistant conversation. The assistant can read workspace PDFs and perform only file changes that you explicitly approve in Lark.</p><form method="post" action="${action}"><button type="submit">Continue with Lark</button></form></main></body>
 </html>`);
 }
 
@@ -133,7 +133,7 @@ export function createAssistantWebHandler(
           response,
           400,
           "Authorization link unavailable",
-          "Return to Lark and send the organize-folder command again.",
+          "Return to Lark and ask Synvo AI to organize the workspace again.",
         );
         return;
       }
@@ -159,7 +159,7 @@ export function createAssistantWebHandler(
           response,
           400,
           "Authorization link unavailable",
-          "Return to Lark and send the organize-folder command again.",
+          "Return to Lark and ask Synvo AI to organize the workspace again.",
         );
       }
       return;
@@ -176,7 +176,7 @@ export function createAssistantWebHandler(
           response,
           200,
           "Authorization complete",
-          "Return to Lark. The assistant is preparing the read-only folder inventory.",
+          "Return to Lark. Your Synvo_Wiki workspace is connected and ready.",
         );
       } catch (error) {
         logOAuthCallbackFailure(error);
@@ -186,7 +186,7 @@ export function createAssistantWebHandler(
           rejected ? 400 : 500,
           "Authorization was not completed",
           rejected
-            ? "Return to Lark and send the organize-folder command again."
+            ? "Return to Lark and ask Synvo AI to organize the workspace again."
             : "A safe internal error occurred. Return to Lark and try again later.",
         );
       }

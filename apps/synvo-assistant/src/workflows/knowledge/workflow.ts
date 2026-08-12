@@ -5,8 +5,10 @@ import type { DeliveryJob, DeliveryQueue } from "../../delivery/repository.js";
 import type { TokenCipher } from "../../lark/auth/index.js";
 import { LarkAttachmentError, type LarkAttachmentClient } from "../../lark/attachment.js";
 import { DriveToolError, driveToolError } from "../../lark/drive/index.js";
+import { DriveMoveError } from "../../lark/drive/move-client.js";
 import type {
   KnowledgeDriveFile,
+  WorkspaceDriveFile,
   AuthorizedDrivePdfReader,
 } from "../analyze-drive-file/authorized-reader.js";
 import {
@@ -28,6 +30,7 @@ import {
   type KnowledgeRepository,
   type KnowledgeScope,
   type KnowledgeSearchHit,
+  type KnowledgeRepresentativeEvidence,
   type KnowledgeSource,
   type KnowledgeSourceKind,
 } from "./repository.js";
@@ -46,13 +49,18 @@ const REFRESH_SNAPSHOT_TTL_MS = 10 * 60_000;
 type AttachmentReader = Pick<LarkAttachmentClient, "downloadPdf">;
 type DriveKnowledgeReader = Pick<
   AuthorizedDrivePdfReader,
-  "listKnowledgeFiles" | "readKnowledgeFile"
+  "listKnowledgeFiles" | "readKnowledgeFile" | "inspectWorkspace" | "deleteKnowledgeFile"
 >;
 type Embedder = Pick<VoyageEmbeddingClient, "embedDocuments" | "embedQuery">;
 type KnowledgeStore = Pick<
   KnowledgeRepository,
-  "replaceSource" | "listSources" | "deleteSource" | "updateSourceName" | "search"
+  "replaceSource" | "listSources" | "deleteSource" | "updateSourceName" | "search" | "listRepresentativeEvidence"
 >;
+
+export type WorkspaceOrganizationEvidence = {
+  file: WorkspaceDriveFile;
+  chunks: KnowledgeRepresentativeEvidence[];
+};
 
 export type KnowledgeProgress = {
   stage:
@@ -60,6 +68,8 @@ export type KnowledgeProgress = {
     | "refreshing"
     | "stopping"
     | "stopped"
+    | "deleting"
+    | "deleted"
     | "answering"
     | "complete"
     | "failed";
@@ -89,6 +99,16 @@ export type KnowledgeRefreshProposal = {
   hasChanges: boolean;
   snapshot: string;
 };
+
+export type KnowledgeSourceRemovalProposal =
+  | { kind: "not_found" }
+  | { kind: "ambiguous"; sourceNames: string[] }
+  | {
+      kind: "knowledge_only" | "drive_delete";
+      sourceName: string;
+      sourceReference: string;
+      driveDeleteEnabled: boolean;
+    };
 
 export type GroundedAnswerer = {
   answerGrounded(input: {
@@ -127,6 +147,12 @@ type KnowledgeJobContext =
       operation: "question";
       question: string;
       progressMessageId: string | null;
+    }
+  | {
+      operation: "delete_drive_source";
+      sourceReference: string;
+      progressMessageId: string | null;
+      driveDeletionVerified?: boolean;
     };
 
 type RefreshSnapshot = {
@@ -143,6 +169,8 @@ type RefreshSnapshot = {
 type SourceReference = KnowledgeScope & {
   sourceKind: KnowledgeSourceKind;
   sourceKey: string;
+  sourceName?: string;
+  sourceVersionOrHash?: string;
 };
 
 type EnqueuedKnowledgeJob = {
@@ -188,7 +216,9 @@ function isRetryable(error: unknown): boolean {
   return (
     (error instanceof VoyageEmbeddingError && error.retryable) ||
     (error instanceof LarkAttachmentError && error.retryable) ||
-    (error instanceof DriveToolError && error.safeError.retryable)
+    (error instanceof DriveToolError && error.safeError.retryable) ||
+    (error instanceof DriveMoveError &&
+      ["RATE_LIMITED", "TEMPORARY", "TIMEOUT"].includes(error.code))
   );
 }
 
@@ -201,6 +231,9 @@ function failureCategory(error: unknown): string {
   }
   if (error instanceof DriveToolError) {
     return `LARK_DRIVE_${error.safeError.code}`;
+  }
+  if (error instanceof DriveMoveError) {
+    return `LARK_DRIVE_${error.code}`;
   }
   if (error instanceof PdfInputError) {
     return `PDF_${error.code}`;
@@ -219,6 +252,7 @@ export class KnowledgeWorkflow {
   readonly #messenger: KnowledgeMessenger;
   readonly #scope: KnowledgeScope;
   readonly #verifyWorkspace: () => Promise<boolean>;
+  readonly #driveDeleteEnabled: boolean;
   readonly #now: () => Date;
   readonly #extractPdf: (bytes: Buffer) => Promise<ExtractedPdf>;
 
@@ -233,6 +267,7 @@ export class KnowledgeWorkflow {
     messenger: KnowledgeMessenger;
     scope: KnowledgeScope;
     verifyWorkspace: () => Promise<boolean>;
+    driveDeleteEnabled?: boolean;
     now?: () => Date;
     extractPdf?: (bytes: Buffer) => Promise<ExtractedPdf>;
   }) {
@@ -246,6 +281,7 @@ export class KnowledgeWorkflow {
     this.#messenger = options.messenger;
     this.#scope = options.scope;
     this.#verifyWorkspace = options.verifyWorkspace;
+    this.#driveDeleteEnabled = options.driveDeleteEnabled ?? false;
     this.#now = options.now ?? (() => new Date());
     this.#extractPdf = options.extractPdf ?? extractPdfText;
   }
@@ -348,6 +384,130 @@ export class KnowledgeWorkflow {
     };
   }
 
+  async prepareWorkspaceOrganization(
+    observedFiles: WorkspaceDriveFile[],
+  ): Promise<WorkspaceOrganizationEvidence[]> {
+    if (!(await this.#verifyWorkspace())) {
+      throw new Error("Active workspace could not be verified");
+    }
+    const listed = await this.#driveReader.inspectWorkspace(
+      {
+        requesterOpenId: this.#scope.userOpenId,
+        tenantKey: this.#scope.tenantKey,
+      },
+      { maxPdfs: observedFiles.length || 1 },
+    );
+    if (!this.#sameWorkspaceFiles(observedFiles, listed.files)) {
+      throw new Error("The workspace changed before organization analysis");
+    }
+
+    const stored = await this.#storedDriveSources();
+    for (const file of observedFiles) {
+      const source = stored.get(file.token);
+      if (source?.sourceVersionOrHash === file.version) {
+        if (source.sourceName !== file.relativePath) {
+          if (!(await this.#repository.updateSourceName({
+            scope: this.#scope,
+            sourceKind: "drive_file",
+            sourceKey: file.token,
+            sourceVersionOrHash: file.version,
+            sourceName: file.relativePath,
+          }))) {
+            throw new Error("An indexed PDF path could not be reconciled");
+          }
+        }
+        continue;
+      }
+      const downloaded = await this.#driveReader.readKnowledgeFile({
+        requesterOpenId: this.#scope.userOpenId,
+        tenantKey: this.#scope.tenantKey,
+        fileToken: file.token,
+        expectedVersion: file.version,
+        expectedName: file.relativePath,
+      });
+      await this.#indexPdf({
+        sourceKind: "drive_file",
+        sourceKey: downloaded.token,
+        sourceName: downloaded.name,
+        sourceVersionOrHash: downloaded.version,
+        bytes: downloaded.bytes,
+      });
+    }
+
+    const final = await this.#driveReader.inspectWorkspace(
+      {
+        requesterOpenId: this.#scope.userOpenId,
+        tenantKey: this.#scope.tenantKey,
+      },
+      { maxPdfs: observedFiles.length || 1 },
+    );
+    if (!this.#sameWorkspaceFiles(observedFiles, final.files)) {
+      throw new Error("The workspace changed during organization analysis");
+    }
+    const present = new Set(observedFiles.map((file) => file.token));
+    for (const source of await this.#repository.listSources(this.#scope)) {
+      if (source.sourceKind === "drive_file" && !present.has(source.sourceKey)) {
+        await this.#repository.deleteSource(
+          this.#scope,
+          "drive_file",
+          source.sourceKey,
+        );
+      }
+    }
+
+    const evidence = await this.#repository.listRepresentativeEvidence({
+      scope: this.#scope,
+      sourceKeys: observedFiles.map((file) => file.token),
+      chunksPerSource: 2,
+    });
+    const bySource = new Map<string, KnowledgeRepresentativeEvidence[]>();
+    for (const chunk of evidence) {
+      const current = bySource.get(chunk.sourceKey) ?? [];
+      current.push(chunk);
+      bySource.set(chunk.sourceKey, current);
+    }
+    return observedFiles.map((file) => {
+      const chunks = bySource.get(file.token) ?? [];
+      if (
+        chunks.length === 0 ||
+        chunks.some(
+          (chunk) => chunk.sourceVersionOrHash !== file.version,
+        )
+      ) {
+        throw new Error("Workspace knowledge is incomplete for organization");
+      }
+      return { file, chunks };
+    });
+  }
+
+  async reconcileWorkspacePaths(): Promise<number> {
+    const files = await this.#driveReader.listKnowledgeFiles({
+      requesterOpenId: this.#scope.userOpenId,
+      tenantKey: this.#scope.tenantKey,
+    });
+    const stored = await this.#storedDriveSources();
+    let updated = 0;
+    for (const file of files) {
+      const source = stored.get(file.token);
+      if (!source || source.sourceVersionOrHash !== file.version) {
+        throw new Error("Workspace content changed during path reconciliation");
+      }
+      if (
+        source.sourceName !== file.name &&
+        await this.#repository.updateSourceName({
+          scope: this.#scope,
+          sourceKind: "drive_file",
+          sourceKey: file.token,
+          sourceVersionOrHash: file.version,
+          sourceName: file.name,
+        })
+      ) {
+        updated += 1;
+      }
+    }
+    return updated;
+  }
+
   async enqueueRefresh(input: {
     messageId: string;
     chatId: string;
@@ -406,6 +566,70 @@ export class KnowledgeWorkflow {
       this.#scope,
       source.sourceKind,
       source.sourceKey,
+    );
+  }
+
+  async proposeSourceRemoval(
+    employeeMessage: string,
+  ): Promise<KnowledgeSourceRemovalProposal> {
+    const normalizedMessage = employeeMessage.normalize("NFKC").toLocaleLowerCase();
+    const sources = await this.#repository.listSources(this.#scope);
+    const matches = sources.filter((source) => {
+      const names = [source.sourceName, source.sourceName.split(" / ").at(-1)!];
+      return names.some((name) =>
+        normalizedMessage.includes(name.normalize("NFKC").toLocaleLowerCase()),
+      );
+    });
+    if (matches.length === 0) {
+      return { kind: "not_found" };
+    }
+    if (matches.length > 1) {
+      return {
+        kind: "ambiguous",
+        sourceNames: matches.map((source) => source.sourceName).sort(),
+      };
+    }
+    const source = matches[0]!;
+    const sourceReference = this.#encodeSourceReference({
+      ...this.#scope,
+      ...source,
+    });
+    return {
+      kind: source.sourceKind === "drive_file" ? "drive_delete" : "knowledge_only",
+      sourceName: source.sourceName,
+      sourceReference,
+      driveDeleteEnabled: this.#driveDeleteEnabled,
+    };
+  }
+
+  async enqueueDriveSourceDeletion(input: {
+    sourceReference: string;
+    cardMessageId: string;
+    chatId: string;
+  }): Promise<EnqueuedKnowledgeJob> {
+    if (!this.#driveDeleteEnabled) {
+      throw new Error("Drive deletion is disabled");
+    }
+    const source = this.#readSourceReference(input.sourceReference);
+    if (
+      source.sourceKind !== "drive_file" ||
+      !source.sourceName ||
+      !source.sourceVersionOrHash
+    ) {
+      throw new Error("The Drive deletion reference is incomplete");
+    }
+    const approvalId = createHash("sha256")
+      .update(input.sourceReference)
+      .digest("hex");
+    return this.#enqueue(
+      `${JOB_PREFIX}delete:${approvalId}`,
+      input.chatId,
+      {
+        operation: "delete_drive_source",
+        sourceReference: input.sourceReference,
+        progressMessageId: input.cardMessageId,
+        driveDeletionVerified: false,
+      },
     );
   }
 
@@ -483,7 +707,12 @@ export class KnowledgeWorkflow {
             completedFiles: 0,
             totalFiles: context.files.length + context.pathUpdates.length,
           }
-        : { stage: "answering" as const, message: "Finding the most relevant evidence and preparing a cited answer" };
+        : context.operation === "delete_drive_source"
+          ? {
+              stage: "deleting" as const,
+              message: "Verifying the approved file → moving it to the Lark recycle bin → removing its searchable knowledge",
+            }
+          : { stage: "answering" as const, message: "Finding the most relevant evidence and preparing a cited answer" };
     if (
       context.operation === "refresh_drive" &&
       await this.#queue.isCancellationRequested(job)
@@ -509,6 +738,8 @@ export class KnowledgeWorkflow {
         await this.#ingestAttachment(context.sourceMessageId, job.chatId, progressId);
       } else if (context.operation === "refresh_drive") {
         await this.#refreshDrive(job, context, progressId);
+      } else if (context.operation === "delete_drive_source") {
+        await this.#deleteDriveSource(context, progressId, storeContext);
       } else {
         const answer = await this.searchWorkspace(context.question);
         await this.#messenger.update(progressId, {
@@ -532,11 +763,69 @@ export class KnowledgeWorkflow {
       if (isRetryable(error) && !finalAttempt) {
         throw error;
       }
+      const failureMessage = context.operation === "delete_drive_source"
+        ? "I couldn’t verify the final deletion state. Please check Synvo_Wiki and Lark’s recycle bin. Searchable knowledge is removed only after Drive deletion is verified."
+        : "I couldn’t complete that knowledge task safely. Nothing was changed in Lark Drive. Please try again.";
       await this.#messenger.update(progressId, {
         stage: "failed",
-        message: "I couldn’t complete that knowledge task safely. Nothing was changed in Lark Drive. Please try again.",
+        message: failureMessage,
       });
     }
+  }
+
+  async #deleteDriveSource(
+    context: Extract<KnowledgeJobContext, { operation: "delete_drive_source" }>,
+    progressMessageId: string,
+    storeContext: (context: string) => Promise<boolean>,
+  ): Promise<void> {
+    if (!this.#driveDeleteEnabled || !(await this.#verifyWorkspace())) {
+      throw new Error("Drive deletion is disabled or the workspace is unavailable");
+    }
+    const approved = this.#readSourceReference(context.sourceReference);
+    if (
+      approved.sourceKind !== "drive_file" ||
+      !approved.sourceName ||
+      !approved.sourceVersionOrHash
+    ) {
+      throw new Error("The Drive deletion reference is incomplete");
+    }
+    const stored = (await this.#repository.listSources(this.#scope)).find(
+      (source) =>
+        source.sourceKind === "drive_file" &&
+        source.sourceKey === approved.sourceKey,
+    );
+    if (
+      !stored ||
+      stored.sourceName !== approved.sourceName ||
+      stored.sourceVersionOrHash !== approved.sourceVersionOrHash
+    ) {
+      throw new Error("The indexed file no longer matches the approved deletion");
+    }
+    if (!context.driveDeletionVerified) {
+      await this.#driveReader.deleteKnowledgeFile({
+        requesterOpenId: this.#scope.userOpenId,
+        tenantKey: this.#scope.tenantKey,
+        fileToken: approved.sourceKey,
+        expectedName: approved.sourceName,
+        expectedVersion: approved.sourceVersionOrHash,
+      });
+      if (!(await storeContext(JSON.stringify({
+        ...context,
+        driveDeletionVerified: true,
+      })))) {
+        throw new Error("Drive deletion verification could not be recorded");
+      }
+    }
+    await this.#repository.deleteSource(
+      this.#scope,
+      "drive_file",
+      approved.sourceKey,
+    );
+    await this.#messenger.update(progressMessageId, {
+      stage: "deleted",
+      sourceName: approved.sourceName,
+      message: `**${approved.sourceName}** was moved to the Lark recycle bin and removed from workspace knowledge.`,
+    });
   }
 
   async #enqueue(
@@ -919,6 +1208,24 @@ export class KnowledgeWorkflow {
       return (
         current?.token === file.token &&
         current.name === file.name &&
+        current.version === file.version
+      );
+    });
+  }
+
+  #sameWorkspaceFiles(
+    expected: WorkspaceDriveFile[],
+    observed: WorkspaceDriveFile[],
+  ): boolean {
+    if (expected.length !== observed.length) {
+      return false;
+    }
+    return expected.every((file, index) => {
+      const current = observed[index];
+      return (
+        current?.token === file.token &&
+        current.relativePath === file.relativePath &&
+        current.parentToken === file.parentToken &&
         current.version === file.version
       );
     });

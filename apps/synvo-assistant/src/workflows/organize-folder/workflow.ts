@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
 import { z } from "zod";
 
+import type { AppConfig } from "../../config.js";
+import type { DeliveryJobKind } from "../../delivery/repository.js";
 import {
   ORGANIZE_FOLDER_USER_SCOPES,
   hasExactScopes,
@@ -11,7 +13,6 @@ import {
   type TokenCipher,
 } from "../../lark/auth/index.js";
 import {
-  observeAllowlistedFolder,
   digestFolderToken,
   DriveMoveError,
   DriveToolError,
@@ -19,21 +20,24 @@ import {
   normalizeDriveError,
   parseLarkDriveFolderLink,
   requireAllowlistedRoot,
-  withReadOnlyDriveTokenRecovery,
+  type DriveFolderCreator,
   type DriveMover,
-  type DriveReader,
 } from "../../lark/drive/index.js";
-import type { AppConfig } from "../../config.js";
-import type { DeliveryJobKind } from "../../delivery/repository.js";
+import type {
+  AuthorizedDrivePdfReader,
+  WorkspaceDriveInventory,
+} from "../analyze-drive-file/authorized-reader.js";
+import type { KnowledgeWorkflow } from "../knowledge/workflow.js";
 import type { LarkOAuthService } from "./authorization.js";
+import {
+  snapshotWorkspaceInventory,
+  type ContentAwareFolderPlanner,
+} from "./content-planner.js";
 import {
   driveFolderInventoryResultAssociatedData,
   type DriveFolderInventoryResult,
+  workspaceSnapshotDigest,
 } from "./contracts.js";
-import {
-  formatDriveFolderInventoryResult,
-  formatOrganizeFolderProposal,
-} from "./inventory-message.js";
 import {
   createExecutionRecord,
   executionAssociatedData,
@@ -43,22 +47,24 @@ import {
   formatUndoResult,
   inventoryMatchesApprovedSnapshot,
   inventoryMatchesExecutionTarget,
-  observeExecutionParents,
+  inventoryMatchesUndoTarget,
   type ExecutionStatus,
-  type ObservedParent,
   type OrganizeFolderExecutionRecord,
   type UndoStatus,
 } from "./execution.js";
 import {
+  formatDriveFolderInventoryResult,
+  formatOrganizeFolderProposal,
+} from "./inventory-message.js";
+import { normalizeDestinationName, workspaceOrganizationPolicy } from "./policy.js";
+import {
   buildOrganizeFolderProposal,
   organizeFolderProposalAssociatedData,
   type OrganizeFolderProposal,
+  type ProposedTaxonomyFolder,
+  type ContentDecision,
 } from "./proposal.js";
-import type {
-  InventoryRun,
-  OrganizeFolderRepository,
-} from "./repository.js";
-import type { ContentAwareFolderPlanner } from "./content-planner.js";
+import type { InventoryRun, OrganizeFolderRepository } from "./repository.js";
 
 export type OrganizeFolderRequest = {
   messageId: string;
@@ -66,12 +72,13 @@ export type OrganizeFolderRequest = {
   requesterOpenId: string;
   tenantKey: string;
   folderLink: string;
+  authorizationDelivery?: "queued" | "inline";
 };
 
 export type ReadOnlyFolderInventoryRequest = Pick<
   OrganizeFolderRequest,
-  "requesterOpenId" | "tenantKey" | "folderLink"
->;
+  "requesterOpenId" | "tenantKey"
+> & { folderLink?: string };
 
 export type OrganizeFolderStartResult =
   | { kind: "authorization_required" }
@@ -79,57 +86,44 @@ export type OrganizeFolderStartResult =
   | { kind: "duplicate" }
   | { kind: "rejected"; replyText: string };
 
+export type WorkspaceOrganizationConsentResult =
+  | { kind: "authorization_required"; authorizationUrl: URL }
+  | { kind: "duplicate" }
+  | {
+      kind: "ready";
+      inventory: DriveFolderInventoryResult & { ok: true };
+      snapshotDigest: string;
+      expiresAt: number;
+    }
+  | { kind: "rejected"; replyText: string };
+
 export type ProposalDecision = "APPROVED" | "REJECTED";
 
-type OAuthAuthorizationStarter = Pick<
-  LarkOAuthService,
-  "createPendingAuthorization"
->;
+type OAuthAuthorizationStarter = Pick<LarkOAuthService, "createPendingAuthorization">;
 type AccessTokenProvider = Pick<
   LarkTokenBroker,
   "getAccessToken" | "recoverAccessToken" | "markAccessTokenRejected"
 >;
+type WorkspaceReader = Pick<AuthorizedDrivePdfReader, "inspectWorkspace">;
+type OrganizationKnowledge = Pick<KnowledgeWorkflow, "reconcileWorkspacePaths">;
 type ContentPlanner = Pick<ContentAwareFolderPlanner, "plan">;
 
 function normalizeInventoryError(error: unknown): DriveToolError {
-  if (!(error instanceof LarkAuthError)) {
-    return normalizeDriveError(error);
-  }
-
+  if (!(error instanceof LarkAuthError)) return normalizeDriveError(error);
   switch (error.code) {
     case "OAUTH_REQUIRED":
     case "WRONG_SCOPE":
-      return driveToolError(
-        "OAUTH_REQUIRED",
-        "Please connect Lark Drive before I analyze this folder.",
-      );
+      return driveToolError("OAUTH_REQUIRED", "Please connect Lark Drive before I inspect this workspace.");
     case "OAUTH_REVOKED":
-      return driveToolError(
-        "OAUTH_REVOKED",
-        "Your Lark Drive connection has expired or was revoked. Please connect it again.",
-      );
+      return driveToolError("OAUTH_REVOKED", "Your Lark Drive connection expired or was revoked. Please connect it again.");
     case "OAUTH_RETRYABLE":
-      return driveToolError(
-        "LARK_RETRYABLE",
-        "Lark authorization is temporarily unavailable. Please try again in a moment.",
-        true,
-      );
+      return driveToolError("LARK_RETRYABLE", "Lark authorization is temporarily unavailable. Please try again.", true);
     case "WRONG_TENANT":
-      return driveToolError(
-        "WRONG_TENANT",
-        "This Lark Drive connection belongs to a different workspace.",
-      );
+      return driveToolError("WRONG_TENANT", "This Lark Drive connection belongs to a different workspace.");
     case "WRONG_USER":
-      return driveToolError(
-        "UNAUTHORIZED",
-        "This Lark Drive connection belongs to a different user.",
-      );
-    case "OAUTH_REJECTED":
-    case "OAUTH_MALFORMED":
-      return driveToolError(
-        "LARK_PERMANENT",
-        "I couldn’t safely use this Lark Drive connection. Please connect it again.",
-      );
+      return driveToolError("UNAUTHORIZED", "This Lark Drive connection belongs to a different user.");
+    default:
+      return driveToolError("LARK_PERMANENT", "I couldn’t safely use this Lark Drive connection. Please connect it again.");
   }
 }
 
@@ -140,9 +134,11 @@ export class OrganizeFolderWorkflow {
   readonly #oauthService: OAuthAuthorizationStarter;
   readonly #tokenBroker: AccessTokenProvider;
   readonly #cipher: TokenCipher;
-  readonly #driveReader: DriveReader;
+  readonly #workspaceReader: WorkspaceReader;
   readonly #driveMover: DriveMover;
-  readonly #contentPlanner?: ContentPlanner;
+  readonly #folderCreator: DriveFolderCreator;
+  readonly #knowledge: OrganizationKnowledge;
+  readonly #contentPlanner: ContentPlanner;
 
   constructor(options: {
     config: AppConfig;
@@ -151,9 +147,11 @@ export class OrganizeFolderWorkflow {
     oauthService: OAuthAuthorizationStarter;
     tokenBroker: AccessTokenProvider;
     cipher: TokenCipher;
-    driveReader: DriveReader;
+    workspaceReader: WorkspaceReader;
     driveMover: DriveMover;
-    contentPlanner?: ContentPlanner;
+    folderCreator: DriveFolderCreator;
+    knowledge: OrganizationKnowledge;
+    contentPlanner: ContentPlanner;
   }) {
     this.#config = options.config;
     this.#grantStore = options.grantStore;
@@ -161,35 +159,26 @@ export class OrganizeFolderWorkflow {
     this.#oauthService = options.oauthService;
     this.#tokenBroker = options.tokenBroker;
     this.#cipher = options.cipher;
-    this.#driveReader = options.driveReader;
+    this.#workspaceReader = options.workspaceReader;
     this.#driveMover = options.driveMover;
+    this.#folderCreator = options.folderCreator;
+    this.#knowledge = options.knowledge;
     this.#contentPlanner = options.contentPlanner;
   }
 
-  async start(
+  async prepareConsent(
     request: OrganizeFolderRequest,
-  ): Promise<OrganizeFolderStartResult> {
+  ): Promise<WorkspaceOrganizationConsentResult> {
     try {
       this.#assertRequestAllowed(request);
     } catch (error) {
-      const message =
-        error instanceof DriveToolError
-          ? error.safeError.message
-          : "Please send a valid Lark Drive link for the approved folder.";
-      return { kind: "rejected", replyText: message };
-    }
-
-    if (!this.#contentPlanner) {
       return {
         kind: "rejected",
-        replyText: "Content-aware folder organization isn’t available right now.",
+        replyText: error instanceof DriveToolError
+          ? error.safeError.message
+          : "Please use the active Synvo workspace.",
       };
     }
-
-    if (await this.#repository.hasRunForMessage(request.messageId)) {
-      return { kind: "duplicate" };
-    }
-
     const grant = await this.#grantStore.findBySubject(
       request.requesterOpenId,
       request.tenantKey,
@@ -199,25 +188,120 @@ export class OrganizeFolderWorkflow {
       grant.revokedAt === null &&
       grant.refreshExpiresAt > new Date() &&
       hasExactScopes(grant.grantedScopes, ORGANIZE_FOLDER_USER_SCOPES);
-    const rootTokenDigest = digestFolderToken(
-      this.#config.organizeFolderRootToken,
-    );
-
+    const rootTokenDigest = digestFolderToken(this.#config.organizeFolderRootToken);
     if (!grantUsable) {
+      if (await this.#repository.hasRunForMessage(request.messageId)) {
+        return { kind: "duplicate" };
+      }
       const created = await this.#oauthService.createPendingAuthorization({
         messageId: request.messageId,
         chatId: request.chatId,
         requesterOpenId: request.requesterOpenId,
         tenantKey: request.tenantKey,
         rootTokenDigest,
+        delivery: request.authorizationDelivery,
       });
-      if (!created) {
-        return { kind: "duplicate" };
-      }
-      return { kind: "authorization_required" };
+      return created.created
+        ? {
+            kind: "authorization_required",
+            authorizationUrl: created.startUrl,
+          }
+        : { kind: "duplicate" };
     }
+    try {
+      const inventory = {
+        ok: true as const,
+        inventory: snapshotWorkspaceInventory(
+          randomUUID(),
+          await this.#inspectWorkspace(request),
+        ),
+      };
+      return {
+        kind: "ready",
+        inventory,
+        snapshotDigest: workspaceSnapshotDigest(inventory.inventory),
+        expiresAt: Date.now() + workspaceOrganizationPolicy.consentTtlMs,
+      };
+    } catch (error) {
+      return {
+        kind: "rejected",
+        replyText: normalizeInventoryError(error).safeError.message,
+      };
+    }
+  }
 
+  async start(
+    request: OrganizeFolderRequest & {
+      consentSnapshotDigest: string;
+      consentExpiresAt: number;
+    },
+  ): Promise<OrganizeFolderStartResult> {
+    try {
+      this.#assertRequestAllowed(request);
+    } catch (error) {
+      return {
+        kind: "rejected",
+        replyText: error instanceof DriveToolError
+          ? error.safeError.message
+          : "Please use the active Synvo workspace.",
+      };
+    }
+    if (
+      !/^[0-9a-f]{64}$/u.test(request.consentSnapshotDigest) ||
+      !Number.isSafeInteger(request.consentExpiresAt) ||
+      request.consentExpiresAt <= Date.now()
+    ) {
+      return {
+        kind: "rejected",
+        replyText: "That analysis approval expired. Please review the workspace again.",
+      };
+    }
+    if (await this.#repository.hasRunForMessage(request.messageId)) {
+      return { kind: "duplicate" };
+    }
+    const grant = await this.#grantStore.findBySubject(
+      request.requesterOpenId,
+      request.tenantKey,
+    );
+    const grantUsable =
+      grant !== null &&
+      grant.revokedAt === null &&
+      grant.refreshExpiresAt > new Date() &&
+      hasExactScopes(grant.grantedScopes, ORGANIZE_FOLDER_USER_SCOPES);
+    if (!grantUsable) {
+      return {
+        kind: "rejected",
+        replyText: "Please reconnect Lark Drive, then review this workspace again.",
+      };
+    }
     const runId = randomUUID();
+    let consentedInventory: DriveFolderInventoryResult & { ok: true };
+    try {
+      const observed = snapshotWorkspaceInventory(
+        runId,
+        await this.#inspectWorkspace(request),
+      );
+      if (workspaceSnapshotDigest(observed) !== request.consentSnapshotDigest) {
+        return {
+          kind: "rejected",
+          replyText: "The workspace changed after you reviewed it. Please review a fresh analysis request.",
+        };
+      }
+      consentedInventory = { ok: true, inventory: observed };
+    } catch (error) {
+      return {
+        kind: "rejected",
+        replyText: normalizeInventoryError(error).safeError.message,
+      };
+    }
+    const rootTokenDigest = digestFolderToken(
+      this.#config.organizeFolderRootToken,
+    );
+    // Defends the exact provider-consent snapshot against changes while the queued worker waits.
+    const consentSnapshotCiphertext = this.#cipher.encrypt(
+      JSON.stringify(consentedInventory),
+      driveFolderInventoryResultAssociatedData(runId),
+    );
     const created = await this.#repository.createReadyRun({
       id: runId,
       messageId: request.messageId,
@@ -226,110 +310,97 @@ export class OrganizeFolderWorkflow {
       tenantKey: request.tenantKey,
       rootTokenDigest,
       oauthGrantId: grant.id,
+      consentSnapshotCiphertext,
       deliveryJobId: randomUUID(),
     });
-    if (!created) {
-      return { kind: "duplicate" };
+    return created ? { kind: "inventory_ready" } : { kind: "duplicate" };
+  }
+
+  async readProposalMessage(input: {
+    proposalId: string;
+    chatId: string;
+    requesterOpenId: string;
+    tenantKey: string;
+  }): Promise<string> {
+    try {
+      this.#assertActorAllowed(input);
+    } catch {
+      return "I couldn’t open that workspace proposal safely.";
     }
-    return { kind: "inventory_ready" };
+    if (!z.uuid().safeParse(input.proposalId).success) {
+      return "I couldn’t recognize that workspace proposal.";
+    }
+    const run = await this.#repository.findInventoryRunById(input.proposalId);
+    if (
+      !run ||
+      run.chatId !== input.chatId ||
+      run.requesterOpenId !== input.requesterOpenId ||
+      run.tenantKey !== input.tenantKey ||
+      !run.proposalCiphertext
+    ) {
+      return "I couldn’t find that workspace proposal.";
+    }
+    return formatOrganizeFolderProposal(
+      this.#decryptProposal(input.proposalId, run.proposalCiphertext),
+    );
   }
 
   async readInventory(
     request: ReadOnlyFolderInventoryRequest,
   ): Promise<DriveFolderInventoryResult> {
     try {
-      this.#assertRequestAllowed(request);
-      return await this.#collectInventory(
-        randomUUID(),
-        request.requesterOpenId,
-        request.tenantKey,
-      );
+      this.#assertActorAllowed(request);
+      if (request.folderLink) this.#assertFolderLinkAllowed(request.folderLink);
+      const observed = await this.#inspectWorkspace(request);
+      return { ok: true, inventory: snapshotWorkspaceInventory(randomUUID(), observed) };
     } catch (error) {
       return { ok: false, error: normalizeInventoryError(error).safeError };
     }
   }
 
   async buildProposalMessage(runId: string): Promise<string> {
-    const run = await this.#repository.findInventoryRunById(runId);
-    if (!run) {
-      throw new Error("The read-only inventory run was not found.");
-    }
-    if (
-      run.rootTokenDigest !==
-      digestFolderToken(this.#config.organizeFolderRootToken)
-    ) {
-      throw new Error("The run does not target the approved pilot folder.");
-    }
+    const run = await this.#requireRun(runId);
     if (run.state === "COMPLETED" || run.state === "FAILED_NO_CHANGE") {
-      if (run.proposalCiphertext) {
-        return formatOrganizeFolderProposal(
-          this.#decryptStoredProposal(runId, run.proposalCiphertext),
-        );
-      }
-      return formatDriveFolderInventoryResult(
-        this.#decryptStoredResult(runId, run.resultCiphertext),
-      );
+      return run.proposalCiphertext
+        ? formatOrganizeFolderProposal(this.#decryptProposal(runId, run.proposalCiphertext))
+        : formatDriveFolderInventoryResult(this.#decryptResult(runId, run.resultCiphertext));
     }
     if (!run.oauthGrantId || !run.oauthGrantMatchesSubject) {
-      return this.#storeAndFormat(runId, {
-        ok: false,
-        error: {
-          code: run.oauthGrantId ? "UNAUTHORIZED" : "OAUTH_REQUIRED",
-          message: run.oauthGrantId
-            ? "The stored Lark authorization does not match the requesting user."
-            : "Lark authorization is required.",
-          retryable: false,
-        },
-      });
+      return this.#storeFailure(runId, run.oauthGrantId ? "UNAUTHORIZED" : "OAUTH_REQUIRED", "Lark authorization is required.");
     }
     if (run.state !== "READY_TO_SCAN" && run.state !== "SCANNING") {
-      throw new Error("The read-only inventory run is not ready.");
+      throw new Error("The workspace analysis run is not ready.");
     }
-
-    if (!this.#contentPlanner) {
-      return this.#storeAndFormat(runId, {
-        ok: false,
-        error: {
-          code: "INTERNAL",
-          message: "Content-aware folder organization is not configured.",
-          retryable: false,
-        },
-      });
+    const consentedResult = this.#decryptResult(runId, run.resultCiphertext);
+    if (!consentedResult.ok) {
+      return this.#storeFailure(runId, "UNEXPECTED_WORKSPACE_STATE", "The approved workspace snapshot is unavailable.");
     }
-    const plan = await this.#contentPlanner.plan(
-      `https://larksuite.com/drive/folder/${this.#config.organizeFolderRootToken}`,
-    );
+    const plan = await this.#contentPlanner.plan(runId, {
+      requesterOpenId: run.requesterOpenId,
+      tenantKey: run.tenantKey,
+    }, consentedResult.inventory);
     if (plan.kind === "failed") {
-      if (plan.retryable) {
-        throw new Error("The content-aware folder plan should be retried.");
-      }
-      return this.#storeAndFormat(runId, {
-        ok: false,
-        error: {
-          code: "INTERNAL",
-          message: plan.message,
-          retryable: false,
-        },
-      });
+      if (plan.retryable) throw new Error("The content-aware workspace plan should be retried.");
+      return this.#storeFailure(runId, "INTERNAL", plan.message);
     }
-    const result: DriveFolderInventoryResult = plan.inventoryResult.ok
-      ? {
-          ok: true,
-          inventory: { ...plan.inventoryResult.inventory, run_id: runId },
-        }
-      : plan.inventoryResult;
-    return this.#storeAndFormat(
+    if (plan.kind === "inventory_not_ready") {
+      return this.#storeResult(runId, plan.inventoryResult);
+    }
+    return this.#storeResult(
       runId,
-      result,
-      plan.kind === "ready" ? plan.decisions : undefined,
+      plan.inventoryResult,
+      plan.taxonomy,
+      plan.decisions,
     );
   }
 
   async decideProposal(input: {
     proposalId: string;
+    chatId: string;
     requesterOpenId: string;
     tenantKey: string;
     decision: ProposalDecision;
+    operationMessageId?: string;
   }): Promise<string> {
     try {
       this.#assertActorAllowed(input);
@@ -339,481 +410,405 @@ export class OrganizeFolderWorkflow {
         : "I couldn’t record that decision safely. No files were changed.";
     }
     if (!z.uuid().safeParse(input.proposalId).success) {
-      return "I couldn’t recognize that proposal. No files were changed.";
+      return "I couldn’t recognize that workspace proposal. No files were changed.";
     }
-
     const stored = await this.#repository.recordProposalDecision({
       ...input,
       decidedAt: new Date(),
+      proposalNotBefore: new Date(
+        Date.now() - workspaceOrganizationPolicy.proposalTtlMs,
+      ),
       executionJobId:
-        input.decision === "APPROVED" &&
-        this.#config.organizeFolderWriteEnabled
+        input.decision === "APPROVED" && this.#config.organizeFolderWriteEnabled
           ? randomUUID()
           : undefined,
+      operationMessageId: input.operationMessageId,
     });
     if (stored.kind === "not_found") {
-      return "I couldn’t find that proposal for your account. No files were changed.";
+      return "I couldn’t find that workspace proposal for your account. No files were changed.";
     }
     if (stored.kind === "recorded") {
-      return this.#formatDecision(
-        input.proposalId,
-        stored.status,
-        false,
-        stored.executionQueued,
-      );
+      return this.#formatDecision(input.proposalId, stored.status, false, stored.executionQueued);
     }
     if (stored.status === "STALE") {
-      return "This proposal is out of date because the folder changed. Please start a fresh folder analysis. No files were changed.";
-    }
-    if (stored.status === "PROPOSED") {
-      return "I couldn’t record that proposal decision safely. No files were changed.";
+      return "This proposal is out of date because the workspace changed. Please start a fresh analysis. No files were changed.";
     }
     if (stored.status === input.decision) {
-      return this.#formatDecision(
-        input.proposalId,
-        stored.status,
-        true,
-        false,
-      );
+      return this.#formatDecision(input.proposalId, stored.status, true, false);
     }
-    return [
-      `Proposal ${input.proposalId} was already ${stored.status.toLowerCase()}.`,
-      "I kept the original decision and ignored the conflicting request.",
-      "",
-      "No files were changed.",
-    ].join("\n");
+    return `Proposal ${input.proposalId} was already ${stored.status.toLowerCase()}.\nI kept the original decision. No files were changed.`;
   }
 
   async requestUndo(input: {
     proposalId: string;
+    chatId: string;
     requesterOpenId: string;
     tenantKey: string;
+    operationMessageId?: string;
   }): Promise<string> {
     try {
       this.#assertActorAllowed(input);
-    } catch (error) {
-      return error instanceof DriveToolError
-        ? `${error.safeError.message}\n\nNo files were changed.`
-        : "I couldn’t start that undo safely. No files were changed.";
+    } catch {
+      return "I couldn’t start that undo safely. No files were changed.";
     }
     if (!z.uuid().safeParse(input.proposalId).success) {
-      return "I couldn’t recognize that proposal. No files were changed.";
+      return "I couldn’t recognize that workspace proposal. No files were changed.";
     }
     if (!this.#config.organizeFolderWriteEnabled) {
-      return "File changes are paused by the operator safety switch, so I can’t undo these moves right now. No files were changed.";
+      return "Workspace changes are paused by the operator safety switch, so I can’t undo them right now.";
     }
     const run = await this.#repository.findInventoryRunById(input.proposalId);
     if (
       !run ||
+      run.chatId !== input.chatId ||
       run.requesterOpenId !== input.requesterOpenId ||
       run.tenantKey !== input.tenantKey ||
       !this.#runMatchesMutationBoundary(run) ||
       !run.executionCiphertext ||
-      (run.executionStatus !== "COMPLETED" &&
-        run.executionStatus !== "PARTIAL")
+      !["COMPLETED", "PARTIAL"].includes(run.executionStatus ?? "")
     ) {
-      return "I couldn’t find any verified file moves to undo for this proposal. No files were changed.";
+      return "I couldn’t find verified workspace moves to undo. No files were changed.";
     }
-    const record = this.#decryptExecutionRecord(
-      input.proposalId,
-      run.executionCiphertext,
-    );
-    const verifiedMoves = record.moves.filter(
-      (move) => move.status === "VERIFIED",
-    );
-    if (verifiedMoves.length === 0) {
-      return "There are no verified moved files to restore for this proposal. No files were changed.";
-    }
-    if (!record.undo) {
-      record.undo = {
-        requestedByOpenId: input.requesterOpenId,
-        requestedAt: new Date().toISOString(),
-        moves: verifiedMoves.map((move) => ({
-          fileRef: move.fileRef,
-          status: "PENDING",
-        })),
-      };
-    }
+    const record = this.#decryptExecution(input.proposalId, run.executionCiphertext);
+    const verified = record.moves.filter((move) => move.status === "VERIFIED");
+    if (verified.length === 0) return "There are no verified moved files to restore.";
+    record.undo ??= {
+      requestedByOpenId: input.requesterOpenId,
+      requestedAt: new Date().toISOString(),
+      moves: verified.map((move) => ({ fileRef: move.fileRef, status: "PENDING" })),
+    };
     const requested = await this.#repository.requestUndo({
       ...input,
       deliveryJobId: randomUUID(),
-      executionCiphertext: this.#encryptExecutionRecord(record),
+      executionCiphertext: this.#encryptExecution(record),
+      operationMessageId: input.operationMessageId,
     });
     if (requested.kind === "recorded") {
-      return `Undo is queued for proposal ${input.proposalId}. I’ll verify every file after it is restored.`;
+      return `Undo is queued for proposal ${input.proposalId}. I’ll verify every restored parent.`;
     }
     if (requested.kind === "existing") {
       return `Undo for proposal ${input.proposalId} is already ${requested.status.toLowerCase()}.`;
     }
-    return requested.kind === "not_ready"
-      ? "This proposal isn’t ready to undo yet. No files were changed."
-      : "I couldn’t find that proposal for your account. No files were changed.";
+    return "That workspace proposal is not ready to undo. No files were changed.";
+  }
+
+  async getOperationMessageId(proposalId: string): Promise<string | null> {
+    return (await this.#repository.findInventoryRunById(proposalId))
+      ?.operationMessageId ?? null;
   }
 
   async buildExecutionMessage(proposalId: string): Promise<string> {
-    let run = await this.#repository.findInventoryRunById(proposalId);
-    if (!run) {
-      throw new Error("The approved proposal is unavailable.");
-    }
+    let run = await this.#requireRun(proposalId);
     if (!this.#runMatchesMutationBoundary(run)) {
-      await this.#repository.storeExecution({
-        proposalId,
-        status: "FAILED",
-        ciphertext: run.executionCiphertext,
-      });
-      return "I stopped because this proposal no longer matches the approved folder. No files were changed.";
+      await this.#repository.storeExecution({ proposalId, status: "FAILED", ciphertext: run.executionCiphertext });
+      return "I stopped because this proposal no longer matches the approved workspace.";
     }
-    if (
-      run.proposalStatus === "STALE" ||
-      run.executionStatus === "STALE"
-    ) {
-      return "The folder changed after this proposal was created, so I stopped safely. Please start a fresh folder analysis. No files were changed.";
+    if (run.proposalStatus === "STALE" || run.executionStatus === "STALE") {
+      return "The workspace changed after this proposal was created, so I stopped safely.";
     }
-    if (run.proposalStatus !== "APPROVED") {
-      throw new Error("The approved proposal is unavailable.");
-    }
+    if (run.proposalStatus !== "APPROVED") throw new Error("The approved proposal is unavailable.");
     if (
       run.executionCiphertext &&
-      ["COMPLETED", "PARTIAL", "FAILED", "UNKNOWN"].includes(
-        run.executionStatus ?? "",
-      )
+      ["COMPLETED", "PARTIAL", "FAILED", "UNKNOWN"].includes(run.executionStatus ?? "")
     ) {
       return formatExecutionResult(
-        this.#decryptExecutionRecord(proposalId, run.executionCiphertext),
+        this.#decryptExecution(proposalId, run.executionCiphertext),
         run.executionStatus as ExecutionStatus,
       );
     }
     if (!this.#config.organizeFolderWriteEnabled) {
-      await this.#repository.storeExecution({
-        proposalId,
-        status: "FAILED",
-        ciphertext: run.executionCiphertext,
-      });
-      return "File changes are paused by the operator safety switch, so I didn’t move anything.";
+      await this.#repository.storeExecution({ proposalId, status: "FAILED", ciphertext: run.executionCiphertext });
+      return "Workspace changes are paused by the operator safety switch, so I didn’t change anything.";
     }
     if (!(await this.#repository.startExecution(proposalId))) {
-      throw new Error("The approved proposal could not be claimed for execution.");
+      throw new Error("The approved workspace proposal could not be claimed.");
     }
-    run = (await this.#repository.findInventoryRunById(proposalId))!;
-
-    let record: OrganizeFolderExecutionRecord;
-    if (run.executionCiphertext) {
-      record = this.#decryptExecutionRecord(
-        proposalId,
-        run.executionCiphertext,
-      );
-    } else {
-      const approvedResult = this.#decryptStoredResult(
-        proposalId,
-        run.resultCiphertext,
-      );
-      if (!approvedResult.ok || !run.proposalCiphertext) {
-        throw new Error("The approved proposal snapshot is unavailable.");
-      }
-      const observation = await this.#observeFolder(
-        proposalId,
-        run.requesterOpenId,
-        run.tenantKey,
-      );
-      if (
-        !inventoryMatchesApprovedSnapshot(
-          approvedResult.inventory,
-          observation.inventory,
-        )
-      ) {
+    run = await this.#requireRun(proposalId);
+    const approved = this.#decryptResult(proposalId, run.resultCiphertext);
+    if (!approved.ok || !run.proposalCiphertext) {
+      throw new Error("The approved workspace snapshot is unavailable.");
+    }
+    let record = run.executionCiphertext
+      ? this.#decryptExecution(proposalId, run.executionCiphertext)
+      : undefined;
+    if (!record) {
+      const observed = await this.#inspectWorkspace(run);
+      const observedSnapshot = snapshotWorkspaceInventory(proposalId, observed);
+      if (!inventoryMatchesApprovedSnapshot(approved.inventory, observedSnapshot)) {
         await this.#repository.markProposalStale(proposalId);
-        return "The Drive folder changed after this proposal was created, so I stopped safely. Please start a fresh folder analysis. No files were changed.";
+        return "The workspace changed after this proposal was created, so I stopped before making changes.";
       }
       record = createExecutionRecord(
-        this.#decryptStoredProposal(proposalId, run.proposalCiphertext),
-        observation,
+        this.#decryptProposal(proposalId, run.proposalCiphertext),
+        approved.inventory,
+        this.#config.organizeFolderRootToken,
         new Date(),
       );
-      await this.#storeExecutionRecord(proposalId, "RUNNING", record);
+      await this.#storeExecution(proposalId, "RUNNING", record);
     }
 
-    for (const move of record.moves) {
-      const locations = await this.#observeParents(
-        record,
-        run.requesterOpenId,
-        run.tenantKey,
+    for (const destination of record.destinations) {
+      if (destination.action === "REUSE") continue;
+      const observed = await this.#inspectWorkspace(run);
+      const matches = observed.folders.filter(
+        (folder) =>
+          folder.depth === 1 &&
+          folder.ownedByRequester &&
+          normalizeDestinationName(folder.name) === normalizeDestinationName(destination.name),
       );
-      const before = locations.get(move.fileRef) ?? "MISSING";
-      move.observedParent = before;
-
-      if (move.status === "VERIFIED") {
-        if (before !== "DESTINATION") {
-          move.status = "UNKNOWN";
-          move.errorCode = "VERIFIED_PARENT_CHANGED";
+      if (destination.status === "VERIFIED") {
+        if (matches.length !== 1 || matches[0]!.token !== destination.folderToken) {
+          destination.status = "UNKNOWN";
+          destination.errorCode = "CREATED_FOLDER_CHANGED";
           break;
         }
         continue;
       }
-      if (move.status === "REQUESTING") {
-        if (before === "DESTINATION") {
-          move.status = "VERIFIED";
-          move.verifiedAt = new Date().toISOString();
-          await this.#storeExecutionRecord(proposalId, "RUNNING", record);
+      if (destination.status === "REQUESTING") {
+        if (matches.length === 1) {
+          destination.folderToken = matches[0]!.token;
+          destination.createdByExecution = true;
+          destination.status = "VERIFIED";
+          destination.verifiedAt = new Date().toISOString();
+          await this.#storeExecution(proposalId, "RUNNING", record);
           continue;
         }
-        move.status = "UNKNOWN";
-        move.errorCode = "INTERRUPTED_MOVE_NOT_RECONCILED";
+        destination.status = "UNKNOWN";
+        destination.errorCode = "INTERRUPTED_CREATE_NOT_RECONCILED";
         break;
       }
-      if (before === "DESTINATION") {
-        move.status = "UNKNOWN";
-        move.errorCode = "UNREQUESTED_DESTINATION_PARENT";
+      if (matches.length !== 0) {
+        destination.status = "UNKNOWN";
+        destination.errorCode = "UNAPPROVED_FOLDER_COLLISION";
         break;
       }
-      if (before !== "ROOT") {
-        move.status = "UNKNOWN";
-        move.errorCode = `UNEXPECTED_PARENT_${before}`;
-        break;
-      }
-
-      move.status = "REQUESTING";
-      move.attemptedAt = new Date().toISOString();
-      await this.#storeExecutionRecord(proposalId, "RUNNING", record);
-      let moveError: DriveMoveError | null = null;
+      destination.status = "REQUESTING";
+      destination.attemptedAt = new Date().toISOString();
+      await this.#storeExecution(proposalId, "RUNNING", record);
+      let createError: DriveMoveError | null = null;
       try {
-        await this.#moveFile(
-          run.requesterOpenId,
-          run.tenantKey,
-          move.fileToken,
-          move.destinationFolderToken,
+        const created = await this.#createFolder(run, destination.name);
+        destination.folderToken = created.folderToken;
+      } catch (error) {
+        createError = error instanceof DriveMoveError ? error : new DriveMoveError("TEMPORARY", true);
+      }
+      let settled: string | null = null;
+      try {
+        settled = await this.#observeDestination(
+          run,
+          destination.name,
+          destination.folderToken,
         );
       } catch (error) {
-        moveError =
-          error instanceof DriveMoveError
-            ? error
-            : new DriveMoveError("TEMPORARY", true);
+        createError ??= error instanceof DriveMoveError
+          ? error
+          : new DriveMoveError("TEMPORARY", true);
       }
-
-      const after = await this.#observeExpectedParent(
-        record,
-        run.requesterOpenId,
-        run.tenantKey,
-        move.fileRef,
-        "DESTINATION",
-        moveError === null || moveError.ambiguous,
-      );
-      move.observedParent = after;
-      if (after === "DESTINATION") {
-        move.status = "VERIFIED";
-        move.verifiedAt = new Date().toISOString();
-        delete move.errorCode;
-        await this.#storeExecutionRecord(proposalId, "RUNNING", record);
+      if (settled) {
+        destination.folderToken = settled;
+        destination.createdByExecution = true;
+        destination.status = "VERIFIED";
+        destination.verifiedAt = new Date().toISOString();
+        delete destination.errorCode;
+        await this.#storeExecution(proposalId, "RUNNING", record);
         continue;
       }
-      move.status = moveError === null || moveError.ambiguous
-        ? "UNKNOWN"
-        : "FAILED";
-      move.errorCode = moveError?.code ?? "MOVE_NOT_VERIFIED";
+      destination.status = createError?.ambiguous === false ? "FAILED" : "UNKNOWN";
+      destination.errorCode = createError?.code ?? "CREATE_NOT_VERIFIED";
       break;
     }
 
-    if (record.moves.every((move) => move.status === "VERIFIED")) {
-      const finalObservation = await this.#observeFolder(
-        proposalId,
-        run.requesterOpenId,
-        run.tenantKey,
-      );
-      if (!inventoryMatchesExecutionTarget(record, finalObservation.inventory)) {
+    if (record.destinations.every((folder) => folder.status === "VERIFIED")) {
+      for (const move of record.moves) {
+        const destination = record.destinations.find((folder) => folder.name === move.destinationName);
+        if (destination?.status !== "VERIFIED" || !destination.folderToken) break;
+        move.destinationFolderToken = destination.folderToken;
+        const before = await this.#observeFileParent(run, move.fileRef);
+        if (move.status === "VERIFIED") {
+          if (before !== move.destinationFolderToken) {
+            move.status = "UNKNOWN";
+            move.errorCode = "VERIFIED_PARENT_CHANGED";
+            break;
+          }
+          continue;
+        }
+        if (move.status === "REQUESTING") {
+          if (before === move.destinationFolderToken) {
+            move.status = "VERIFIED";
+            move.verifiedAt = new Date().toISOString();
+            await this.#storeExecution(proposalId, "RUNNING", record);
+            continue;
+          }
+          move.status = "UNKNOWN";
+          move.errorCode = "INTERRUPTED_MOVE_NOT_RECONCILED";
+          break;
+        }
+        if (before !== move.originalFolderToken) {
+          move.status = "UNKNOWN";
+          move.errorCode = "UNEXPECTED_SOURCE_PARENT";
+          break;
+        }
+        move.status = "REQUESTING";
+        move.attemptedAt = new Date().toISOString();
+        await this.#storeExecution(proposalId, "RUNNING", record);
+        let moveError: DriveMoveError | null = null;
+        try {
+          await this.#moveFile(run, move.fileRef, move.destinationFolderToken);
+        } catch (error) {
+          moveError = error instanceof DriveMoveError ? error : new DriveMoveError("TEMPORARY", true);
+        }
+        const after = await this.#observeExpectedParent(run, move.fileRef, move.destinationFolderToken);
+        if (after === move.destinationFolderToken) {
+          move.status = "VERIFIED";
+          move.verifiedAt = new Date().toISOString();
+          delete move.errorCode;
+          await this.#storeExecution(proposalId, "RUNNING", record);
+          continue;
+        }
+        move.status = moveError?.ambiguous === false ? "FAILED" : "UNKNOWN";
+        move.errorCode = moveError?.code ?? "MOVE_NOT_VERIFIED";
+        break;
+      }
+    }
+
+    if (
+      record.destinations.every((folder) => folder.status === "VERIFIED") &&
+      record.moves.every((move) => move.status === "VERIFIED")
+    ) {
+      const observed = snapshotWorkspaceInventory(proposalId, await this.#inspectWorkspace(run));
+      if (!inventoryMatchesExecutionTarget(record, approved.inventory, observed)) {
         record.errorCode = "FINAL_TARGET_MISMATCH";
+      } else {
+        try {
+          record.knowledgePathsUpdated =
+            await this.#knowledge.reconcileWorkspacePaths();
+        } catch {
+          record.knowledgeReconciliationError = "PATH_RECONCILIATION_FAILED";
+        }
       }
     }
     record.finishedAt = new Date().toISOString();
     const status = finalExecutionStatus(record);
-    await this.#storeExecutionRecord(proposalId, status, record);
+    await this.#storeExecution(proposalId, status, record);
     return formatExecutionResult(record, status);
   }
 
   async buildUndoMessage(proposalId: string): Promise<string> {
-    let run = await this.#repository.findInventoryRunById(proposalId);
-    if (!run?.executionCiphertext || !run.undoStatus) {
-      throw new Error("The undo request is unavailable.");
-    }
-    if (!this.#runMatchesMutationBoundary(run)) {
-      await this.#repository.storeUndo({
-        proposalId,
-        status: "FAILED",
-        ciphertext: run.executionCiphertext,
-      });
-      return "I stopped the undo because this proposal no longer matches the approved folder. No files were changed.";
-    }
-    let record = this.#decryptExecutionRecord(
-      proposalId,
-      run.executionCiphertext,
-    );
+    let run = await this.#requireRun(proposalId);
+    if (!run.executionCiphertext || !run.undoStatus) throw new Error("The undo request is unavailable.");
+    let record = this.#decryptExecution(proposalId, run.executionCiphertext);
     if (["COMPLETED", "PARTIAL", "FAILED", "UNKNOWN"].includes(run.undoStatus)) {
       return formatUndoResult(record, run.undoStatus);
     }
     if (!this.#config.organizeFolderWriteEnabled) {
-      await this.#repository.storeUndo({
-        proposalId,
-        status: "FAILED",
-        ciphertext: this.#encryptExecutionRecord(record),
-      });
-      return "File changes are paused by the operator safety switch, so I couldn’t restore the files.";
+      await this.#repository.storeUndo({ proposalId, status: "FAILED", ciphertext: this.#encryptExecution(record) });
+      return "Workspace changes are paused by the operator safety switch, so I couldn’t restore the files.";
     }
-    if (!(await this.#repository.startUndo(proposalId))) {
-      throw new Error("The undo request could not be claimed.");
-    }
-    run = (await this.#repository.findInventoryRunById(proposalId))!;
-    record = this.#decryptExecutionRecord(
-      proposalId,
-      run.executionCiphertext!,
-    );
-    if (!record.undo) {
-      throw new Error("The undo confirmation is unavailable.");
-    }
+    if (!(await this.#repository.startUndo(proposalId))) throw new Error("The undo could not be claimed.");
+    run = await this.#requireRun(proposalId);
+    record = this.#decryptExecution(proposalId, run.executionCiphertext!);
+    if (!record.undo) throw new Error("The undo confirmation is unavailable.");
     record.undo.startedAt ??= new Date().toISOString();
-    await this.#storeUndoRecord(proposalId, "RUNNING", record);
-
-    for (const undoMove of record.undo.moves) {
-      const move = record.moves.find(
-        (candidate) => candidate.fileRef === undoMove.fileRef,
-      );
+    await this.#storeUndo(proposalId, "RUNNING", record);
+    for (const undo of record.undo.moves) {
+      const move = record.moves.find((candidate) => candidate.fileRef === undo.fileRef);
       if (!move || move.status !== "VERIFIED") {
-        undoMove.status = "UNKNOWN";
-        undoMove.errorCode = "EXECUTION_NOT_VERIFIED";
+        undo.status = "UNKNOWN";
+        undo.errorCode = "EXECUTION_NOT_VERIFIED";
         break;
       }
-      const before = (
-        await this.#observeParents(
-          record,
-          run.requesterOpenId,
-          run.tenantKey,
-        )
-      ).get(move.fileRef) ?? "MISSING";
-      undoMove.observedParent = before;
-      if (undoMove.status === "VERIFIED") {
-        if (before !== "ROOT") {
-          undoMove.status = "UNKNOWN";
-          undoMove.errorCode = "RESTORED_PARENT_CHANGED";
+      const before = await this.#observeFileParent(run, move.fileRef);
+      if (undo.status === "VERIFIED") {
+        if (before !== move.originalFolderToken) {
+          undo.status = "UNKNOWN";
+          undo.errorCode = "RESTORED_PARENT_CHANGED";
           break;
         }
         continue;
       }
-      if (before === "ROOT") {
-        undoMove.status = "VERIFIED";
-        undoMove.verifiedAt = new Date().toISOString();
-        await this.#storeUndoRecord(proposalId, "RUNNING", record);
+      if (before === move.originalFolderToken) {
+        undo.status = "VERIFIED";
+        undo.verifiedAt = new Date().toISOString();
+        await this.#storeUndo(proposalId, "RUNNING", record);
         continue;
       }
-      if (undoMove.status === "REQUESTING") {
-        undoMove.status = "UNKNOWN";
-        undoMove.errorCode = "INTERRUPTED_UNDO_NOT_RECONCILED";
+      if (undo.status === "REQUESTING") {
+        undo.status = "UNKNOWN";
+        undo.errorCode = "INTERRUPTED_UNDO_NOT_RECONCILED";
         break;
       }
-      if (before !== "DESTINATION") {
-        undoMove.status = "UNKNOWN";
-        undoMove.errorCode = `UNEXPECTED_PARENT_${before}`;
+      if (before !== move.destinationFolderToken) {
+        undo.status = "UNKNOWN";
+        undo.errorCode = "UNEXPECTED_UNDO_SOURCE_PARENT";
         break;
       }
-
-      undoMove.status = "REQUESTING";
-      undoMove.attemptedAt = new Date().toISOString();
-      await this.#storeUndoRecord(proposalId, "RUNNING", record);
+      undo.status = "REQUESTING";
+      undo.attemptedAt = new Date().toISOString();
+      await this.#storeUndo(proposalId, "RUNNING", record);
       let moveError: DriveMoveError | null = null;
       try {
-        await this.#moveFile(
-          run.requesterOpenId,
-          run.tenantKey,
-          move.fileToken,
-          move.originalFolderToken,
-        );
+        await this.#moveFile(run, move.fileRef, move.originalFolderToken);
       } catch (error) {
-        moveError =
-          error instanceof DriveMoveError
-            ? error
-            : new DriveMoveError("TEMPORARY", true);
+        moveError = error instanceof DriveMoveError ? error : new DriveMoveError("TEMPORARY", true);
       }
-      const after = await this.#observeExpectedParent(
-        record,
-        run.requesterOpenId,
-        run.tenantKey,
-        move.fileRef,
-        "ROOT",
-        moveError === null || moveError.ambiguous,
-      );
-      undoMove.observedParent = after;
-      if (after === "ROOT") {
-        undoMove.status = "VERIFIED";
-        undoMove.verifiedAt = new Date().toISOString();
-        delete undoMove.errorCode;
-        await this.#storeUndoRecord(proposalId, "RUNNING", record);
+      const after = await this.#observeExpectedParent(run, move.fileRef, move.originalFolderToken);
+      if (after === move.originalFolderToken) {
+        undo.status = "VERIFIED";
+        undo.verifiedAt = new Date().toISOString();
+        delete undo.errorCode;
+        await this.#storeUndo(proposalId, "RUNNING", record);
         continue;
       }
-      undoMove.status = moveError === null || moveError.ambiguous
-        ? "UNKNOWN"
-        : "FAILED";
-      undoMove.errorCode = moveError?.code ?? "UNDO_NOT_VERIFIED";
+      undo.status = moveError?.ambiguous === false ? "FAILED" : "UNKNOWN";
+      undo.errorCode = moveError?.code ?? "UNDO_NOT_VERIFIED";
       break;
     }
-
     if (record.undo.moves.every((move) => move.status === "VERIFIED")) {
-      const approved = this.#decryptStoredResult(proposalId, run.resultCiphertext);
-      const restored = await this.#observeFolder(
-        proposalId,
-        run.requesterOpenId,
-        run.tenantKey,
-      );
-      if (
-        !approved.ok ||
-        !inventoryMatchesApprovedSnapshot(approved.inventory, restored.inventory)
-      ) {
+      const approved = this.#decryptResult(proposalId, run.resultCiphertext);
+      const observed = snapshotWorkspaceInventory(proposalId, await this.#inspectWorkspace(run));
+      if (!approved.ok || !inventoryMatchesUndoTarget(approved.inventory, observed)) {
         record.undo.errorCode = "FINAL_BASELINE_MISMATCH";
+      } else {
+        try {
+          record.undo.knowledgePathsUpdated =
+            await this.#knowledge.reconcileWorkspacePaths();
+        } catch {
+          record.undo.knowledgeReconciliationError = "PATH_RECONCILIATION_FAILED";
+        }
       }
     }
     record.undo.finishedAt = new Date().toISOString();
     const status = finalUndoStatus(record);
-    await this.#storeUndoRecord(proposalId, status, record);
+    await this.#storeUndo(proposalId, status, record);
     return formatUndoResult(record, status);
   }
 
-  async finalizeExhaustedOperation(
-    runId: string,
-    kind: DeliveryJobKind,
-  ): Promise<string> {
+  async finalizeExhaustedOperation(runId: string, kind: DeliveryJobKind): Promise<string> {
     if (kind === "ORGANIZE_FOLDER_SCAN") {
-      return this.finalizeExhaustedInventory(runId);
+      return this.#storeFailure(runId, "INTERNAL", "The workspace proposal could not be completed after several attempts.");
     }
-    const run = await this.#repository.findInventoryRunById(runId);
-    if (!run?.executionCiphertext) {
-      if (kind === "ORGANIZE_FOLDER_EXECUTE") {
-        await this.#repository.storeExecution({
-          proposalId: runId,
-          status: "UNKNOWN",
-          ciphertext: null,
-        });
-        return "Execution could not be reconciled after several attempts. No success is claimed.";
-      }
-      throw new Error("The exhausted undo record is unavailable.");
+    const run = await this.#requireRun(runId);
+    if (!run.executionCiphertext) {
+      await this.#repository.storeExecution({ proposalId: runId, status: "UNKNOWN", ciphertext: null });
+      return "The workspace operation could not be reconciled after several attempts. No success is claimed.";
     }
-    const record = this.#decryptExecutionRecord(runId, run.executionCiphertext);
+    const record = this.#decryptExecution(runId, run.executionCiphertext);
     if (kind === "ORGANIZE_FOLDER_EXECUTE") {
-      for (const move of record.moves) {
-        if (move.status === "REQUESTING") {
-          move.status = "UNKNOWN";
-          move.errorCode = "EXECUTION_ATTEMPTS_EXHAUSTED";
-        }
+      for (const operation of [...record.destinations, ...record.moves]) {
+        if (operation.status === "REQUESTING") operation.status = "UNKNOWN";
       }
       record.finishedAt = new Date().toISOString();
       const status = finalExecutionStatus(record);
-      await this.#storeExecutionRecord(runId, status, record);
+      await this.#storeExecution(runId, status, record);
       return formatExecutionResult(record, status);
     }
     if (kind === "ORGANIZE_FOLDER_UNDO" && record.undo) {
-      for (const move of record.undo.moves) {
-        if (move.status === "REQUESTING") {
-          move.status = "UNKNOWN";
-          move.errorCode = "UNDO_ATTEMPTS_EXHAUSTED";
-        }
+      for (const operation of record.undo.moves) {
+        if (operation.status === "REQUESTING") operation.status = "UNKNOWN";
       }
       record.undo.finishedAt = new Date().toISOString();
       const status = finalUndoStatus(record);
-      await this.#storeUndoRecord(runId, status, record);
+      await this.#storeUndo(runId, status, record);
       return formatUndoResult(record, status);
     }
     throw new Error("The exhausted workflow job kind is unsupported.");
@@ -825,244 +820,127 @@ export class OrganizeFolderWorkflow {
     duplicate: boolean,
     executionQueued: boolean,
   ): string {
-    const action = decision === "APPROVED" ? "approved" : "rejected";
-    const outcome =
-      decision === "REJECTED"
-        ? "No files were moved."
-        : duplicate
-          ? "No execution was queued because this approval was already recorded."
+    const outcome = decision === "REJECTED"
+      ? "No files or folders were changed."
+      : duplicate
+        ? "No second execution was queued."
         : executionQueued
-          ? "Execution is queued. I’ll verify every file before reporting the result."
-          : "Your approval is saved, but file changes are paused by the operator safety switch.";
-    return [
-      `Proposal ${proposalId} ${duplicate ? "was already" : "is now"} ${action}.`,
-      "",
-      outcome,
-    ].join("\n");
+          ? "Execution is queued. I’ll verify every created folder and moved file."
+          : "Approval is saved, but workspace changes are paused by the operator safety switch.";
+    return `Proposal ${proposalId} ${duplicate ? "was already" : "is now"} ${decision.toLowerCase()}.\n\n${outcome}`;
   }
 
-  async #observeFolder(
-    operationId: string,
-    requesterOpenId: string,
-    tenantKey: string,
-  ) {
-    const accessToken = await this.#tokenBroker.getAccessToken(
-      requesterOpenId,
-      tenantKey,
-    );
-    return observeAllowlistedFolder(this.#driveReader, {
-      runId: operationId,
-      requesterOpenId,
-      rootToken: this.#config.organizeFolderRootToken,
-      accessToken,
-      recoverAccessToken: (rejectedToken) =>
-        this.#tokenBroker.recoverAccessToken(
-          requesterOpenId,
-          tenantKey,
-          rejectedToken,
-        ),
-      markAccessTokenRejected: (rejectedToken) =>
-        this.#tokenBroker.markAccessTokenRejected(
-          requesterOpenId,
-          tenantKey,
-          rejectedToken,
-        ),
+  async #inspectWorkspace(identity: { requesterOpenId: string; tenantKey: string }): Promise<WorkspaceDriveInventory> {
+    return this.#workspaceReader.inspectWorkspace(identity, {
+      maxPdfs: workspaceOrganizationPolicy.maxEligiblePdfs,
     });
   }
 
-  async #observeParents(
-    record: OrganizeFolderExecutionRecord,
-    requesterOpenId: string,
-    tenantKey: string,
-  ): Promise<Map<string, ObservedParent>> {
-    const accessToken = await this.#tokenBroker.getAccessToken(
-      requesterOpenId,
-      tenantKey,
-    );
-    const recovered = await withReadOnlyDriveTokenRecovery(
-      {
-        accessToken,
-        recoverAccessToken: (rejectedAccessToken) =>
-          this.#tokenBroker.recoverAccessToken(
-            requesterOpenId,
-            tenantKey,
-            rejectedAccessToken,
-          ),
-        markAccessTokenRejected: (rejectedAccessToken) =>
-          this.#tokenBroker.markAccessTokenRejected(
-            requesterOpenId,
-            tenantKey,
-            rejectedAccessToken,
-          ),
-      },
-      (currentAccessToken) =>
-        observeExecutionParents(this.#driveReader, {
-          accessToken: currentAccessToken,
-          record,
-        }),
-    );
-    return recovered.result;
+  async #observeDestination(
+    identity: { requesterOpenId: string; tenantKey: string },
+    name: string,
+    expectedToken?: string,
+  ): Promise<string | null> {
+    for (const delay of [0, 250, 750]) {
+      if (delay) await wait(delay);
+      const observed = await this.#inspectWorkspace(identity);
+      const matches = observed.folders.filter(
+        (folder) =>
+          folder.depth === 1 &&
+          folder.ownedByRequester &&
+          normalizeDestinationName(folder.name) === normalizeDestinationName(name),
+      );
+      if (matches.length === 1 && (!expectedToken || matches[0]!.token === expectedToken)) {
+        return matches[0]!.token;
+      }
+      if (matches.length > 1) return null;
+    }
+    return null;
+  }
+
+  async #observeFileParent(
+    identity: { requesterOpenId: string; tenantKey: string },
+    fileRef: string,
+  ): Promise<string | null> {
+    return (await this.#inspectWorkspace(identity)).files.find((file) => file.token === fileRef)?.parentToken ?? null;
   }
 
   async #observeExpectedParent(
-    record: OrganizeFolderExecutionRecord,
-    requesterOpenId: string,
-    tenantKey: string,
+    identity: { requesterOpenId: string; tenantKey: string },
     fileRef: string,
-    expected: ObservedParent,
-    allowSettling: boolean,
-  ): Promise<ObservedParent> {
-    let observed =
-      (
-        await this.#observeParents(record, requesterOpenId, tenantKey)
-      ).get(fileRef) ?? "MISSING";
-    if (!allowSettling || observed === expected) {
-      return observed;
+    expectedParent: string,
+  ): Promise<string | null> {
+    let parent: string | null = null;
+    for (const delay of [0, 250, 750]) {
+      if (delay) await wait(delay);
+      parent = await this.#observeFileParent(identity, fileRef);
+      if (parent === expectedParent) break;
     }
-    for (const delayMs of [250, 750]) {
-      await wait(delayMs);
-      observed =
-        (
-          await this.#observeParents(record, requesterOpenId, tenantKey)
-        ).get(fileRef) ?? "MISSING";
-      if (observed === expected) {
-        break;
-      }
-    }
-    return observed;
+    return parent;
+  }
+
+  async #createFolder(
+    identity: { requesterOpenId: string; tenantKey: string },
+    name: string,
+  ): Promise<{ folderToken: string }> {
+    return this.#mutateWithToken(identity, (accessToken) =>
+      this.#folderCreator.createFolder({
+        accessToken,
+        parentFolderToken: this.#config.organizeFolderRootToken,
+        name,
+      }),
+    );
   }
 
   async #moveFile(
-    requesterOpenId: string,
-    tenantKey: string,
+    identity: { requesterOpenId: string; tenantKey: string },
     fileToken: string,
     destinationFolderToken: string,
   ): Promise<void> {
-    let accessToken = await this.#tokenBroker.getAccessToken(
-      requesterOpenId,
-      tenantKey,
+    await this.#mutateWithToken(identity, (accessToken) =>
+      this.#driveMover.moveFile({ accessToken, fileToken, destinationFolderToken }),
     );
+  }
+
+  async #mutateWithToken<T>(
+    identity: { requesterOpenId: string; tenantKey: string },
+    operation: (accessToken: string) => Promise<T>,
+  ): Promise<T> {
+    let token = await this.#tokenBroker.getAccessToken(identity.requesterOpenId, identity.tenantKey);
     try {
-      await this.#driveMover.moveFile({
-        accessToken,
-        fileToken,
-        destinationFolderToken,
-      });
-      return;
+      return await operation(token);
     } catch (error) {
-      if (!(error instanceof DriveMoveError) || error.code !== "UNAUTHORIZED") {
-        throw error;
-      }
+      if (!(error instanceof DriveMoveError) || error.code !== "UNAUTHORIZED") throw error;
     }
-    accessToken = await this.#tokenBroker.recoverAccessToken(
-      requesterOpenId,
-      tenantKey,
-      accessToken,
-    );
+    token = await this.#tokenBroker.recoverAccessToken(identity.requesterOpenId, identity.tenantKey, token);
     try {
-      await this.#driveMover.moveFile({
-        accessToken,
-        fileToken,
-        destinationFolderToken,
-      });
+      return await operation(token);
     } catch (error) {
       if (error instanceof DriveMoveError && error.code === "UNAUTHORIZED") {
-        await this.#tokenBroker.markAccessTokenRejected(
-          requesterOpenId,
-          tenantKey,
-          accessToken,
-        );
+        await this.#tokenBroker.markAccessTokenRejected(identity.requesterOpenId, identity.tenantKey, token);
       }
       throw error;
     }
   }
 
-  #encryptExecutionRecord(record: OrganizeFolderExecutionRecord): string {
-    // Defends native Drive tokens and operation history against database-only
-    // compromise while binding them to one proposal run.
-    return this.#cipher.encrypt(
-      JSON.stringify(record),
-      executionAssociatedData(record.proposalId),
-    );
-  }
-
-  #decryptExecutionRecord(
-    proposalId: string,
-    ciphertext: string,
-  ): OrganizeFolderExecutionRecord {
-    try {
-      return JSON.parse(
-        this.#cipher.decrypt(
-          ciphertext,
-          executionAssociatedData(proposalId),
-        ),
-      ) as OrganizeFolderExecutionRecord;
-    } catch {
-      throw new Error("The stored execution result is invalid.");
-    }
-  }
-
-  async #storeExecutionRecord(
-    proposalId: string,
-    status: ExecutionStatus,
-    record: OrganizeFolderExecutionRecord,
-  ): Promise<void> {
-    if (
-      !(await this.#repository.storeExecution({
-        proposalId,
-        status,
-        ciphertext: this.#encryptExecutionRecord(record),
-      }))
-    ) {
-      throw new Error("The execution result could not be stored.");
-    }
-  }
-
-  async #storeUndoRecord(
-    proposalId: string,
-    status: UndoStatus,
-    record: OrganizeFolderExecutionRecord,
-  ): Promise<void> {
-    if (
-      !(await this.#repository.storeUndo({
-        proposalId,
-        status,
-        ciphertext: this.#encryptExecutionRecord(record),
-      }))
-    ) {
-      throw new Error("The undo result could not be stored.");
-    }
-  }
-
-  #assertRequestAllowed(request: ReadOnlyFolderInventoryRequest): void {
+  #assertRequestAllowed(request: OrganizeFolderRequest): void {
     this.#assertActorAllowed(request);
+    this.#assertFolderLinkAllowed(request.folderLink);
+  }
 
-    const requestedToken = parseLarkDriveFolderLink(request.folderLink);
+  #assertFolderLinkAllowed(folderLink: string): void {
     requireAllowlistedRoot(
-      requestedToken,
+      parseLarkDriveFolderLink(folderLink),
       this.#config.organizeFolderRootToken,
     );
   }
 
-  #assertActorAllowed(request: {
-    requesterOpenId: string;
-    tenantKey: string;
-  }): void {
-    if (
-      request.tenantKey !== this.#config.authorizedTenantKey
-    ) {
-      throw driveToolError(
-        "WRONG_TENANT",
-        "This tenant is not authorized for the Drive pilot.",
-      );
+  #assertActorAllowed(request: { requesterOpenId: string; tenantKey: string }): void {
+    if (request.tenantKey !== this.#config.authorizedTenantKey) {
+      throw driveToolError("WRONG_TENANT", "This tenant is not authorized for the workspace pilot.");
     }
-    if (
-      request.requesterOpenId !== this.#config.authorizedOpenId
-    ) {
-      throw driveToolError(
-        "UNAUTHORIZED",
-        "This account is not authorized for the Drive pilot.",
-      );
+    if (request.requesterOpenId !== this.#config.authorizedOpenId) {
+      throw driveToolError("UNAUTHORIZED", "This account is not authorized for the workspace pilot.");
     }
   }
 
@@ -1070,101 +948,87 @@ export class OrganizeFolderWorkflow {
     return (
       run.requesterOpenId === this.#config.authorizedOpenId &&
       run.tenantKey === this.#config.authorizedTenantKey &&
-      run.rootTokenDigest ===
-        digestFolderToken(this.#config.organizeFolderRootToken) &&
+      run.rootTokenDigest === digestFolderToken(this.#config.organizeFolderRootToken) &&
       run.oauthGrantId !== null &&
       run.oauthGrantMatchesSubject
     );
   }
 
-  async #collectInventory(
-    operationId: string,
-    requesterOpenId: string,
-    tenantKey: string,
-  ): Promise<DriveFolderInventoryResult> {
+  async #requireRun(runId: string): Promise<InventoryRun> {
+    const run = await this.#repository.findInventoryRunById(runId);
+    if (!run) throw new Error("The workspace workflow run was not found.");
+    if (run.rootTokenDigest !== digestFolderToken(this.#config.organizeFolderRootToken)) {
+      throw new Error("The workflow run does not target the active workspace.");
+    }
+    return run;
+  }
+
+  #encryptExecution(record: OrganizeFolderExecutionRecord): string {
+    // Defends native Drive tokens and operation history against DB-only compromise.
+    return this.#cipher.encrypt(JSON.stringify(record), executionAssociatedData(record.proposalId));
+  }
+
+  #decryptExecution(proposalId: string, ciphertext: string): OrganizeFolderExecutionRecord {
     try {
-      const observation = await this.#observeFolder(
-        operationId,
-        requesterOpenId,
-        tenantKey,
-      );
-      return { ok: true, inventory: observation.inventory };
-    } catch (error) {
-      return { ok: false, error: normalizeInventoryError(error).safeError };
+      return JSON.parse(this.#cipher.decrypt(ciphertext, executionAssociatedData(proposalId))) as OrganizeFolderExecutionRecord;
+    } catch {
+      throw new Error("The stored workspace execution result is invalid.");
     }
   }
 
-  async finalizeExhaustedInventory(runId: string): Promise<string> {
-    return this.#storeAndFormat(runId, {
+  #decryptResult(runId: string, ciphertext: string | null): DriveFolderInventoryResult {
+    if (!ciphertext) throw new Error("The stored workspace inventory is unavailable.");
+    try {
+      return JSON.parse(this.#cipher.decrypt(ciphertext, driveFolderInventoryResultAssociatedData(runId))) as DriveFolderInventoryResult;
+    } catch {
+      throw new Error("The stored workspace inventory is invalid.");
+    }
+  }
+
+  #decryptProposal(runId: string, ciphertext: string): OrganizeFolderProposal {
+    try {
+      return JSON.parse(this.#cipher.decrypt(ciphertext, organizeFolderProposalAssociatedData(runId))) as OrganizeFolderProposal;
+    } catch {
+      throw new Error("The stored workspace proposal is invalid.");
+    }
+  }
+
+  async #storeExecution(proposalId: string, status: ExecutionStatus, record: OrganizeFolderExecutionRecord): Promise<void> {
+    if (!(await this.#repository.storeExecution({ proposalId, status, ciphertext: this.#encryptExecution(record) }))) {
+      throw new Error("The workspace execution result could not be stored.");
+    }
+  }
+
+  async #storeUndo(proposalId: string, status: UndoStatus, record: OrganizeFolderExecutionRecord): Promise<void> {
+    if (!(await this.#repository.storeUndo({ proposalId, status, ciphertext: this.#encryptExecution(record) }))) {
+      throw new Error("The workspace undo result could not be stored.");
+    }
+  }
+
+  async #storeFailure(runId: string, code: string, message: string): Promise<string> {
+    return this.#storeResult(runId, {
       ok: false,
-      error: {
-        code: "INTERNAL",
-        message:
-          "The content-aware folder proposal could not be completed after several attempts.",
-        retryable: false,
-      },
+      error: { code: code as "INTERNAL", message, retryable: false },
     });
   }
 
-  #decryptStoredResult(
-    runId: string,
-    ciphertext: string | null,
-  ): DriveFolderInventoryResult {
-    if (!ciphertext) {
-      throw new Error("The stored read-only inventory result is unavailable.");
-    }
-    try {
-      return JSON.parse(
-        this.#cipher.decrypt(
-          ciphertext,
-          driveFolderInventoryResultAssociatedData(runId),
-        ),
-      ) as DriveFolderInventoryResult;
-    } catch {
-      throw new Error("The stored read-only inventory result is invalid.");
-    }
-  }
-
-  #decryptStoredProposal(
-    runId: string,
-    ciphertext: string,
-  ): OrganizeFolderProposal {
-    try {
-      return JSON.parse(
-        this.#cipher.decrypt(
-          ciphertext,
-          organizeFolderProposalAssociatedData(runId),
-        ),
-      ) as OrganizeFolderProposal;
-    } catch {
-      throw new Error("The stored organization proposal is invalid.");
-    }
-  }
-
-  async #storeAndFormat(
+  async #storeResult(
     runId: string,
     result: DriveFolderInventoryResult,
-    decisions?: Parameters<typeof buildOrganizeFolderProposal>[2],
+    taxonomy?: ProposedTaxonomyFolder[],
+    decisions?: ContentDecision[],
   ): Promise<string> {
-    const successfulBaseline = result.ok && result.inventory.baseline_matches;
     const resultCiphertext = this.#cipher.encrypt(
       JSON.stringify(result),
       driveFolderInventoryResultAssociatedData(runId),
     );
-    const proposal = successfulBaseline && decisions
-      ? buildOrganizeFolderProposal(result.inventory, runId, decisions)
+    const proposal = result.ok && taxonomy && decisions
+      ? buildOrganizeFolderProposal(result.inventory, runId, taxonomy, decisions)
       : null;
-    // Defends proposal contents against database-only compromise and binds
-    // them to this workflow run.
     const proposalCiphertext = proposal
-      ? this.#cipher.encrypt(
-          JSON.stringify(proposal),
-          organizeFolderProposalAssociatedData(runId),
-        )
+      ? this.#cipher.encrypt(JSON.stringify(proposal), organizeFolderProposalAssociatedData(runId))
       : null;
-    const approvable =
-      proposal !== null && (proposal.needs_review?.length ?? 0) === 0;
-    const stored = approvable
+    const stored = proposal
       ? await this.#repository.storeInventoryResult({
           runId,
           resultCiphertext,
@@ -1177,19 +1041,11 @@ export class OrganizeFolderWorkflow {
           runId,
           resultCiphertext,
           state: "FAILED_NO_CHANGE",
-          errorCode: proposal
-            ? "NEEDS_REVIEW"
-            : result.ok
-              ? "UNEXPECTED_SANDBOX_STATE"
-              : result.error.code,
-          proposalCiphertext,
+          errorCode: result.ok ? "UNEXPECTED_WORKSPACE_STATE" : result.error.code,
+          proposalCiphertext: null,
           proposalStatus: null,
         });
-    if (!stored) {
-      throw new Error("The read-only inventory result could not be stored.");
-    }
-    return proposal
-      ? formatOrganizeFolderProposal(proposal)
-      : formatDriveFolderInventoryResult(result);
+    if (!stored) throw new Error("The workspace analysis result could not be stored.");
+    return proposal ? formatOrganizeFolderProposal(proposal) : formatDriveFolderInventoryResult(result);
   }
 }

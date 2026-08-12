@@ -1,32 +1,43 @@
 import type { DriveInventory } from "./contracts.js";
-import { organizeFolderPilotPolicy } from "./pilot-policy.js";
+import {
+  isSafeDestinationName,
+  normalizeDestinationName,
+  workspaceOrganizationPolicy,
+} from "./policy.js";
 
-export type ProposalStatus =
-  | "PROPOSED"
-  | "APPROVED"
-  | "REJECTED"
-  | "STALE";
+export type ProposalStatus = "PROPOSED" | "APPROVED" | "REJECTED" | "STALE";
+export type WorkspaceFileDecision = "PRESERVE" | "MOVE" | "NEEDS_REVIEW";
 
 export type OrganizeFolderProposal = {
   proposal_id: string;
-  moves: Array<{
+  workspace_identity_digest: string;
+  taxonomy: Array<{
+    name: string;
+    description: string;
+    action: "REUSE" | "CREATE";
+    existing_folder_ref?: string;
+    existing_folder_identity_digest?: string;
+  }>;
+  files: Array<{
     file_ref: string;
     file_identity_digest: string;
     file_name: string;
-    destination_ref: string;
-    destination_identity_digest: string;
-    destination_name: "Product" | "Research";
-    rationale?: string;
-  }>;
-  needs_review?: Array<{
-    file_name: string;
+    original_parent_ref: string;
+    original_relative_path: string;
+    decision: WorkspaceFileDecision;
+    destination_name?: string;
     rationale: string;
   }>;
 };
 
+export type ProposedTaxonomyFolder = {
+  name: string;
+  description: string;
+};
+
 export type ContentDecision = {
-  file_name: string;
-  destination: "Product" | "Research" | "Needs review";
+  file_ref: string;
+  destination: string | "Needs review";
   rationale: string;
 };
 
@@ -36,6 +47,7 @@ export type ProposalBuildErrorCode =
   | "UNKNOWN_DECISION"
   | "DUPLICATE_DECISION"
   | "DUPLICATE_FILE"
+  | "INVALID_TAXONOMY"
   | "UNEXPECTED_PROPOSAL";
 
 export class ProposalBuildError extends Error {
@@ -48,128 +60,186 @@ export class ProposalBuildError extends Error {
   }
 }
 
+function currentTopLevelDestination(
+  relativePath: string,
+  fileName: string,
+): string | null {
+  const suffix = ` / ${fileName}`;
+  if (!relativePath.endsWith(suffix)) {
+    return null;
+  }
+  const parentPath = relativePath.slice(0, -suffix.length);
+  return parentPath.split(" / ")[0] ?? null;
+}
+
 export function buildOrganizeFolderProposal(
   inventory: DriveInventory,
   runId: string,
+  taxonomyInput: ProposedTaxonomyFolder[],
   decisions: ContentDecision[],
 ): OrganizeFolderProposal {
+  if (inventory.run_id !== runId || !inventory.complete) {
+    throw new ProposalBuildError(
+      "INVENTORY_NOT_READY",
+      "The verified workspace snapshot is not ready for a proposal.",
+    );
+  }
   if (
-    inventory.run_id !== runId ||
-    !inventory.complete ||
-    !inventory.baseline_matches ||
-    inventory.issues.length > 0 ||
-    inventory.skipped.length > 0
+    inventory.files.length < 1 ||
+    inventory.files.length > workspaceOrganizationPolicy.maxEligiblePdfs
   ) {
     throw new ProposalBuildError(
       "INVENTORY_NOT_READY",
-      "The verified inventory is not ready for a proposal.",
+      "The workspace does not contain a supported number of PDFs.",
     );
   }
 
-  const destinations = new Map(
-    inventory.destinations.map((destination) => [destination.name, destination]),
+  if (
+    taxonomyInput.length < 1 ||
+    taxonomyInput.length > workspaceOrganizationPolicy.maximumDestinations
+  ) {
+    throw new ProposalBuildError(
+      "INVALID_TAXONOMY",
+      "The proposed taxonomy is outside the supported folder range.",
+    );
+  }
+
+  const topLevelOwnedFolders = new Map(
+    inventory.folders
+      .filter((folder) => folder.depth === 1 && folder.owned_by_requester)
+      .map((folder) => [normalizeDestinationName(folder.name), folder]),
   );
-  const seenRefs = new Set<string>();
-  const seenNames = new Set<string>();
+  const seenTaxonomy = new Set<string>();
+  const taxonomy = taxonomyInput.map((folder) => {
+    const normalized = normalizeDestinationName(folder.name);
+    if (
+      !isSafeDestinationName(folder.name) ||
+      normalized === "needs review" ||
+      seenTaxonomy.has(normalized) ||
+      !folder.description.trim()
+    ) {
+      throw new ProposalBuildError(
+        "INVALID_TAXONOMY",
+        "The proposed taxonomy contains an invalid or duplicate folder.",
+      );
+    }
+    seenTaxonomy.add(normalized);
+    const existing = topLevelOwnedFolders.get(normalized);
+    return {
+      name: folder.name,
+      description: folder.description,
+      action: existing ? "REUSE" as const : "CREATE" as const,
+      ...(existing
+        ? {
+            existing_folder_ref: existing.ref,
+            existing_folder_identity_digest: existing.identity_digest,
+          }
+        : {}),
+    };
+  });
+
+  const seenFiles = new Set<string>();
   for (const file of inventory.files) {
-    if (seenRefs.has(file.ref) || seenNames.has(file.name)) {
+    if (seenFiles.has(file.ref)) {
       throw new ProposalBuildError(
         "DUPLICATE_FILE",
-        "The inventory contains a duplicate file.",
+        "The workspace snapshot contains a duplicate PDF.",
       );
     }
-    seenRefs.add(file.ref);
-    seenNames.add(file.name);
-  }
-  const decisionsByName = new Map<string, ContentDecision>();
-  for (const decision of decisions) {
-    if (decisionsByName.has(decision.file_name)) {
-      throw new ProposalBuildError(
-        "DUPLICATE_DECISION",
-        "The content plan contains a duplicate file decision.",
-      );
-    }
-    decisionsByName.set(decision.file_name, decision);
-  }
-  const inventoryNames = new Set(inventory.files.map((file) => file.name));
-  if ([...decisionsByName.keys()].some((name) => !inventoryNames.has(name))) {
-    throw new ProposalBuildError(
-      "UNKNOWN_DECISION",
-      "The content plan contains a decision for an unknown file.",
-    );
+    seenFiles.add(file.ref);
   }
 
-  const needsReview: NonNullable<OrganizeFolderProposal["needs_review"]> = [];
-  const moves = inventory.files.flatMap((file) => {
-    if (file.parent_ref !== "root") {
+  const decisionsByRef = new Map<string, ContentDecision>();
+  for (const decision of decisions) {
+    if (decisionsByRef.has(decision.file_ref)) {
       throw new ProposalBuildError(
-        "INVENTORY_NOT_READY",
-        "A proposed file is outside the approved root.",
+        "DUPLICATE_DECISION",
+        "The content plan contains a duplicate PDF decision.",
       );
     }
-    const decision = decisionsByName.get(file.name);
+    if (!seenFiles.has(decision.file_ref)) {
+      throw new ProposalBuildError(
+        "UNKNOWN_DECISION",
+        "The content plan contains a decision for an unknown PDF.",
+      );
+    }
+    decisionsByRef.set(decision.file_ref, decision);
+  }
+
+  const assignmentCounts = new Map(taxonomy.map((folder) => [folder.name, 0]));
+  const files = inventory.files.map((file) => {
+    const decision = decisionsByRef.get(file.ref);
     if (!decision) {
       throw new ProposalBuildError(
         "MISSING_DECISION",
-        "The content plan is missing a file decision.",
+        "The content plan is missing a PDF decision.",
       );
     }
     if (decision.destination === "Needs review") {
-      needsReview.push({
+      return {
+        file_ref: file.ref,
+        file_identity_digest: file.identity_digest,
         file_name: file.name,
+        original_parent_ref: file.parent_ref,
+        original_relative_path: file.relative_path,
+        decision: "NEEDS_REVIEW" as const,
         rationale: decision.rationale,
-      });
-      return [];
+      };
     }
-    const destination = destinations.get(decision.destination);
-    if (!destination || destination.child_count !== 0) {
+    const destination = taxonomy.find(
+      (folder) =>
+        normalizeDestinationName(folder.name) ===
+        normalizeDestinationName(decision.destination),
+    );
+    if (!destination) {
       throw new ProposalBuildError(
-        "INVENTORY_NOT_READY",
-        "An approved destination is not ready for a proposal.",
+        "UNKNOWN_DECISION",
+        "The content plan references an undeclared destination.",
       );
     }
-    return [{
+    assignmentCounts.set(
+      destination.name,
+      (assignmentCounts.get(destination.name) ?? 0) + 1,
+    );
+    const current = currentTopLevelDestination(file.relative_path, file.name);
+    return {
       file_ref: file.ref,
       file_identity_digest: file.identity_digest,
       file_name: file.name,
-      destination_ref: destination.ref,
-      destination_identity_digest: destination.identity_digest,
-      destination_name: decision.destination,
+      original_parent_ref: file.parent_ref,
+      original_relative_path: file.relative_path,
+      decision:
+        current &&
+        normalizeDestinationName(current) ===
+          normalizeDestinationName(destination.name)
+          ? "PRESERVE" as const
+          : "MOVE" as const,
+      destination_name: destination.name,
       rationale: decision.rationale,
-    }];
+    };
   });
 
-  moves.sort(
-    (left, right) =>
-      left.destination_name.localeCompare(right.destination_name) ||
-      left.file_name.localeCompare(right.file_name) ||
-      left.file_ref.localeCompare(right.file_ref),
-  );
-  const productFileCount = moves.filter(
-    (move) => move.destination_name === "Product",
-  ).length;
-  const researchFileCount = moves.filter(
-    (move) => move.destination_name === "Research",
-  ).length;
-  if (
-    needsReview.length === 0 &&
-    (moves.length !== organizeFolderPilotPolicy.rootFileCount ||
-      productFileCount !== 2 ||
-      researchFileCount !== 2)
-  ) {
+  if ([...assignmentCounts.values()].some((count) => count === 0)) {
     throw new ProposalBuildError(
-      "UNEXPECTED_PROPOSAL",
-      "The proposal does not match the approved four-file pilot.",
+      "INVALID_TAXONOMY",
+      "The proposed taxonomy contains an empty destination folder.",
     );
   }
 
+  files.sort(
+    (left, right) =>
+      (left.destination_name ?? "Needs review").localeCompare(
+        right.destination_name ?? "Needs review",
+      ) || left.original_relative_path.localeCompare(right.original_relative_path),
+  );
   return {
     proposal_id: runId,
-    moves,
-    needs_review: needsReview,
+    workspace_identity_digest: inventory.workspace_identity_digest,
+    taxonomy,
+    files,
   };
 }
 
 export function organizeFolderProposalAssociatedData(runId: string): string {
-  return `organize-folder-run:${runId}:proposal:v1`;
+  return `organize-workspace-run:${runId}:proposal:v2`;
 }

@@ -1,35 +1,14 @@
 import type {
-  DriveInventory,
   DriveFolderInventoryResult,
+  DriveInventory,
 } from "./contracts.js";
 import type { OrganizeFolderProposal } from "./proposal.js";
 
 const MAX_DISPLAY_VALUE_LENGTH = 160;
 const COMMON_FILE_EXTENSIONS = new Set([
-  "csv",
-  "doc",
-  "docx",
-  "gif",
-  "jpeg",
-  "jpg",
-  "json",
-  "m4a",
-  "md",
-  "mov",
-  "mp3",
-  "mp4",
-  "pdf",
-  "png",
-  "ppt",
-  "pptx",
-  "svg",
-  "txt",
-  "webp",
-  "xls",
-  "xlsx",
-  "yaml",
-  "yml",
-  "zip",
+  "csv", "doc", "docx", "gif", "jpeg", "jpg", "json", "m4a", "md",
+  "mov", "mp3", "mp4", "pdf", "png", "ppt", "pptx", "svg", "txt",
+  "webp", "xls", "xlsx", "yaml", "yml", "zip",
 ]);
 
 function neutralizeAutolinks(value: string): string {
@@ -37,14 +16,12 @@ function neutralizeAutolinks(value: string): string {
     /\b(?:[a-z][a-z\d+.-]{1,31}:\/\/|https?:|ftp:|mailto:|tel:|www\.)[^\s\u2039\u203a"']*/giu,
     "[link removed]",
   );
-
   return withoutExplicitUrls.replace(
     /\b(?:[a-z\d](?:[a-z\d-]{0,62}\.)+)[a-z]{2,63}(?:[/:?#][^\s\u2039\u203a"']*)?/giu,
     (candidate) => {
       const hostname = candidate.split(/[/:?#]/u, 1)[0] ?? "";
       const extension = hostname.split(".").at(-1)?.toLowerCase() ?? "";
-      const hasUrlSuffix = candidate.length > hostname.length;
-      return !hasUrlSuffix && COMMON_FILE_EXTENSIONS.has(extension)
+      return candidate.length === hostname.length && COMMON_FILE_EXTENSIONS.has(extension)
         ? candidate
         : "[link removed]";
     },
@@ -62,137 +39,85 @@ export function sanitizeDisplayValue(
     .trim()
     .replaceAll("<", "\u2039")
     .replaceAll(">", "\u203a");
-  const safeValue = neutralizeAutolinks(collapsed) || fallback;
-  const codePoints = Array.from(safeValue);
-
-  if (codePoints.length <= maxCodePoints) {
-    return safeValue;
-  }
-  return `${codePoints.slice(0, Math.max(0, maxCodePoints - 1)).join("")}\u2026`;
+  const safe = neutralizeAutolinks(collapsed) || fallback;
+  const points = Array.from(safe);
+  return points.length <= maxCodePoints
+    ? safe
+    : `${points.slice(0, Math.max(0, maxCodePoints - 1)).join("")}\u2026`;
 }
 
-function lineForDestination(
-  destination: DriveInventory["destinations"][number],
-): string {
-  const contents =
-    destination.child_count === 0
-      ? "empty"
-      : `${destination.child_count} child item(s)`;
-  return `  - ${sanitizeDisplayValue(destination.name, "[unnamed]")}: ${contents}`;
-}
-
-function fileCountLabel(count: number): string {
-  return `${count} ${count === 1 ? "file" : "files"}`;
+function countLabel(count: number): string {
+  return `${count} ${count === 1 ? "PDF" : "PDFs"}`;
 }
 
 export function formatDriveInventory(inventory: DriveInventory): string {
-  const ownershipChecks = [
-    inventory.root.owner_verification,
-    ...inventory.destinations.map((item) => item.owner_verification),
-    ...inventory.files.map((item) => item.owner_verification),
-    ...inventory.skipped.map((item) => item.owner_verification),
-  ];
-  const allOwnersMatched = ownershipChecks.every(
-    (status) => status === "matched",
+  const files = inventory.files.slice(0, 20).map(
+    (file) => `- ${sanitizeDisplayValue(file.relative_path, "[unnamed PDF]")}`,
   );
-  const lines = [
-    "Read-only folder inventory complete.",
+  return [
+    "Workspace inspection complete.",
     "",
-    `Root: ${sanitizeDisplayValue(inventory.root.name, "[unnamed]")}`,
-    `Root folders: ${inventory.summary.root_folder_count}`,
-    `Root files: ${inventory.summary.root_file_count}`,
-    `Unsupported root items: ${inventory.summary.root_skipped_count}`,
-    `Ownership: ${allOwnersMatched ? "matched the requesting user" : "not fully verified"}`,
-    "Additional manageability signal: not exposed by these read-only Lark APIs.",
+    `Eligible PDFs: ${inventory.files.length}`,
+    `Folders inspected: ${inventory.folders.length}`,
+    ...files,
+    ...(inventory.files.length > files.length
+      ? [`- …and ${inventory.files.length - files.length} more`]
+      : []),
     "",
-    "Approved destinations:",
-    ...inventory.destinations.map(lineForDestination),
-    "",
-    "Root files:",
-    ...inventory.files.map(
-      (file) => `  - ${sanitizeDisplayValue(file.name, "[unnamed]")}`,
-    ),
-  ];
-
-  if (inventory.skipped.length > 0) {
-    lines.push(
-      "",
-      "Skipped items:",
-      ...inventory.skipped.map(
-        (item) =>
-          `  - ${sanitizeDisplayValue(item.name, "[unnamed]")} (${sanitizeDisplayValue(item.type, "[unknown type]")})`,
-      ),
-    );
-  }
-  if (inventory.issues.length > 0) {
-    lines.push(
-      "",
-      "The sandbox differs from the expected baseline:",
-      ...inventory.issues.map((issue) => `  - ${issue}`),
-    );
-  } else {
-    lines.push("", "Baseline verified: two empty folders and four files.");
-  }
-  lines.push("", "No files were opened, downloaded, or changed.");
-  return lines.join("\n");
+    "No file contents were read and no Drive files were changed.",
+  ].join("\n");
 }
 
-export function formatDriveFolderInventoryResult(result: DriveFolderInventoryResult): string {
-  if (result.ok) {
-    return formatDriveInventory(result.inventory);
-  }
-  return `${result.error.message}\n\nNo files were changed.`;
+export function formatDriveFolderInventoryResult(
+  result: DriveFolderInventoryResult,
+): string {
+  return result.ok
+    ? formatDriveInventory(result.inventory)
+    : `${result.error.message}\n\nNo Drive files were changed.`;
 }
 
 export function formatOrganizeFolderProposal(
   proposal: OrganizeFolderProposal,
 ): string {
-  const productFiles = proposal.moves.filter(
-    (move) => move.destination_name === "Product",
-  );
-  const researchFiles = proposal.moves.filter(
-    (move) => move.destination_name === "Research",
-  );
-  const needsReview = proposal.needs_review ?? [];
+  const preserved = proposal.files.filter((file) => file.decision === "PRESERVE");
+  const moved = proposal.files.filter((file) => file.decision === "MOVE");
+  const review = proposal.files.filter((file) => file.decision === "NEEDS_REVIEW");
   const lines = [
-    `Organization proposal ${proposal.proposal_id}`,
+    `Workspace organization proposal ${proposal.proposal_id}`,
     "",
-    `Product (${fileCountLabel(productFiles.length)}):`,
-    ...productFiles.flatMap((move) => [
-      `  - ${sanitizeDisplayValue(move.file_name, "[unnamed]")}`,
-      ...(move.rationale
-        ? [`    Why: ${sanitizeDisplayValue(move.rationale, "[no rationale]")}`]
-        : []),
-    ]),
-    "",
-    `Research (${fileCountLabel(researchFiles.length)}):`,
-    ...researchFiles.flatMap((move) => [
-      `  - ${sanitizeDisplayValue(move.file_name, "[unnamed]")}`,
-      ...(move.rationale
-        ? [`    Why: ${sanitizeDisplayValue(move.rationale, "[no rationale]")}`]
-        : []),
-    ]),
-    "",
-    `Needs review (${fileCountLabel(needsReview.length)}):`,
-    ...(needsReview.length === 0
-      ? ["  - None"]
-      : needsReview.flatMap((item) => [
-          `  - ${sanitizeDisplayValue(item.file_name, "[unnamed]")}`,
-          `    Why: ${sanitizeDisplayValue(item.rationale, "[no rationale]")}`,
-        ])),
-    "No changes have been made.",
+    `Summary: ${countLabel(proposal.files.length)} · ${moved.length} to move · ${preserved.length} already organized · ${review.length} need review`,
   ];
-  if (needsReview.length === 0) {
+  for (const folder of proposal.taxonomy) {
+    const assigned = proposal.files.filter(
+      (file) => file.destination_name === folder.name,
+    );
     lines.push(
       "",
-      `Approve: /approve-folder ${proposal.proposal_id}`,
-      `Reject: /reject-folder ${proposal.proposal_id}`,
+      `${folder.name} (${countLabel(assigned.length)} · ${folder.action === "REUSE" ? "reuse folder" : "create folder"})`,
+      `Purpose: ${sanitizeDisplayValue(folder.description, "[no description]")}`,
+      ...assigned.flatMap((file) => [
+        `- ${sanitizeDisplayValue(file.file_name, "[unnamed PDF]")}`,
+        `  ${file.decision === "PRESERVE" ? "Keep in place" : `Move from ${sanitizeDisplayValue(file.original_relative_path, "[unknown path]")}`}`,
+        `  Why: ${sanitizeDisplayValue(file.rationale, "[no rationale]")}`,
+      ]),
+    );
+  }
+  lines.push("", `Needs review (${countLabel(review.length)})`);
+  lines.push(...(review.length === 0
+    ? ["- None"]
+    : review.flatMap((file) => [
+        `- ${sanitizeDisplayValue(file.file_name, "[unnamed PDF]")}`,
+        `  Why: ${sanitizeDisplayValue(file.rationale, "[no rationale]")}`,
+      ])));
+  lines.push("", "No Drive files or folders have been changed.");
+  if (review.length === 0) {
+    lines.push(
+      "",
+      `Approve: /approve-workspace ${proposal.proposal_id}`,
+      `Reject: /reject-workspace ${proposal.proposal_id}`,
     );
   } else {
-    lines.push(
-      "",
-      "This report cannot be approved until every file has a supported destination.",
-    );
+    lines.push("", "Resolve every Needs Review item before approving this proposal.");
   }
   return lines.join("\n");
 }

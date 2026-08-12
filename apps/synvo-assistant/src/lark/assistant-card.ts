@@ -61,12 +61,12 @@ export function buildAssistantHelpCard(): InteractiveCard {
         text: {
           tag: "lark_md",
           content: [
-            "Here are two things I can help with:",
+            "Here are a few things I can help with:",
             "",
-            "📄 **Analyze a File**",
-            "🗂️ **Organize a Folder**",
-            "",
-            "Many more features to come...",
+            "📄 **Analyze Files**",
+            "🧭 **Strategize Business**",
+            "🗂️ **Organize Workspace**",
+            "_(more to come...)_",
           ].join("\n"),
         },
       },
@@ -233,6 +233,7 @@ function workspaceElements(
 export function buildAssistantOnlineCard(
   firstName?: string,
   workspace?: WorkspaceCardContext,
+  authorizationUrl?: URL,
 ): InteractiveCard {
   const greeting = firstName
     ? `Welcome to Synvo AI, ${firstName} 👋`
@@ -257,6 +258,45 @@ export function buildAssistantOnlineCard(
       ...(workspaceSummary && workspaceActions
         ? [{ tag: "hr" as const }, workspaceSummary, workspaceActions]
         : []),
+      ...(!workspace && authorizationUrl
+        ? [
+            { tag: "hr" as const },
+            {
+              tag: "div" as const,
+              text: {
+                tag: "lark_md" as const,
+                content: [
+                  "**Connect the Synvo_Wiki workspace**",
+                  "Authorize Synvo AI’s approved Lark Drive access so I can verify and work with the configured Synvo_Wiki workspace.",
+                ].join("\n"),
+              },
+            },
+            {
+              tag: "action" as const,
+              actions: [
+                {
+                  tag: "button" as const,
+                  type: "primary" as const,
+                  text: {
+                    tag: "plain_text" as const,
+                    content: "Authorize Synvo_Wiki",
+                  },
+                  url: authorizationUrl.toString(),
+                },
+              ],
+            },
+            {
+              tag: "note" as const,
+              elements: [
+                {
+                  tag: "plain_text" as const,
+                  content:
+                    "The secure link expires in 10 minutes. File changes still require a separate confirmation.",
+                },
+              ],
+            },
+          ]
+        : []),
       { tag: "hr" },
       {
         tag: "div",
@@ -264,22 +304,94 @@ export function buildAssistantOnlineCard(
           tag: "lark_md",
           content: [
             "Here are a few things I can do for you:",
-            "📄 **Analyze a File**",
-            "🗂️ **Organize a Folder**",
+            "📄 **Analyze Files**",
+            "🧭 **Strategize Business**",
+            "🗂️ **Organize Workspace**",
+            "_(more to come...)_",
           ].join("\n"),
         },
       },
-      {
-        tag: "note",
-        elements: [
-          {
-            tag: "lark_md",
-            content:
-              "**On the roadmap:** Nested-folder and multi-format knowledge · Lark Docs and Wiki · Engineering workflows",
-          },
-        ],
-      },
       ...(otherFolders ? [{ tag: "hr" as const }, otherFolders] : []),
+    ],
+  };
+}
+
+export function buildWorkspaceConnectedCard(
+  firstName?: string,
+  workspace?: WorkspaceCardContext,
+): InteractiveCard {
+  const safeFirstName = firstName
+    ? sanitizeDisplayValue(firstName, "")
+    : "";
+  const welcome = safeFirstName
+    ? `**You’re all set, ${safeFirstName}.**`
+    : "**You’re all set.**";
+  const workspaceName = workspace
+    ? sanitizeDisplayValue(
+        workspace.activeWorkspaceName,
+        "[unnamed workspace]",
+      )
+    : undefined;
+
+  return {
+    config: cardConfig(),
+    header: {
+      template: "green",
+      title: {
+        tag: "plain_text",
+        content: workspaceName
+          ? `${workspaceName} is connected ✓`
+          : "Lark Drive is connected ✓",
+      },
+    },
+    elements: [
+      {
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: workspaceName
+            ? `${welcome}\nI can now work with 📁 My Folders / **${workspaceName}**.`
+            : `${welcome}\nYour Lark Drive authorization is complete. Say hello to load your Synvo_Wiki workspace.`,
+        },
+      },
+      ...(workspace
+        ? [
+            {
+              tag: "action" as const,
+              actions: [
+                {
+                  tag: "button" as const,
+                  type: "primary" as const,
+                  text: {
+                    tag: "plain_text" as const,
+                    content: `Open ${workspaceName}`,
+                  },
+                  url: workspace.workspaceUrl.toString(),
+                },
+                {
+                  tag: "button" as const,
+                  type: "primary" as const,
+                  text: {
+                    tag: "plain_text" as const,
+                    content: "Refresh workspace knowledge",
+                  },
+                  value: { knowledge_action: "refresh_propose" },
+                },
+              ],
+            },
+            { tag: "hr" as const },
+            {
+              tag: "note" as const,
+              elements: [
+                {
+                  tag: "lark_md" as const,
+                  content:
+                    "Try asking: “Is our workspace knowledge up to date?” or “Please organize my workspace.”",
+                },
+              ],
+            },
+          ]
+        : []),
     ],
   };
 }

@@ -1,225 +1,215 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SynvoMcpClientError } from "../../mcp/client.js";
 import { NimAnalysisError } from "../analyze-attachment/nim-client.js";
-import type { DriveFolderInventoryResult } from "./contracts.js";
-import { ContentAwareFolderPlanner } from "./content-planner.js";
+import type { WorkspaceDriveInventory } from "../analyze-drive-file/authorized-reader.js";
+import type { KnowledgeRepresentativeEvidence } from "../knowledge/repository.js";
+import { ContentAwareFolderPlanner, snapshotWorkspaceInventory } from "./content-planner.js";
 
-const fileNames = [
-  "document-01.pdf",
-  "document-02.pdf",
-  "document-03.pdf",
-  "document-04.pdf",
-];
+const RUN_ID = "93e2548b-8f12-45a2-be12-cd7009341b17";
+const identity = { requesterOpenId: "ou_victor", tenantKey: "tenant_synvo" };
 
-function inventoryResult(): DriveFolderInventoryResult {
+function workspace(count = 15): WorkspaceDriveInventory {
   return {
-    ok: true,
-    inventory: {
-      run_id: "mcp-run",
-      complete: true,
-      baseline_matches: true,
-      root: {
-        ref: "root",
-        identity_digest: "a".repeat(64),
-        name: "Test_Synvo_AI_Assistant",
-        parent_ref: null,
-        owner_verification: "matched",
-        child_count: 6,
-      },
-      destinations: [
-        {
-          ref: "d001",
-          identity_digest: "b".repeat(64),
-          name: "Product",
-          parent_ref: "root",
-          owner_verification: "matched",
-          child_count: 0,
-        },
-        {
-          ref: "d002",
-          identity_digest: "c".repeat(64),
-          name: "Research",
-          parent_ref: "root",
-          owner_verification: "matched",
-          child_count: 0,
-        },
-      ],
-      files: fileNames.map((name, index) => ({
-        ref: `f00${index + 1}`,
-        identity_digest: String(index + 1).repeat(64),
-        name,
-        type: "file",
-        parent_ref: "root",
-        owner_verification: "matched" as const,
-      })),
-      skipped: [],
-      issues: [],
-      summary: {
-        root_folder_count: 2,
-        root_file_count: 4,
-        root_skipped_count: 0,
-        destination_child_count: 0,
-      },
-    },
+    rootToken: "root-token",
+    folders: [
+      { token: "folder-inbox", name: "Inbox", relativePath: "Inbox", parentToken: "root-token", depth: 1, ownedByRequester: true },
+      { token: "folder-engineering", name: "Engineering", relativePath: "Engineering", parentToken: "root-token", depth: 1, ownedByRequester: true },
+    ],
+    files: Array.from({ length: count }, (_, index) => ({
+      token: `file-${index + 1}`,
+      name: `document-${index + 1}.pdf`,
+      fileName: `document-${index + 1}.pdf`,
+      relativePath: `Inbox / document-${index + 1}.pdf`,
+      parentToken: "folder-inbox",
+      parentPath: "Inbox",
+      depth: 2,
+      version: "1",
+    })),
   };
 }
 
+function evidenceFor(observed: WorkspaceDriveInventory) {
+  return observed.files.map((file) => ({
+    file,
+    chunks: [{
+      sourceKey: file.token,
+      sourceName: file.relativePath,
+      sourceVersionOrHash: file.version,
+      pageNumber: 1,
+      text: `Evidence for ${file.fileName}`,
+    } satisfies KnowledgeRepresentativeEvidence],
+  }));
+}
+
 function fixture(options: {
-  inventory?: DriveFolderInventoryResult;
-  analysisFailure?: string;
-  analysisRetryable?: boolean;
-  analysisName?: string;
-  connectError?: Error;
-  classifyError?: Error;
+  changedWorkspace?: WorkspaceDriveInventory;
+  invalidProfileCoverage?: boolean;
+  invalidDecisionCoverage?: boolean;
+  classifierError?: Error;
+  profileThemes?: (index: number) => string[];
+  taxonomy?: Array<{ name: string; description: string }>;
 } = {}) {
-  const calls = { connect: 0, close: 0, inventory: 0, analyze: [] as string[] };
-  let classifierInput: unknown;
+  const observed = workspace();
+  const calls = { inspect: 0, prepare: 0, profile: 0, taxonomy: 0, classify: 0 };
+  const order: string[] = [];
   const planner = new ContentAwareFolderPlanner({
-    tools: {
-      async connect() {
-        calls.connect += 1;
-        if (options.connectError) throw options.connectError;
+    reader: {
+      async inspectWorkspace() {
+        calls.inspect += 1;
+        return options.changedWorkspace ?? observed;
       },
-      async close() { calls.close += 1; },
-      async inventory() {
-        calls.inventory += 1;
-        return options.inventory ?? inventoryResult();
-      },
-      async analyze(_folderUrl, fileName) {
-        calls.analyze.push(fileName);
-        if (options.analysisFailure) {
-          return {
-            ok: false as const,
-            error: {
-              message: options.analysisFailure,
-              retryable: options.analysisRetryable ?? false,
-            },
-          };
-        }
-        return {
-          ok: true as const,
-          analysis: {
-            filename: options.analysisName ?? fileName,
-            text: `Analysis for ${fileName}`,
-          },
-        };
+    },
+    knowledge: {
+      async prepareWorkspaceOrganization(files) {
+        calls.prepare += 1;
+        order.push("knowledge");
+        assert.equal(files.length, 15);
+        return evidenceFor(observed);
       },
     },
     classifier: {
-      async classifyOrganization(input) {
-        classifierInput = input;
-        if (options.classifyError) throw options.classifyError;
-        return fileNames.map((fileName, index) => ({
-          file_name: fileName,
-          destination: index < 2 ? "Research" as const : "Product" as const,
-          rationale: `Evidence for ${fileName}`,
+      async profileWorkspaceDocuments(input) {
+        calls.profile += 1;
+        order.push("profile");
+        if (options.classifierError) throw options.classifierError;
+        const documents = options.invalidProfileCoverage ? input.documents.slice(1) : input.documents;
+        return documents.map((document, index) => ({
+          document_id: document.document_id,
+          summary: `Profile ${document.document_id}`,
+          themes: options.profileThemes?.(index) ?? ["engineering"],
+        }));
+      },
+      async proposeWorkspaceTaxonomy(input) {
+        calls.taxonomy += 1;
+        order.push("taxonomy");
+        assert.ok(input.existing_folder_names.includes("Engineering"));
+        return options.taxonomy ?? [
+          { name: "Engineering", description: "Implementation and architecture." },
+          { name: "Research", description: "Research and analysis." },
+          { name: "Operations", description: "Operating policies and procedures." },
+        ];
+      },
+      async classifyWorkspaceDocuments(input) {
+        calls.classify += 1;
+        order.push("classify");
+        const profiles = options.invalidDecisionCoverage ? input.profiles.slice(1) : input.profiles;
+        const destinations = options.taxonomy?.map((folder) => folder.name) ??
+          ["Engineering", "Research", "Operations"];
+        return profiles.map((profile, index) => ({
+          document_id: profile.document_id,
+          destination: destinations[index % destinations.length]!,
+          rationale: "The evidence matches this destination.",
         }));
       },
     },
   });
-  return { planner, calls, classifierInput: () => classifierInput };
+  return { planner, observed, calls, order };
 }
 
-test("inventories once, analyzes every exact filename, and classifies the bounded evidence", async () => {
+test("profiles and classifies every PDF in bounded batches", async () => {
   const testFixture = fixture();
-
   const result = await testFixture.planner.plan(
-    "https://larksuite.com/drive/folder/fldcnRoot123",
+    RUN_ID,
+    identity,
+    snapshotWorkspaceInventory(RUN_ID, testFixture.observed),
   );
-
   assert.equal(result.kind, "ready");
+  if (result.kind !== "ready") return;
+  assert.equal(result.decisions.length, 15);
+  assert.equal(result.taxonomy.length, 3);
   assert.deepEqual(testFixture.calls, {
-    connect: 1,
-    close: 1,
-    inventory: 1,
-    analyze: fileNames,
+    inspect: 1,
+    prepare: 1,
+    profile: 2,
+    taxonomy: 1,
+    classify: 2,
   });
-  assert.deepEqual(testFixture.classifierInput(), {
-    files: fileNames.map((fileName) => ({
-      file_name: fileName,
-      analysis: `Analysis for ${fileName}`,
-    })),
-  });
+  assert.equal(testFixture.order[0], "knowledge");
+  assert.equal(testFixture.order.indexOf("knowledge") < testFixture.order.indexOf("profile"), true);
 });
 
-test("stops before analysis when inventory is not ready", async () => {
-  const notReady = inventoryResult();
-  assert.equal(notReady.ok, true);
-  if (notReady.ok) notReady.inventory.baseline_matches = false;
-  const testFixture = fixture({ inventory: notReady });
-
-  const result = await testFixture.planner.plan("https://larksuite.com/folder");
-
+test("stops before providers if the consented snapshot changed", async () => {
+  const testFixture = fixture({ changedWorkspace: workspace(14) });
+  const result = await testFixture.planner.plan(
+    RUN_ID,
+    identity,
+    snapshotWorkspaceInventory(RUN_ID, workspace(15)),
+  );
   assert.equal(result.kind, "inventory_not_ready");
-  assert.deepEqual(testFixture.calls.analyze, []);
-  assert.equal(testFixture.classifierInput(), undefined);
-  assert.equal(testFixture.calls.close, 1);
+  assert.deepEqual(testFixture.calls, { inspect: 1, prepare: 0, profile: 0, taxonomy: 0, classify: 0 });
 });
 
-test("creates no plan after a tool failure or mismatched analyzed filename", async () => {
-  const failed = fixture({ analysisFailure: "The PDF could not be analyzed." });
-  assert.deepEqual(
-    await failed.planner.plan("https://larksuite.com/folder"),
-    {
-      kind: "failed",
-      message: "The PDF could not be analyzed.",
-      retryable: false,
-    },
-  );
-
-  const temporary = fixture({
-    analysisFailure: "Lark Drive is temporarily unavailable.",
-    analysisRetryable: true,
-  });
-  assert.deepEqual(
-    await temporary.planner.plan("https://larksuite.com/folder"),
-    {
-      kind: "failed",
-      message: "Lark Drive is temporarily unavailable.",
-      retryable: true,
-    },
-  );
-
-  const mismatch = fixture({ analysisName: "another.pdf" });
-  assert.deepEqual(
-    await mismatch.planner.plan("https://larksuite.com/folder"),
-    {
-      kind: "failed",
-      message: "The analyzed file did not match the requested inventory item.",
-      retryable: false,
-    },
-  );
+test("rejects incomplete provider coverage", async (t) => {
+  for (const key of ["invalidProfileCoverage", "invalidDecisionCoverage"] as const) {
+    await t.test(key, async () => {
+      const testFixture = fixture({ [key]: true });
+      const result = await testFixture.planner.plan(
+        RUN_ID,
+        identity,
+        snapshotWorkspaceInventory(RUN_ID, testFixture.observed),
+      );
+      assert.deepEqual(result, {
+        kind: "failed",
+        message: key === "invalidProfileCoverage"
+          ? "NVIDIA returned incomplete workspace document profiles."
+          : "NVIDIA returned incomplete workspace document decisions.",
+        retryable: false,
+      });
+    });
+  }
 });
 
-test("maps bounded NVIDIA and MCP failures without exposing native errors", async () => {
-  const modelFailure = fixture({
-    classifyError: new NimAnalysisError(
-      "RATE_LIMITED",
-      "private provider body",
-      true,
-    ),
+test("preserves bounded retryability from the NVIDIA boundary", async () => {
+  const testFixture = fixture({
+    classifierError: new NimAnalysisError("RATE_LIMITED", "NVIDIA is busy.", true),
   });
-  assert.deepEqual(
-    await modelFailure.planner.plan("https://larksuite.com/folder"),
-    {
-      kind: "failed",
-      message: "The analysis service is busy right now. Please try again in a moment.",
-      retryable: true,
-    },
-  );
+  assert.deepEqual(await testFixture.planner.plan(
+    RUN_ID,
+    identity,
+    snapshotWorkspaceInventory(RUN_ID, testFixture.observed),
+  ), { kind: "failed", message: "NVIDIA is busy.", retryable: true });
+});
 
-  const mcpFailure = fixture({
-    connectError: new SynvoMcpClientError("private endpoint detail"),
+test("accepts one folder for a demonstrably homogeneous workspace", async () => {
+  const testFixture = fixture({
+    taxonomy: [{ name: "Engineering", description: "Engineering material." }],
   });
-  assert.deepEqual(
-    await mcpFailure.planner.plan("https://larksuite.com/folder"),
-    {
-      kind: "failed",
-      message: "The read-only Synvo tools are temporarily unavailable.",
-      retryable: true,
-    },
+  const result = await testFixture.planner.plan(
+    RUN_ID,
+    identity,
+    snapshotWorkspaceInventory(RUN_ID, testFixture.observed),
   );
-  assert.equal(mcpFailure.calls.close, 1);
+  assert.equal(result.kind, "ready");
+  if (result.kind !== "ready") return;
+  assert.equal(result.taxonomy.length, 1);
+});
+
+test("rejects one folder for a mixed workspace with three or more PDFs", async () => {
+  const testFixture = fixture({
+    profileThemes: (index) => [index % 2 === 0 ? "engineering" : "finance"],
+    taxonomy: [{ name: "Company", description: "All company material." }],
+  });
+  const result = await testFixture.planner.plan(
+    RUN_ID,
+    identity,
+    snapshotWorkspaceInventory(RUN_ID, testFixture.observed),
+  );
+  assert.deepEqual(result, {
+    kind: "failed",
+    message: "NVIDIA returned an invalid folder count.",
+    retryable: false,
+  });
+});
+
+test("accepts an existing folder name without asking NVIDIA to decide reuse", async () => {
+  const testFixture = fixture({
+    taxonomy: [{ name: "Engineering", description: "Engineering material." }],
+  });
+  const result = await testFixture.planner.plan(
+    RUN_ID,
+    identity,
+    snapshotWorkspaceInventory(RUN_ID, testFixture.observed),
+  );
+  assert.equal(result.kind, "ready");
 });
